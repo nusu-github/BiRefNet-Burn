@@ -1,0 +1,21 @@
+[package]
+name = "birefnet-burn"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[features]
+tch-cpu = ["burn/tch"]
+tch-gpu = ["burn/tch"]
+cuda = ["burn/cuda-jit"]
+wgpu = ["burn/wgpu"]
+
+# To import pytorch weights
+import = ["burn-import"]
+
+[dependencies]
+burn = { version = "0.14.0", default-features = false, features = ["std"] }
+burn-import = { version = "0.14.0", optional = true }
+
+[dev-dependencies]
+burn = { version = "0.14.0", default-features = false }
