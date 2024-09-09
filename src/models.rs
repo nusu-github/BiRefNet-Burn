@@ -1,3 +1,7 @@
-pub(crate) mod backbones;
-pub mod birefnet;
-pub(crate) mod modules;
+mod backbones;
+mod birefnet;
+mod modules;
+
+pub use backbones::*;
+pub use birefnet::*;
+pub use modules::*;

@@ -1,6 +1,6 @@
 use burn::{prelude::*, tensor::Distribution};
 
-use crate::special::erfinv::Erfinv;
+use super::erfinv::Erfinv;
 
 pub fn trunc_normal<B: Backend, const D: usize>(
     x: Tensor<B, D, Float>,

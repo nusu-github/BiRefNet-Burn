@@ -8,7 +8,10 @@
 /// Author:  Gary L. Pavlis, Indiana University
 /// Date:  February 1996
 ///
-use burn::prelude::*;
+use burn::{
+    tensor::backend::Backend,
+    tensor::{Float, Tensor},
+};
 
 const CENTRAL_RANGE: f32 = 0.7;
 const A: [f32; 4] = [0.886226899, -1.645349621, 0.914624893, -0.140543331];

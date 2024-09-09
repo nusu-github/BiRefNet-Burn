@@ -35,7 +35,6 @@ BiRefNet is a state-of-the-art model designed for high-resolution dichotomous im
 ### Prerequisites
 
 - Rust (latest stable version)
-- Burn (follow installation instructions from the [Burn repository](https://github.com/tracel-ai/burn))
 
 ### Steps
 
@@ -50,8 +49,6 @@ BiRefNet is a state-of-the-art model designed for high-resolution dichotomous im
    ```bash
    cargo build --release
    ```
-
-For detailed Burn setup instructions, refer to the [Burn documentation](https://github.com/tracel-ai/burn#getting-started).
 
 ## Usage
 

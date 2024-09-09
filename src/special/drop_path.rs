@@ -1,4 +1,9 @@
-use burn::{prelude::*, tensor::Distribution};
+use burn::{
+    config::Config,
+    module::Module,
+    tensor::{backend::Backend, Distribution, Float, Tensor},
+};
+
 use std::marker::PhantomData;
 
 #[derive(Config)]
@@ -12,7 +17,7 @@ pub struct DropPathConfig {
 }
 
 impl DropPathConfig {
-    pub fn init<B: Backend>(&self, _device: &Device<B>) -> DropPath<B> {
+    pub fn init<B: Backend>(&self) -> DropPath<B> {
         DropPath {
             drop_prob: self.drop_prob,
             training: self.training,
@@ -31,16 +36,16 @@ pub struct DropPath<B: Backend> {
 }
 
 impl<B: Backend> DropPath<B> {
-    pub fn forward(&self, x: Tensor<B, 3, Float>) -> Tensor<B, 3> {
+    pub fn forward<const D: usize>(&self, x: Tensor<B, D, Float>) -> Tensor<B, D, Float> {
         if !self.training || self.drop_prob == 0.0 {
             return x;
         }
         let keep_prob = 1.0 - self.drop_prob;
-        let other_dims = vec![1; 3 - 1];
-        let shape: Vec<usize> = std::iter::once(x.dims()[0])
+        let other_dims = vec![1; D - 1];
+        let shape: Vec<_> = std::iter::once(x.dims()[0])
             .chain(other_dims.into_iter())
             .collect();
-        let random_tensor: Tensor<B, 3, Float> = Tensor::random(
+        let random_tensor = Tensor::random(
             shape,
             Distribution::Bernoulli(keep_prob),
             &Default::default(),
