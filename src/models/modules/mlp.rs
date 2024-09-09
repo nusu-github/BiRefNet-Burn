@@ -9,7 +9,7 @@ use burn::{
 
 use crate::special::{DropPath, DropPathConfig};
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct MLPLayerConfig {
     in_features: usize,
     hidden_features: Option<usize>,
@@ -50,12 +50,12 @@ impl<B: Backend> MLPLayer<B> {
         let x = self.act.forward(x);
         let x = self.drop.forward(x);
         let x = self.fc2.forward(x);
-        let x = self.drop.forward(x);
-        x
+
+        self.drop.forward(x)
     }
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct AttentionConfig {
     dim: usize,
     #[config(default = "8")]
@@ -75,7 +75,7 @@ pub struct AttentionConfig {
 impl AttentionConfig {
     pub fn init<B: Backend>(&self, device: &Device<B>) -> Attention<B> {
         let head_dim = self.dim / self.num_heads;
-        let scale = self.qk_scale.unwrap_or_else(|| head_dim as f64).powf(-0.5);
+        let scale = self.qk_scale.unwrap_or(head_dim as f64).powf(-0.5);
 
         let q = LinearConfig::new(self.dim, self.dim).init(device);
         let kv = LinearConfig::new(self.dim, self.dim * 2).init(device);
@@ -131,7 +131,7 @@ impl<B: Backend> Attention<B> {
     }
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct BlockConfig {
     dim: usize,
     #[config(default = "8")]
@@ -193,7 +193,7 @@ pub struct Block<B: Backend> {
     attn: Attention<B>,
     norm2: LayerNorm<B>,
     mlp: MLPLayer<B>,
-    drop_path: Option<DropPath<B>>,
+    drop_path: Option<DropPath>,
 }
 
 impl<B: Backend> Block<B> {
@@ -222,7 +222,7 @@ impl<B: Backend> Block<B> {
     }
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct OverlapPatchEmbedConfig {
     #[config(default = "224")]
     img_size: usize,

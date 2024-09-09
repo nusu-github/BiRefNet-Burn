@@ -1,22 +1,16 @@
-use std::marker::PhantomData;
-
 use burn::{
     module::Module,
     tensor::{backend::Backend, Tensor},
 };
 
-#[derive(Module, Debug)]
-pub struct Identity<B: Backend> {
-    _marker: PhantomData<B>,
-}
+#[derive(Module, Clone, Debug, Default)]
+pub struct Identity {}
 
-impl<B: Backend> Identity<B> {
+impl Identity {
     pub fn new() -> Self {
-        Self {
-            _marker: PhantomData,
-        }
+        Self {}
     }
-    pub fn forward<const D: usize>(&self, x: Tensor<B, D>) -> Tensor<B, D> {
+    pub fn forward<B: Backend, const D: usize>(&self, x: Tensor<B, D>) -> Tensor<B, D> {
         x
     }
 }

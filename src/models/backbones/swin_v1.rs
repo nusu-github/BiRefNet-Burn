@@ -16,7 +16,7 @@ use burn::{
 
 use crate::special::{roll, trunc_normal, DropPath, DropPathConfig};
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct MlpConfig {
     in_features: usize,
     #[config(default = "None")]
@@ -60,8 +60,8 @@ impl<B: Backend> Mlp<B> {
         let x = self.act.forward(x);
         let x = self.drop.forward(x);
         let x = self.fc2.forward(x);
-        let x = self.drop.forward(x);
-        x
+
+        self.drop.forward(x)
     }
 }
 
@@ -75,13 +75,9 @@ fn window_partition<B: Backend>(x: Tensor<B, 4, Float>, window_size: usize) -> T
         window_size,
         c,
     ]);
-    let x = x.permute([0, 1, 3, 2, 4, 5]).reshape([
-        -1,
-        window_size as i32,
-        window_size as i32,
-        c as i32,
-    ]);
-    x
+
+    x.permute([0, 1, 3, 2, 4, 5])
+        .reshape([-1, window_size as i32, window_size as i32, c as i32])
 }
 
 fn window_reverse<B: Backend>(
@@ -99,13 +95,12 @@ fn window_reverse<B: Backend>(
         window_size as i32,
         -1,
     ]);
-    let x = x
-        .permute([0, 1, 3, 2, 4, 5])
-        .reshape([b as i32, h as i32, w as i32, -1]);
-    x
+
+    x.permute([0, 1, 3, 2, 4, 5])
+        .reshape([b as i32, h as i32, w as i32, -1])
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct WindowAttentionConfig {
     dim: usize,
     window_size: [usize; 2],
@@ -258,12 +253,12 @@ impl<B: Backend> WindowAttention<B> {
         let x = attn.matmul(v).swap_dims(1, 2).reshape([b, n, c]);
 
         let x = self.proj.forward(x);
-        let x = self.proj_drop.forward(x);
-        x
+
+        self.proj_drop.forward(x)
     }
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct SwinTransformerBlockConfig {
     dim: usize,
     num_heads: usize,
@@ -331,7 +326,7 @@ pub struct SwinTransformerBlock<B: Backend> {
     attn: WindowAttention<B>,
     norm2: LayerNorm<B>,
     mlp: Mlp<B>,
-    drop_path: DropPath<B>,
+    drop_path: DropPath,
 }
 
 impl<B: Backend> SwinTransformerBlock<B> {
@@ -404,14 +399,13 @@ impl<B: Backend> SwinTransformerBlock<B> {
         let x = x.reshape([b, h * w, c]);
 
         let x = shortcut + self.drop_path.forward(x);
-        let x = self
-            .drop_path
-            .forward(self.mlp.forward(self.norm2.forward(x)));
-        x
+
+        self.drop_path
+            .forward(self.mlp.forward(self.norm2.forward(x)))
     }
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct PatchMergingConfig {
     dim: usize,
     // norm: nn::LayerNormConfig,
@@ -466,12 +460,12 @@ impl<B: Backend> PatchMerging<B> {
         let x = x.reshape([b as i32, -1, (4 * c) as i32]);
 
         let x = self.norm.forward(x);
-        let x = self.reduction.forward(x);
-        x
+
+        self.reduction.forward(x)
     }
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct BasicLayerConfig {
     dim: usize,
     depth: usize,
@@ -565,11 +559,9 @@ impl<B: Backend> BasicLayer<B> {
             (-(self.shift_size as isize), 0),
         ];
         let mut cnt = 0;
-        for i in 0..3 {
-            for j in 0..3 {
+        for (hs, he) in h_slices {
+            for (ws, we) in w_slices {
                 let [d1, d2, d3, d4] = img_mask.dims();
-                let (hs, he) = h_slices[i];
-                let (ws, we) = w_slices[j];
                 img_mask = img_mask.slice_assign(
                     [
                         0..d1,
@@ -635,7 +627,7 @@ impl<B: Backend> BasicLayer<B> {
     }
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct PatchEmbedConfig {
     #[config(default = "4")]
     patch_size: usize,
@@ -708,7 +700,7 @@ impl<B: Backend> PatchEmbed<B> {
     }
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct SwinTransformerConfig {
     #[config(default = "224")]
     pretrain_img_size: usize,
@@ -772,7 +764,7 @@ impl SwinTransformerConfig {
             .with_patch_size(self.patch_size)
             .with_in_channels(self.in_channels)
             .with_embed_dim(self.embed_dim)
-            .with_norm_layer(if self.patch_norm { true } else { false })
+            .with_norm_layer(self.patch_norm)
             .init(device);
 
         let absolute_pos_embed = if self.ape {

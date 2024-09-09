@@ -18,7 +18,7 @@ pub enum OptimizerEnum<B: Backend> {
 
 #[derive(Module, Debug)]
 pub enum DecAttEnum<B: Backend> {
-    None(Identity<B>),
+    None(Identity),
     ASPP(ASPP<B>),
     ASPPDeformable(ASPPDeformable<B>),
 }
@@ -118,7 +118,7 @@ impl Silu {
     }
 }
 
-pub fn build_act_layer<B: Backend>(act_layer: &str) -> ActLayerEnum {
+pub fn build_act_layer(act_layer: &str) -> ActLayerEnum {
     match act_layer {
         "ReLU" => ActLayerEnum::ReLU(Relu::new()),
         "SiLU" => ActLayerEnum::SiLU(Silu::new()),

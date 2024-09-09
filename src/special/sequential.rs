@@ -7,7 +7,7 @@ pub enum SequentialType<B: Backend> {
     Conv2d(conv::Conv2d<B>),
     BatchNorm2d(BatchNorm<B, 2>),
     ReLU(Relu),
-    Identity(Identity<B>),
+    Identity(Identity),
 }
 
 #[derive(Module, Debug)]

@@ -7,7 +7,7 @@ pub enum BackboneEnum<B: Backend> {
     SwinTransformer(SwinTransformer<B>),
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub enum Backbone {
     VGG16,
     VGG16BN,

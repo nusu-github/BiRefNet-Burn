@@ -14,7 +14,7 @@ use burn::{
 use super::DeformableConv2d;
 use crate::models::DeformableConv2dConfig;
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct _ASPPModuleConfig {
     in_channels: usize,
     planes: usize,
@@ -42,7 +42,7 @@ impl<B: Backend> _ASPPModule<B> {
     }
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct ASPPConfig {
     #[config(default = "64")]
     in_channels: usize,
@@ -81,7 +81,7 @@ impl<B: Backend> ASPP<B> {
     }
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct _ASPPModuleDeformableConfig {
     in_channels: usize,
     planes: usize,
@@ -125,12 +125,12 @@ impl<B: Backend> _ASPPModuleDeformable<B> {
         } else {
             x
         };
-        let x = self.relu.forward(x);
-        x
+
+        self.relu.forward(x)
     }
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct ASPPDeformableConfig {
     #[config(default = "64")]
     in_channels: usize,
@@ -143,7 +143,7 @@ pub struct ASPPDeformableConfig {
 impl ASPPDeformableConfig {
     pub fn init<B: Backend>(&self, device: &Device<B>) -> ASPPDeformable<B> {
         let out_channels = self.out_channels.unwrap_or(self.in_channels);
-        let in_channelster = 256 / 1;
+        let in_channelster = 256;
 
         let aspp1 =
             _ASPPModuleDeformableConfig::new(self.in_channels, in_channelster, 1, 0).init(device);
@@ -244,7 +244,7 @@ impl<B: Backend> ASPPDeformable<B> {
             x
         };
         let x = self.relu.forward(x);
-        let x = self.dropout.forward(x);
-        x
+
+        self.dropout.forward(x)
     }
 }

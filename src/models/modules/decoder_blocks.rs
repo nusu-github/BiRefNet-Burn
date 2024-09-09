@@ -15,7 +15,7 @@ enum BasicDecSqueezeBlockModuleEnum<B: Backend> {
     ASPPDeformable(ASPPDeformable<B>),
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct BasicDecBlkConfig {
     #[config(default = "64")]
     in_channels: usize,
@@ -48,7 +48,7 @@ impl BasicDecBlkConfig {
             }
             _ => None,
         };
-        let conv_out = Conv2dConfig::new([self.inter_channels, self.inter_channels], [3, 3])
+        let conv_out = Conv2dConfig::new([self.inter_channels, self.out_channels], [3, 3])
             .with_stride([1, 1])
             .with_padding(PaddingConfig2d::Explicit(1, 1))
             .init(device);
@@ -95,16 +95,16 @@ impl<B: Backend> BasicDecBlk<B> {
             x
         };
         let x = self.conv_out.forward(x);
-        let x = if let Some(bn_out) = &self.bn_out {
+
+        if let Some(bn_out) = &self.bn_out {
             bn_out.forward(x)
         } else {
             x
-        };
-        x
+        }
     }
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct ResBlkConfig {
     #[config(default = "64")]
     in_channels: usize,

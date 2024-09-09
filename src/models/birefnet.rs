@@ -31,7 +31,7 @@ pub fn lateral_channels_in_collection(backbone: &Backbone) -> [usize; 4] {
     }
 }
 
-#[derive(Config, Debug, PartialEq, Eq)]
+#[derive(Config, Debug, PartialEq)]
 pub enum SqueezeBlockEnum {
     None,
     BasicDecBlk,
@@ -48,27 +48,27 @@ pub enum SqueezeBlockModuleEnum<B: Backend> {
     ASPPDeformable(ASPPDeformable<B>),
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct SqueezeBlockConfig {
     name: SqueezeBlockEnum,
     count: usize,
 }
 
-#[derive(Config, PartialEq)]
+#[derive(Config, Debug, PartialEq)]
 pub enum MulSclIptEnum {
     None,
     Add,
     Cat,
 }
 
-#[derive(Module, Debug)]
-pub enum MulSclIptModuleEnum<B: Backend> {
-    None(Identity<B>),
-    Add(Identity<B>),
-    Cat(Identity<B>),
+#[derive(Module, Debug, Clone)]
+pub enum MulSclIptModuleEnum {
+    None(Identity),
+    Add(Identity),
+    Cat(Identity),
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct BiRefNetConfig {
     #[config(default = "3")]
     cxt_num: usize,
@@ -91,38 +91,6 @@ impl BiRefNetConfig {
             channels
         };
 
-        let squeeze_module = if self.squeeze_block.name != SqueezeBlockEnum::None {
-            vec![]
-        } else {
-            let mut squeeze_module = Vec::with_capacity(self.squeeze_block.count);
-
-            for _ in 0..self.squeeze_block.count {
-                match self.squeeze_block.name {
-                    SqueezeBlockEnum::BasicDecBlk => {
-                        let model =
-                            BasicDecBlkConfig::new(SqueezeBlockEnum::ASPPDeformable).init(device);
-                        squeeze_module.push(SqueezeBlockModuleEnum::BasicDecBlk(model));
-                    }
-                    SqueezeBlockEnum::ResBlk => {
-                        let model = ResBlkConfig::new().init(device);
-                        squeeze_module.push(SqueezeBlockModuleEnum::ResBlk(model));
-                    }
-                    SqueezeBlockEnum::ASPP => {
-                        let model = ASPPConfig::new().init(device);
-                        squeeze_module.push(SqueezeBlockModuleEnum::ASPP(model));
-                    }
-                    SqueezeBlockEnum::ASPPDeformable => {
-                        let model = ASPPDeformableConfig::new().init(device);
-                        squeeze_module.push(SqueezeBlockModuleEnum::ASPPDeformable(model));
-                    }
-                    SqueezeBlockEnum::None => unreachable!(),
-                };
-            }
-
-            squeeze_module
-        };
-
-        // `cxt_num`に基づいて`cxt`を計算
         let cxt: [usize; 3] = if self.cxt_num > 0 {
             let reversed: Vec<usize> = channels[1..].iter().rev().cloned().collect();
             reversed[reversed.len().saturating_sub(self.cxt_num)..]
@@ -130,6 +98,48 @@ impl BiRefNetConfig {
                 .unwrap()
         } else {
             [0, 0, 0]
+        };
+
+        let squeeze_module = if self.squeeze_block.name == SqueezeBlockEnum::None {
+            vec![]
+        } else {
+            let mut squeeze_module = Vec::with_capacity(self.squeeze_block.count);
+
+            for _ in 0..self.squeeze_block.count {
+                match self.squeeze_block.name {
+                    SqueezeBlockEnum::BasicDecBlk => {
+                        let model = BasicDecBlkConfig::new(SqueezeBlockEnum::ASPPDeformable)
+                            .with_in_channels(channels[0] + cxt.iter().sum::<usize>())
+                            .with_out_channels(channels[0])
+                            .init(device);
+                        squeeze_module.push(SqueezeBlockModuleEnum::BasicDecBlk(model));
+                    }
+                    SqueezeBlockEnum::ResBlk => {
+                        let model = ResBlkConfig::new()
+                            .with_in_channels(channels[0] + cxt.iter().sum::<usize>())
+                            .with_out_channels(Some(channels[0]))
+                            .init(device);
+                        squeeze_module.push(SqueezeBlockModuleEnum::ResBlk(model));
+                    }
+                    SqueezeBlockEnum::ASPP => {
+                        let model = ASPPConfig::new()
+                            .with_in_channels(channels[0] + cxt.iter().sum::<usize>())
+                            .with_out_channels(Some(channels[0]))
+                            .init(device);
+                        squeeze_module.push(SqueezeBlockModuleEnum::ASPP(model));
+                    }
+                    SqueezeBlockEnum::ASPPDeformable => {
+                        let model = ASPPDeformableConfig::new()
+                            .with_in_channels(channels[0] + cxt.iter().sum::<usize>())
+                            .with_out_channels(Some(channels[0]))
+                            .init(device);
+                        squeeze_module.push(SqueezeBlockModuleEnum::ASPPDeformable(model));
+                    }
+                    SqueezeBlockEnum::None => unreachable!(),
+                };
+            }
+
+            squeeze_module
         };
 
         // TODO: refine
@@ -152,7 +162,7 @@ impl BiRefNetConfig {
 
 #[derive(Module, Debug)]
 pub struct BiRefNet<B: Backend> {
-    mul_scl_ipt: MulSclIptModuleEnum<B>,
+    mul_scl_ipt: MulSclIptModuleEnum,
     cxt: [usize; 3],
     bb: BackboneEnum<B>,
     squeeze_module: Vec<SqueezeBlockModuleEnum<B>>,
@@ -320,17 +330,15 @@ impl<B: Backend> BiRefNet<B> {
         }
         // ########## Decoder ##########
         let features = [x, x1, x2, x3, x4];
-        let scaled_preds = self.decoder.forward(features);
 
-        scaled_preds
+        self.decoder.forward(features)
     }
     pub fn forward(&self, x: Tensor<B, 4, Float>) -> Tensor<B, 4, Float> {
-        let scaled_preds = self.forward_ori(x);
-        scaled_preds
+        self.forward_ori(x)
     }
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub enum DecoderBlockEnum {
     BasicDecBlk,
     ResBlk,
@@ -342,7 +350,7 @@ pub enum DecoderBlockModuleEnum<B: Backend> {
     ResBlk(ResBlk<B>),
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub enum LateralBlockEnum {
     BasicLatBlk,
 }
@@ -352,7 +360,7 @@ pub enum LateralBlockModuleEnum<B: Backend> {
     BasicLatBlk(BasicLatBlk<B>),
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct DecoderConfig {
     channels: [usize; 4],
     #[config(default = "DecoderBlockEnum::BasicDecBlk")]
@@ -676,7 +684,6 @@ impl<B: Backend> Decoder<B> {
 
         let mut x4 = x4;
         if self.dec_ipt {
-            let ipt_blk5 = self.ipt_blk5.as_ref().unwrap();
             let patches_batch = if self.split {
                 self.get_patches_batch(x.clone(), x4.clone())
             } else {
@@ -686,7 +693,7 @@ impl<B: Backend> Decoder<B> {
             x4 = Tensor::cat(
                 Vec::from([
                     x4,
-                    ipt_blk5.forward(interpolate(
+                    self.ipt_blk5.as_ref().unwrap().forward(interpolate(
                         patches_batch,
                         [h, w],
                         InterpolateOptions::new(InterpolateMode::Bilinear),
@@ -869,13 +876,21 @@ impl<B: Backend> Decoder<B> {
         x: Tensor<B, 4, Float>,
         p: Tensor<B, 4, Float>,
     ) -> Tensor<B, 4, Float> {
-        let [_, _, h, w] = p.dims();
-        let mut patches_batch = Vec::new();
+        let [b, _, h, w] = p.dims();
+        let mut patches_batch = Vec::with_capacity(b);
         for x_ in x.iter_dim(0) {
-            let columns_x = x_.chunk(w, 3);
+            let [_, c_, h_, w_] = x_.dims();
+            let columns_x = (0..w_)
+                .step_by(w)
+                .map(|i| x_.clone().slice([0..1, 0..c_, 0..h_, i..i + w]));
             let mut patches_x = Vec::new();
             for column_x in columns_x {
-                patches_x.extend(column_x.chunk(h, 2).into_iter());
+                let [_, c_, h_, w_] = column_x.dims();
+                patches_x.extend(
+                    (0..h_)
+                        .step_by(h)
+                        .map(|j| column_x.clone().slice([0..1, 0..c_, j..j + h, 0..w_])),
+                );
             }
             let patch_sample = Tensor::cat(patches_x, 1);
             patches_batch.push(patch_sample);
@@ -884,7 +899,7 @@ impl<B: Backend> Decoder<B> {
     }
 }
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct SimpleConvsConfig {
     in_channels: usize,
     out_channels: usize,
@@ -917,7 +932,7 @@ pub struct SimpleConvs<B: Backend> {
 impl<B: Backend> SimpleConvs<B> {
     pub fn forward(&self, x: Tensor<B, 4, Float>) -> Tensor<B, 4, Float> {
         let x = self.conv1.forward(x);
-        let x = self.conv_out.forward(x);
-        x
+
+        self.conv_out.forward(x)
     }
 }

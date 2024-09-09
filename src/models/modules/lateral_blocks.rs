@@ -6,7 +6,7 @@ use burn::{
     prelude::*,
 };
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct BasicLatBlkConfig {
     #[config(default = "64")]
     in_channels: usize,

@@ -23,6 +23,5 @@ pub fn trunc_normal<B: Backend, const D: usize>(
     let x = x.mul_scalar(std * (2.0_f64.sqrt()));
     let x = x.add_scalar(mean);
 
-    let x = x.clamp(a, b);
-    x
+    x.clamp(a, b)
 }

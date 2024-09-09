@@ -12,7 +12,7 @@ use burn::{
 
 use crate::special::deform_conv2d;
 
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct DeformableConv2dConfig {
     in_channels: usize,
     out_channels: usize,
@@ -94,6 +94,12 @@ impl<B: Backend> DeformableConv2d<B> {
         let modulator = sigmoid(self.modulator_conv.forward(x.clone())).mul_scalar(2.0);
 
         // TODO: 公式実装待ち
+        // ダミー [b, c*4, h, w]
+        let [b, c, h, w] = x.dims();
+        let dammy = Tensor::<B, 4, Float>::zeros([b, c * 4, h, w], &x.device());
+
+        return dammy;
+
         todo!();
 
         let x = deform_conv2d(
