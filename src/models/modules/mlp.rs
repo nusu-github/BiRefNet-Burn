@@ -45,7 +45,7 @@ pub struct MLPLayer<B: Backend> {
 }
 
 impl<B: Backend> MLPLayer<B> {
-    pub fn forward(&self, x: Tensor<B, 3, Float>) -> Tensor<B, 3, Float> {
+    pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
         let x = self.fc1.forward(x);
         let x = self.act.forward(x);
         let x = self.drop.forward(x);
@@ -126,7 +126,7 @@ pub struct Attention<B: Backend> {
 }
 
 impl<B: Backend> Attention<B> {
-    pub fn forward(&self, x: Tensor<B, 3, Float>, h: usize, w: usize) -> Tensor<B, 3, Float> {
+    pub fn forward(&self, x: Tensor<B, 3>, h: usize, w: usize) -> Tensor<B, 3> {
         todo!()
     }
 }
@@ -197,23 +197,23 @@ pub struct Block<B: Backend> {
 }
 
 impl<B: Backend> Block<B> {
-    pub fn forward(&self, x: Tensor<B, 3, Float>, h: usize, w: usize) -> Tensor<B, 3, Float> {
-        let mut x = x.clone();
+    pub fn forward(&self, x: Tensor<B, 3>, h: usize, w: usize) -> Tensor<B, 3> {
+        let x = x.clone();
         let shortcut = x.clone();
 
-        x = self.norm1.forward(x);
-        x = self.attn.forward(x, h, w);
-        x = if let Some(drop_path) = &self.drop_path {
+        let x = self.norm1.forward(x);
+        let x = self.attn.forward(x, h, w);
+        let x = if let Some(drop_path) = &self.drop_path {
             drop_path.forward(x)
         } else {
             x
         };
-        x = x + shortcut;
+        let x = x + shortcut;
 
         let shortcut = x.clone();
-        x = self.norm2.forward(x);
-        x = self.mlp.forward(x);
-        x = if let Some(drop_path) = &self.drop_path {
+        let x = self.norm2.forward(x);
+        let x = self.mlp.forward(x);
+        let x = if let Some(drop_path) = &self.drop_path {
             drop_path.forward(x)
         } else {
             x
@@ -261,7 +261,7 @@ pub struct OverlapPatchEmbed<B: Backend> {
 }
 
 impl<B: Backend> OverlapPatchEmbed<B> {
-    pub fn forward(&self, x: Tensor<B, 4, Float>) -> (Tensor<B, 3, Float>, usize, usize) {
+    pub fn forward(&self, x: Tensor<B, 4>) -> (Tensor<B, 3>, usize, usize) {
         let x = self.proj.forward(x);
         let [_, _, h, w] = x.dims();
         let x = x.flatten(0, 2).transpose();

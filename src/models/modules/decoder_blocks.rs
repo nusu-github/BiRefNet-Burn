@@ -7,7 +7,7 @@ use burn::{
 };
 
 use super::{ASPPConfig, ASPPDeformable, ASPPDeformableConfig, ASPP};
-use crate::SqueezeBlockEnum;
+use crate::config::SqueezeBlock;
 
 #[derive(Module, Debug)]
 enum BasicDecSqueezeBlockModuleEnum<B: Backend> {
@@ -23,7 +23,7 @@ pub struct BasicDecBlkConfig {
     out_channels: usize,
     #[config(default = "64")]
     inter_channels: usize,
-    dec_att: SqueezeBlockEnum,
+    dec_att: SqueezeBlock,
 }
 
 impl BasicDecBlkConfig {
@@ -34,12 +34,12 @@ impl BasicDecBlkConfig {
             .init(device);
         let relu_in = Relu::new();
         let dec_att = match self.dec_att {
-            SqueezeBlockEnum::ASPP => Some(BasicDecSqueezeBlockModuleEnum::ASPP(
+            SqueezeBlock::ASPP(_) => Some(BasicDecSqueezeBlockModuleEnum::ASPP(
                 ASPPConfig::new()
                     .with_in_channels(self.inter_channels)
                     .init(device),
             )),
-            SqueezeBlockEnum::ASPPDeformable => {
+            SqueezeBlock::ASPPDeformable(_) => {
                 Some(BasicDecSqueezeBlockModuleEnum::ASPPDeformable(
                     ASPPDeformableConfig::new()
                         .with_in_channels(self.inter_channels)
@@ -77,7 +77,7 @@ pub struct BasicDecBlk<B: Backend> {
 }
 
 impl<B: Backend> BasicDecBlk<B> {
-    pub fn forward(&self, x: Tensor<B, 4, Float>) -> Tensor<B, 4, Float> {
+    pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         let x = self.conv_in.forward(x);
         let x = if let Some(bn_in) = &self.bn_in {
             bn_in.forward(x)
@@ -89,7 +89,6 @@ impl<B: Backend> BasicDecBlk<B> {
             match dec_att {
                 BasicDecSqueezeBlockModuleEnum::ASPP(dec_att) => dec_att.forward(x),
                 BasicDecSqueezeBlockModuleEnum::ASPPDeformable(dec_att) => dec_att.forward(x),
-                _ => unreachable!(),
             }
         } else {
             x
@@ -132,7 +131,7 @@ pub struct ResBlk<B: Backend> {
 }
 
 impl<B: Backend> ResBlk<B> {
-    pub fn forward(&self, x: Tensor<B, 4, Float>) -> Tensor<B, 4, Float> {
+    pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         let _x = self.conv_resi.forward(x.clone());
         let x = self.conv_in.forward(x);
         let x = if let Some(bn_in) = &self.bn_in {

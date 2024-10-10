@@ -2,8 +2,8 @@ use burn::prelude::*;
 
 pub fn roll<B: Backend, const D: usize>(
     input: Tensor<B, D>,
-    shifts: Vec<i64>,
-    dims: Vec<usize>,
+    shifts: &[i64],
+    dims: &[usize],
 ) -> Tensor<B, D> {
     if dims.len() == 1 {
         let dim = dims[0];
@@ -23,19 +23,13 @@ pub fn roll<B: Backend, const D: usize>(
 
 fn roll_common<B: Backend, const D: usize>(
     input: Tensor<B, D>,
-    shifts: Vec<i64>,
-    dims: Vec<usize>,
+    shifts: &[i64],
+    dims: &[usize],
 ) -> Tensor<B, D> {
-    if dims.len() <= 1 {
-        panic!("dimension must be > 1");
-    }
+    assert!(dims.len() > 1, "dimension must be > 1");
     // other checks ...
     let tail_shifts = shifts[1];
     let tail_dims = dims[1];
-    let first_dim_rolled = roll::<B, D>(input, [shifts[0]].to_vec(), [dims[0]].to_vec());
-    roll::<B, D>(
-        first_dim_rolled,
-        [tail_shifts].to_vec(),
-        [tail_dims].to_vec(),
-    )
+    let first_dim_rolled = roll::<B, D>(input, &[shifts[0]], &[dims[0]]);
+    roll::<B, D>(first_dim_rolled, &[tail_shifts], &[tail_dims])
 }

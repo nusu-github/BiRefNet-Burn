@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::ops::{Deref, Div};
 
 use burn::{
     module::Param,
@@ -7,10 +7,8 @@ use burn::{
         PaddingConfig2d,
     },
     prelude::*,
-    tensor::activation::sigmoid,
+    tensor::{activation::sigmoid, module::deform_conv2d, ops::DeformConvOptions},
 };
-
-use crate::special::deform_conv2d;
 
 #[derive(Config, Debug)]
 pub struct DeformableConv2dConfig {
@@ -93,24 +91,24 @@ impl<B: Backend> DeformableConv2d<B> {
         let offset = self.offset_conv.forward(x.clone());
         let modulator = sigmoid(self.modulator_conv.forward(x.clone())).mul_scalar(2.0);
 
-        // TODO: 公式実装待ち
-        // ダミー [b, c*4, h, w]
-        let [b, c, h, w] = x.dims();
-        let dammy = Tensor::<B, 4, Float>::zeros([b, c * 4, h, w], &x.device());
-
-        return dammy;
-
-        todo!();
+        let weights_h = self.regular_conv.weight.dims()[2];
+        let weights_w = self.regular_conv.weight.dims()[3];
+        let n_offset_grps = offset.dims()[1].div(2 * weights_h * weights_w);
+        let n_weight_grps = self.in_channels / self.regular_conv.weight.dims()[1];
 
         let x = deform_conv2d(
             x,
             offset,
-            self.regular_conv.weight.deref().clone(),
-            Option::from(self.regular_conv.bias.clone().unwrap().deref().clone()),
-            (self.stride, self.stride),
-            (self.padding, self.padding),
-            (1, 1),
-            Some(modulator),
+            self.regular_conv.weight.val(),
+            Option::from(modulator),
+            self.regular_conv.bias.as_ref().map(Param::val),
+            DeformConvOptions {
+                stride: [self.stride, self.stride],
+                padding: [self.padding, self.padding],
+                dilation: [1, 1],
+                weight_groups: n_weight_grps,
+                offset_groups: n_offset_grps,
+            },
         );
 
         x

@@ -33,7 +33,7 @@ pub struct BasicLatBlk<B: Backend> {
 }
 
 impl<B: Backend> BasicLatBlk<B> {
-    pub fn forward(&self, x: Tensor<B, 4, Float>) -> Tensor<B, 4, Float> {
+    pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         self.conv.forward(x)
     }
 }

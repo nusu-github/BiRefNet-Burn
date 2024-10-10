@@ -1,5 +1,3 @@
-use std::cmp::PartialEq;
-
 use burn::{
     nn::{
         conv::{Conv2d, Conv2dConfig},
@@ -14,34 +12,17 @@ use burn::{
 };
 
 use super::{
-    build_backbone, ASPPConfig, ASPPDeformable, ASPPDeformableConfig, Backbone, BackboneEnum,
-    BasicDecBlk, BasicDecBlkConfig, BasicLatBlk, BasicLatBlkConfig, ResBlk, ResBlkConfig, ASPP,
+    build_backbone, ASPPConfig, ASPPDeformable, ASPPDeformableConfig, BackboneEnum, BasicDecBlk,
+    BasicDecBlkConfig, BasicLatBlk, BasicLatBlkConfig, ResBlk, ResBlkConfig, ASPP,
 };
-use crate::special::{Identity, Sequential, SequentialType};
-
-pub fn lateral_channels_in_collection(backbone: &Backbone) -> [usize; 4] {
-    match backbone {
-        Backbone::VGG16 | Backbone::VGG16BN => [512, 256, 128, 64],
-        Backbone::ResNet50 => [1024, 512, 256, 64],
-        Backbone::SwinV1T | Backbone::SwinV1S => [768, 384, 192, 96],
-        Backbone::SwinV1B => [1024, 512, 256, 128],
-        Backbone::SwinV1L => [1536, 768, 384, 192],
-        Backbone::PVTv2B0 => [256, 160, 64, 32],
-        Backbone::PVTv2B1 | Backbone::PVTv2B2 | Backbone::PVTv2B5 => [512, 320, 128, 64],
-    }
-}
-
-#[derive(Config, Debug, PartialEq)]
-pub enum SqueezeBlockEnum {
-    None,
-    BasicDecBlk,
-    ResBlk,
-    ASPP,
-    ASPPDeformable,
-}
+use crate::config::{DecBlk, LatBlk, MulSclIpt};
+use crate::{
+    config::{ModelConfig, SqueezeBlock},
+    special::{Identity, Sequential, SequentialType},
+};
 
 #[derive(Module, Debug)]
-pub enum SqueezeBlockModuleEnum<B: Backend> {
+pub enum SqueezeBlockModule<B: Backend> {
     BasicDecBlk(BasicDecBlk<B>),
     ResBlk(ResBlk<B>),
     ASPP(ASPP<B>),
@@ -49,93 +30,53 @@ pub enum SqueezeBlockModuleEnum<B: Backend> {
 }
 
 #[derive(Config, Debug)]
-pub struct SqueezeBlockConfig {
-    name: SqueezeBlockEnum,
-    count: usize,
-}
-
-#[derive(Config, Debug, PartialEq)]
-pub enum MulSclIptEnum {
-    None,
-    Add,
-    Cat,
-}
-
-#[derive(Module, Debug, Clone)]
-pub enum MulSclIptModuleEnum {
-    None(Identity),
-    Add(Identity),
-    Cat(Identity),
-}
-
-#[derive(Config, Debug)]
 pub struct BiRefNetConfig {
-    #[config(default = "3")]
-    cxt_num: usize,
-    #[config(default = "MulSclIptEnum::Cat")]
-    mul_scl_ipt: MulSclIptEnum,
-    bb: Backbone,
+    config: ModelConfig,
     bb_pretrained: bool,
-    squeeze_block: SqueezeBlockConfig,
 }
 
 impl BiRefNetConfig {
     pub fn init<B: Backend>(&self, device: &Device<B>) -> BiRefNet<B> {
-        let bb = build_backbone(&self.bb, self.bb_pretrained, device);
+        let bb = build_backbone(&self.config, self.bb_pretrained, device);
+        let channels = self.config.lateral_channels_in_collection();
+        let cxt = self.config.cxt();
 
-        let channels = lateral_channels_in_collection(&self.bb);
-        let channels = if self.mul_scl_ipt == MulSclIptEnum::Cat {
-            let [c1, c2, c3, c4] = channels;
-            [c1 * 2, c2 * 2, c3 * 2, c4 * 2]
-        } else {
-            channels
-        };
-
-        let cxt: [usize; 3] = if self.cxt_num > 0 {
-            let reversed: Vec<usize> = channels[1..].iter().rev().cloned().collect();
-            reversed[reversed.len().saturating_sub(self.cxt_num)..]
-                .try_into()
-                .unwrap()
-        } else {
-            [0, 0, 0]
-        };
-
-        let squeeze_module = if self.squeeze_block.name == SqueezeBlockEnum::None {
+        let squeeze_module = if self.config.squeeze_block == SqueezeBlock::None {
             vec![]
         } else {
-            let mut squeeze_module = Vec::with_capacity(self.squeeze_block.count);
+            let mut squeeze_module = Vec::with_capacity(self.config.squeeze_block.count());
 
-            for _ in 0..self.squeeze_block.count {
-                match self.squeeze_block.name {
-                    SqueezeBlockEnum::BasicDecBlk => {
-                        let model = BasicDecBlkConfig::new(SqueezeBlockEnum::ASPPDeformable)
+            for _ in 0..self.config.squeeze_block.count() {
+                match self.config.squeeze_block {
+                    SqueezeBlock::BasicDecBlk(_) => {
+                        let model = BasicDecBlkConfig::new(SqueezeBlock::ASPPDeformable(0))
                             .with_in_channels(channels[0] + cxt.iter().sum::<usize>())
                             .with_out_channels(channels[0])
                             .init(device);
-                        squeeze_module.push(SqueezeBlockModuleEnum::BasicDecBlk(model));
+                        squeeze_module.push(SqueezeBlockModule::BasicDecBlk(model));
                     }
-                    SqueezeBlockEnum::ResBlk => {
+                    SqueezeBlock::ResBlk(_) => {
                         let model = ResBlkConfig::new()
                             .with_in_channels(channels[0] + cxt.iter().sum::<usize>())
                             .with_out_channels(Some(channels[0]))
                             .init(device);
-                        squeeze_module.push(SqueezeBlockModuleEnum::ResBlk(model));
+                        squeeze_module.push(SqueezeBlockModule::ResBlk(model));
                     }
-                    SqueezeBlockEnum::ASPP => {
+                    SqueezeBlock::ASPP(_) => {
                         let model = ASPPConfig::new()
                             .with_in_channels(channels[0] + cxt.iter().sum::<usize>())
                             .with_out_channels(Some(channels[0]))
                             .init(device);
-                        squeeze_module.push(SqueezeBlockModuleEnum::ASPP(model));
+                        squeeze_module.push(SqueezeBlockModule::ASPP(model));
                     }
-                    SqueezeBlockEnum::ASPPDeformable => {
+                    SqueezeBlock::ASPPDeformable(_) => {
                         let model = ASPPDeformableConfig::new()
                             .with_in_channels(channels[0] + cxt.iter().sum::<usize>())
                             .with_out_channels(Some(channels[0]))
                             .init(device);
-                        squeeze_module.push(SqueezeBlockModuleEnum::ASPPDeformable(model));
+                        squeeze_module.push(SqueezeBlockModule::ASPPDeformable(model));
                     }
-                    SqueezeBlockEnum::None => unreachable!(),
+                    SqueezeBlock::None => unreachable!(),
                 };
             }
 
@@ -144,10 +85,10 @@ impl BiRefNetConfig {
 
         // TODO: refine
 
-        let mul_scl_ipt = match self.mul_scl_ipt {
-            MulSclIptEnum::None => MulSclIptModuleEnum::None(Identity::new()),
-            MulSclIptEnum::Add => MulSclIptModuleEnum::Add(Identity::new()),
-            MulSclIptEnum::Cat => MulSclIptModuleEnum::Cat(Identity::new()),
+        let mul_scl_ipt = match self.config.mul_scl_ipt {
+            MulSclIpt::None => MulSclIpt_::None(Identity::new()),
+            MulSclIpt::Add => MulSclIpt_::Add(Identity::new()),
+            MulSclIpt::Cat => MulSclIpt_::Cat(Identity::new()),
         };
 
         BiRefNet {
@@ -155,28 +96,35 @@ impl BiRefNetConfig {
             cxt,
             bb,
             squeeze_module,
-            decoder: DecoderConfig::new(channels).init(device),
+            decoder: DecoderConfig::new(self.config.clone(), channels).init(device),
         }
     }
 }
 
+#[derive(Module, Debug, Clone)]
+enum MulSclIpt_ {
+    None(Identity),
+    Add(Identity),
+    Cat(Identity),
+}
+
 #[derive(Module, Debug)]
 pub struct BiRefNet<B: Backend> {
-    mul_scl_ipt: MulSclIptModuleEnum,
+    mul_scl_ipt: MulSclIpt_,
     cxt: [usize; 3],
     bb: BackboneEnum<B>,
-    squeeze_module: Vec<SqueezeBlockModuleEnum<B>>,
+    squeeze_module: Vec<SqueezeBlockModule<B>>,
     decoder: Decoder<B>,
 }
 
 impl<B: Backend> BiRefNet<B> {
-    pub fn forward_enc(&self, x: Tensor<B, 4, Float>) -> [Tensor<B, 4, Float>; 4] {
+    pub fn forward_enc(&self, x: Tensor<B, 4>) -> [Tensor<B, 4>; 4] {
         let [x1, x2, x3, x4] = match &self.bb {
             BackboneEnum::SwinTransformer(bb) => bb.forward(x.clone()),
         };
         let [x1, x2, x3, x4] = match self.mul_scl_ipt {
-            MulSclIptModuleEnum::None(_) => [x1, x2, x3, x4],
-            MulSclIptModuleEnum::Add(_) => {
+            MulSclIpt_::None(_) => [x1, x2, x3, x4],
+            MulSclIpt_::Add(_) => {
                 let [_, _, h, w] = x.dims();
                 let [x1_, x2_, x3_, x4_] = match &self.bb {
                     BackboneEnum::SwinTransformer(bb) => bb.forward(interpolate(
@@ -217,7 +165,7 @@ impl<B: Backend> BiRefNet<B> {
 
                 [x1, x2, x3, x4]
             }
-            MulSclIptModuleEnum::Cat(_) => {
+            MulSclIpt_::Cat(_) => {
                 let [_, _, h, w] = x.dims();
                 let [x1_, x2_, x3_, x4_] = match &self.bb {
                     BackboneEnum::SwinTransformer(bb) => bb.forward(interpolate(
@@ -308,22 +256,22 @@ impl<B: Backend> BiRefNet<B> {
             [x1, x2, x3, x4]
         }
     }
-    pub fn forward_ori(&self, x: Tensor<B, 4, Float>) -> Tensor<B, 4, Float> {
+    pub fn forward_ori(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         // ########## Encoder ##########
         let [x1, x2, x3, x4] = self.forward_enc(x.clone());
         let mut x4 = x4;
         for squeeze_module in &self.squeeze_module {
             match squeeze_module {
-                SqueezeBlockModuleEnum::BasicDecBlk(model) => {
+                SqueezeBlockModule::BasicDecBlk(model) => {
                     x4 = model.forward(x4);
                 }
-                SqueezeBlockModuleEnum::ResBlk(model) => {
+                SqueezeBlockModule::ResBlk(model) => {
                     x4 = model.forward(x4);
                 }
-                SqueezeBlockModuleEnum::ASPP(model) => {
+                SqueezeBlockModule::ASPP(model) => {
                     x4 = model.forward(x4);
                 }
-                SqueezeBlockModuleEnum::ASPPDeformable(model) => {
+                SqueezeBlockModule::ASPPDeformable(model) => {
                     x4 = model.forward(x4);
                 }
             }
@@ -333,26 +281,15 @@ impl<B: Backend> BiRefNet<B> {
 
         self.decoder.forward(features)
     }
-    pub fn forward(&self, x: Tensor<B, 4, Float>) -> Tensor<B, 4, Float> {
+    pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         self.forward_ori(x)
     }
-}
-
-#[derive(Config, Debug)]
-pub enum DecoderBlockEnum {
-    BasicDecBlk,
-    ResBlk,
 }
 
 #[derive(Module, Debug)]
 pub enum DecoderBlockModuleEnum<B: Backend> {
     BasicDecBlk(BasicDecBlk<B>),
     ResBlk(ResBlk<B>),
-}
-
-#[derive(Config, Debug)]
-pub enum LateralBlockEnum {
-    BasicLatBlk,
 }
 
 #[derive(Module, Debug)]
@@ -362,19 +299,8 @@ pub enum LateralBlockModuleEnum<B: Backend> {
 
 #[derive(Config, Debug)]
 pub struct DecoderConfig {
+    config: ModelConfig,
     channels: [usize; 4],
-    #[config(default = "DecoderBlockEnum::BasicDecBlk")]
-    decoder_block: DecoderBlockEnum,
-    #[config(default = "LateralBlockEnum::BasicLatBlk")]
-    lateral_block: LateralBlockEnum,
-    #[config(default = "true")]
-    dec_ipt: bool,
-    #[config(default = "true")]
-    dec_ipt_split: bool,
-    #[config(default = "true")]
-    ms_supervision: bool,
-    #[config(default = "true")]
-    out_ref: bool,
 }
 
 impl DecoderConfig {
@@ -384,8 +310,8 @@ impl DecoderConfig {
     const _N: usize = 16;
 
     pub fn init<B: Backend>(&self, device: &B::Device) -> Decoder<B> {
-        let split = if self.dec_ipt {
-            self.dec_ipt_split
+        let split = if self.config.dec_ipt {
+            self.config.dec_ipt_split.clone()
         } else {
             false
         };
@@ -396,7 +322,7 @@ impl DecoderConfig {
         let mut ipt_blk2 = None;
         let mut ipt_blk1 = None;
 
-        if self.dec_ipt {
+        if self.config.dec_ipt {
             let out_channels = |x: usize| {
                 if Self::IPT_CHA_OPT == 0 {
                     Self::N_DEC_IPT
@@ -436,7 +362,7 @@ impl DecoderConfig {
 
         let in_channels = |x: usize, y: usize| {
             self.channels[x]
-                + if self.dec_ipt {
+                + if self.config.dec_ipt {
                     if Self::IPT_CHA_OPT == 0 {
                         Self::N_DEC_IPT
                     } else {
@@ -453,7 +379,7 @@ impl DecoderConfig {
             self.create_decoder_block(in_channels(3, 2), self.channels[3] / 2, device);
 
         let in_channels = (self.channels[3] / 2)
-            + if self.dec_ipt {
+            + if self.config.dec_ipt {
                 if Self::IPT_CHA_OPT == 0 {
                     Self::N_DEC_IPT
                 } else {
@@ -486,7 +412,7 @@ impl DecoderConfig {
         let mut gdt_convs_attn_3 = None;
         let mut gdt_convs_attn_2 = None;
 
-        if self.ms_supervision {
+        if self.config.ms_supervision {
             conv_ms_spvn_4 = Some(
                 Conv2dConfig::new([self.channels[1], 1], [1, 1])
                     .with_padding(PaddingConfig2d::Valid)
@@ -503,7 +429,7 @@ impl DecoderConfig {
                     .init(device),
             );
 
-            if self.out_ref {
+            if self.config.out_ref {
                 gdt_convs_4 = Some(Sequential::new(vec![
                     SequentialType::Conv2d(
                         Conv2dConfig::new([self.channels[1], Self::_N], [3, 3])
@@ -576,9 +502,9 @@ impl DecoderConfig {
         };
 
         Decoder {
-            dec_ipt: self.dec_ipt,
+            dec_ipt: self.config.dec_ipt,
             split,
-            out_ref: self.out_ref,
+            out_ref: self.config.out_ref,
             ipt_blk5,
             ipt_blk4,
             ipt_blk3,
@@ -613,14 +539,14 @@ impl DecoderConfig {
         out_channels: usize,
         device: &Device<B>,
     ) -> DecoderBlockModuleEnum<B> {
-        match self.decoder_block {
-            DecoderBlockEnum::BasicDecBlk => DecoderBlockModuleEnum::BasicDecBlk(
-                BasicDecBlkConfig::new(SqueezeBlockEnum::ASPPDeformable)
+        match self.config.dec_blk {
+            DecBlk::BasicDecBlk => DecoderBlockModuleEnum::BasicDecBlk(
+                BasicDecBlkConfig::new(SqueezeBlock::ASPPDeformable(0))
                     .with_in_channels(in_channels)
                     .with_out_channels(out_channels)
                     .init(device),
             ),
-            DecoderBlockEnum::ResBlk => DecoderBlockModuleEnum::ResBlk(
+            DecBlk::ResBlk => DecoderBlockModuleEnum::ResBlk(
                 ResBlkConfig::new()
                     .with_in_channels(in_channels)
                     .with_out_channels(Some(out_channels))
@@ -635,8 +561,8 @@ impl DecoderConfig {
         out_channels: usize,
         device: &Device<B>,
     ) -> LateralBlockModuleEnum<B> {
-        match self.lateral_block {
-            LateralBlockEnum::BasicLatBlk => LateralBlockModuleEnum::BasicLatBlk(
+        match self.config.lat_blk {
+            LatBlk::BasicLatBlk => LateralBlockModuleEnum::BasicLatBlk(
                 BasicLatBlkConfig::new()
                     .with_in_channels(in_channels)
                     .with_out_channels(out_channels)
@@ -679,7 +605,7 @@ pub struct Decoder<B: Backend> {
 }
 
 impl<B: Backend> Decoder<B> {
-    pub fn forward(&self, features: [Tensor<B, 4, Float>; 5]) -> Tensor<B, 4, Float> {
+    pub fn forward(&self, features: [Tensor<B, 4>; 5]) -> Tensor<B, 4> {
         let [x, x1, x2, x3, x4] = features;
 
         let mut x4 = x4;
@@ -871,31 +797,19 @@ impl<B: Backend> Decoder<B> {
         self.conv_out1.forward(_p1)
     }
 
-    fn get_patches_batch(
-        &self,
-        x: Tensor<B, 4, Float>,
-        p: Tensor<B, 4, Float>,
-    ) -> Tensor<B, 4, Float> {
-        let [b, _, h, w] = p.dims();
-        let mut patches_batch = Vec::with_capacity(b);
-        for x_ in x.iter_dim(0) {
-            let [_, c_, h_, w_] = x_.dims();
-            let columns_x = (0..w_)
-                .step_by(w)
-                .map(|i| x_.clone().slice([0..1, 0..c_, 0..h_, i..i + w]));
-            let mut patches_x = Vec::new();
-            for column_x in columns_x {
-                let [_, c_, h_, w_] = column_x.dims();
-                patches_x.extend(
-                    (0..h_)
-                        .step_by(h)
-                        .map(|j| column_x.clone().slice([0..1, 0..c_, j..j + h, 0..w_])),
-                );
+    fn get_patches_batch(&self, x: Tensor<B, 4>, p: Tensor<B, 4>) -> Tensor<B, 4> {
+        let [b, c, h, w] = p.dims();
+        let [_, _, h_, w_] = x.dims();
+        let patch_count = (h_ / h) * (w_ / w);
+        let mut patches = Vec::with_capacity(patch_count);
+        for i in (0..w_).step_by(w) {
+            let column_x = x.clone().slice([0..b, 0..c, 0..h_, i..i + w]);
+            for j in (0..h_).step_by(h) {
+                let patch = column_x.clone().slice([0..b, 0..c, j..j + h, 0..w]);
+                patches.push(patch);
             }
-            let patch_sample = Tensor::cat(patches_x, 1);
-            patches_batch.push(patch_sample);
         }
-        Tensor::cat(patches_batch, 0)
+        Tensor::cat(patches, 1)
     }
 }
 
@@ -930,7 +844,7 @@ pub struct SimpleConvs<B: Backend> {
 }
 
 impl<B: Backend> SimpleConvs<B> {
-    pub fn forward(&self, x: Tensor<B, 4, Float>) -> Tensor<B, 4, Float> {
+    pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         let x = self.conv1.forward(x);
 
         self.conv_out.forward(x)

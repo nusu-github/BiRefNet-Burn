@@ -55,7 +55,7 @@ pub struct Mlp<B: Backend> {
 }
 
 impl<B: Backend> Mlp<B> {
-    pub fn forward(&self, x: Tensor<B, 3, Float>) -> Tensor<B, 3, Float> {
+    pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
         let x = self.fc1.forward(x);
         let x = self.act.forward(x);
         let x = self.drop.forward(x);
@@ -65,7 +65,7 @@ impl<B: Backend> Mlp<B> {
     }
 }
 
-fn window_partition<B: Backend>(x: Tensor<B, 4, Float>, window_size: usize) -> Tensor<B, 4, Float> {
+fn window_partition<B: Backend>(x: Tensor<B, 4>, window_size: usize) -> Tensor<B, 4> {
     let [b, h, w, c] = x.dims();
     let x = x.reshape([
         b,
@@ -81,11 +81,11 @@ fn window_partition<B: Backend>(x: Tensor<B, 4, Float>, window_size: usize) -> T
 }
 
 fn window_reverse<B: Backend>(
-    windows: Tensor<B, 4, Float>,
+    windows: Tensor<B, 4>,
     window_size: usize,
     h: usize,
     w: usize,
-) -> Tensor<B, 4, Float> {
+) -> Tensor<B, 4> {
     let b = windows.shape().dims[0] / (h * w / window_size / window_size);
     let x = windows.reshape([
         b as i32,
@@ -196,11 +196,7 @@ pub struct WindowAttention<B: Backend> {
 }
 
 impl<B: Backend> WindowAttention<B> {
-    pub fn forward(
-        &self,
-        x: Tensor<B, 3, Float>,
-        mask: Option<Tensor<B, 3, Float>>,
-    ) -> Tensor<B, 3, Float> {
+    pub fn forward(&self, x: Tensor<B, 3>, mask: Option<Tensor<B, 3>>) -> Tensor<B, 3> {
         let [b, n, c] = x.dims();
         let qkv = self
             .qkv
@@ -208,15 +204,15 @@ impl<B: Backend> WindowAttention<B> {
             .reshape([b, n, 3, self.num_heads, c / self.num_heads])
             .permute([2, 0, 3, 1, 4]);
         let [_, d2, d3, d4m, d5] = qkv.dims();
-        let q: Tensor<B, 4, Float> = qkv
+        let q: Tensor<B, 4> = qkv
             .clone()
             .slice([0..1, 0..d2, 0..d3, 0..d4m, 0..d5])
             .squeeze(0);
-        let k: Tensor<B, 4, Float> = qkv
+        let k: Tensor<B, 4> = qkv
             .clone()
             .slice([1..2, 0..d2, 0..d3, 0..d4m, 0..d5])
             .squeeze(0);
-        let v: Tensor<B, 4, Float> = qkv
+        let v: Tensor<B, 4> = qkv
             .clone()
             .slice([2..3, 0..d2, 0..d3, 0..d4m, 0..d5])
             .squeeze(0);
@@ -332,12 +328,12 @@ pub struct SwinTransformerBlock<B: Backend> {
 impl<B: Backend> SwinTransformerBlock<B> {
     pub fn forward(
         &self,
-        x: Tensor<B, 3, Float>,
+        x: Tensor<B, 3>,
         h: usize,
         w: usize,
-        mask_matrix: Tensor<B, 3, Float>,
-    ) -> Tensor<B, 3, Float> {
-        let [b, l, c] = x.dims();
+        mask_matrix: Tensor<B, 3>,
+    ) -> Tensor<B, 3> {
+        let [b, _l, c] = x.dims();
 
         let shortcut = x.clone();
         let x = self.norm1.forward(x);
@@ -356,8 +352,8 @@ impl<B: Backend> SwinTransformerBlock<B> {
         let (shifted_x, attn_mask) = if self.shift_size > 0 {
             let shifted_x = roll(
                 x,
-                vec![-(self.shift_size as i64), -(self.shift_size as i64)],
-                vec![1, 2],
+                &vec![-(self.shift_size as i64), -(self.shift_size as i64)],
+                &vec![1, 2],
             );
             let attn_mask = mask_matrix;
             (shifted_x, Some(attn_mask))
@@ -382,8 +378,8 @@ impl<B: Backend> SwinTransformerBlock<B> {
         let x = if self.shift_size > 0 {
             roll(
                 shifted_x,
-                vec![self.shift_size as i64, self.shift_size as i64],
-                vec![1, 2],
+                &vec![self.shift_size as i64, self.shift_size as i64],
+                &vec![1, 2],
             )
         } else {
             shifted_x
@@ -429,8 +425,8 @@ pub struct PatchMerging<B: Backend> {
 }
 
 impl<B: Backend> PatchMerging<B> {
-    pub fn forward(&self, x: Tensor<B, 3, Float>, h: usize, w: usize) -> Tensor<B, 3, Float> {
-        let [b, l, c] = x.dims();
+    pub fn forward(&self, x: Tensor<B, 3>, h: usize, w: usize) -> Tensor<B, 3> {
+        let [b, _l, c] = x.dims();
 
         let x = x.reshape([b, h, w, c]);
 
@@ -534,20 +530,13 @@ pub struct BasicLayer<B: Backend> {
 impl<B: Backend> BasicLayer<B> {
     pub fn forward(
         &self,
-        x: Tensor<B, 3, Float>,
+        x: Tensor<B, 3>,
         h: usize,
         w: usize,
-    ) -> (
-        Tensor<B, 3, Float>,
-        usize,
-        usize,
-        Tensor<B, 3, Float>,
-        usize,
-        usize,
-    ) {
+    ) -> (Tensor<B, 3>, usize, usize, Tensor<B, 3>, usize, usize) {
         let hp = ((h as f64) / self.window_size as f64).ceil() as usize * self.window_size;
         let wp = ((w as f64) / self.window_size as f64).ceil() as usize * self.window_size;
-        let mut img_mask: Tensor<B, 4, Float> = Tensor::zeros([1, hp, wp, 1], &x.device());
+        let mut img_mask: Tensor<B, 4> = Tensor::zeros([1, hp, wp, 1], &x.device());
         let h_slices = [
             (0, -(self.window_size as isize)),
             (-(self.window_size as isize), -(self.shift_size as isize)),
@@ -604,7 +593,7 @@ impl<B: Backend> BasicLayer<B> {
 
         let mask_windows = window_partition(img_mask, self.window_size);
         let mask_windows = mask_windows.reshape([-1, (self.window_size * self.window_size) as i32]);
-        let attn_mask: Tensor<B, 3, Float> =
+        let attn_mask: Tensor<B, 3> =
             mask_windows.clone().unsqueeze_dim(1) - mask_windows.unsqueeze_dim(2);
         let attn_mask = attn_mask
             .clone()
@@ -671,29 +660,34 @@ pub struct PatchEmbed<B: Backend> {
 }
 
 impl<B: Backend> PatchEmbed<B> {
-    pub fn forward(&self, x: Tensor<B, 4, Float>) -> Tensor<B, 4, Float> {
+    pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         let [_, _, h, w] = x.dims();
-        let mut x = x;
-        if w % self.patch_size != 0 {
-            x = x.pad(
+        let x = if w % self.patch_size != 0 {
+            x.pad(
                 (0, self.patch_size - (w % self.patch_size), 0, 0),
                 B::FloatElem::from_elem(0.0),
-            );
+            )
+        } else {
+            x
         };
-        if h % self.patch_size != 0 {
-            x = x.pad(
+        let x = if h % self.patch_size != 0 {
+            x.pad(
                 (0, 0, 0, self.patch_size - (h % self.patch_size)),
                 B::FloatElem::from_elem(0.0),
-            );
+            )
+        } else {
+            x
         };
-        x = self.proj.forward(x);
-        if let Some(norm) = &self.norm {
-            let [_, _, wh, ww] = x.dims();
-            x = x.flatten(2, 3).swap_dims(1, 2);
-            x = norm.forward(x);
-            x = x
-                .swap_dims(1, 2)
-                .reshape([-1, self.embed_dim as i32, wh as i32, ww as i32]);
+        let x = self.proj.forward(x);
+        let x = match &self.norm {
+            Some(norm) => {
+                let [_, _, wh, ww] = x.dims();
+                let x: Tensor<B, 3> = x.flatten(2, 3).swap_dims(1, 2);
+                let x = norm.forward(x);
+                x.swap_dims(1, 2)
+                    .reshape([-1, self.embed_dim as i32, wh as i32, ww as i32])
+            }
+            None => x,
         };
 
         x
@@ -841,7 +835,7 @@ impl SwinTransformerConfig {
 #[derive(Module, Debug)]
 pub struct SwinTransformer<B: Backend> {
     patch_embed: PatchEmbed<B>,
-    absolute_pos_embed: Option<Param<Tensor<B, 4, Float>>>,
+    absolute_pos_embed: Option<Param<Tensor<B, 4>>>,
     pos_drop: Dropout,
     num_layers: usize,
     layers: Vec<BasicLayer<B>>,
@@ -851,23 +845,26 @@ pub struct SwinTransformer<B: Backend> {
 }
 
 impl<B: Backend> SwinTransformer<B> {
-    pub fn forward(&self, x: Tensor<B, 4, Float>) -> [Tensor<B, 4, Float>; 4] {
-        let mut x = self.patch_embed.forward(x);
+    pub fn forward(&self, x: Tensor<B, 4>) -> [Tensor<B, 4>; 4] {
+        let x = self.patch_embed.forward(x);
 
         let [_, _, wh, ww] = x.dims();
-        if let Some(absolute_pos_embed) = self.absolute_pos_embed.clone() {
-            let absolute_pos_embed = interpolate(
-                absolute_pos_embed.deref().to_owned(),
-                [wh, ww],
-                InterpolateOptions::new(InterpolateMode::Bicubic),
-            );
 
-            x = x + absolute_pos_embed;
+        let x = match &self.absolute_pos_embed {
+            Some(absolute_pos_embed) => {
+                let absolute_pos_embed = interpolate(
+                    absolute_pos_embed.deref().to_owned(),
+                    [wh, ww],
+                    InterpolateOptions::new(InterpolateMode::Bicubic),
+                );
+
+                x + absolute_pos_embed
+            }
+            None => x,
         };
 
         let mut outs = Vec::new();
-        let [_, _, h, w] = x.dims();
-        let x: Tensor<B, 3, Float> = x.flatten(2, 3).swap_dims(1, 2);
+        let x: Tensor<B, 3> = x.flatten(2, 3).swap_dims(1, 2);
         let x = self.pos_drop.forward(x);
         let mut x = x;
         let mut wh = wh;

@@ -31,7 +31,7 @@ impl<B: Backend, const D: usize> Erfinv for Tensor<B, D, Float> {
 
 pub fn erfinv_<B: Backend, const D: usize>(y: Tensor<B, D, Float>) -> Tensor<B, D, Float> {
     let y_abs = y.clone().abs();
-    let result = y.zeros_like().add_scalar(f32::NAN);
+    let result = y.zeros_like() + f32::NAN;
 
     // Handle edge cases
     let mask = y_abs.clone().lower_equal_elem(1.0);
@@ -62,13 +62,13 @@ fn compute_central_range<B: Backend, const D: usize>(
     y: Tensor<B, D, Float>,
 ) -> Tensor<B, D, Float> {
     let z = y.clone().powf_scalar(2.0);
-    let num = z.clone().mul_scalar(A[3]).add_scalar(A[2]);
-    let num = (num * z.clone()).add_scalar(A[1]);
-    let num = (num * z.clone()).add_scalar(A[0]);
-    let dem = z.clone().mul_scalar(B[3]).add_scalar(B[2]);
-    let dem = (dem * z.clone()).add_scalar(B[1]);
-    let dem = (dem * z.clone()).add_scalar(B[0]);
-    let dem = (dem * z).add_scalar(1.0);
+    let num = z.clone() * A[3] + A[2];
+    let num = (num * z.clone()) + A[1];
+    let num = (num * z.clone()) + A[0];
+    let dem = z.clone() * B[3] + B[2];
+    let dem = (dem * z.clone()) + B[1];
+    let dem = (dem * z.clone()) + B[0];
+    let dem = (dem * z) + 1.0;
     y * num / dem
 }
 
@@ -76,12 +76,12 @@ fn compute_outer_range<B: Backend, const _D: usize>(
     y: Tensor<B, _D, Float>,
 ) -> Tensor<B, _D, Float> {
     let y_abs = y.clone().abs();
-    let z = (-(-y_abs.clone().sub_scalar(1.0).div_scalar(2.0)).log()).sqrt();
-    let num = z.clone().mul_scalar(C[3]).add_scalar(C[2]);
-    let num = (num * z.clone()).add_scalar(C[1]);
-    let num = (num * z.clone()).add_scalar(C[0]);
-    let dem = z.clone().mul_scalar(D[1]).add_scalar(D[0]);
-    let dem = (dem * z).add_scalar(1.0);
+    let z = (-(-y_abs.clone() - 1.0 / 2.0).log()).sqrt();
+    let num = z.clone() * C[3] + C[2];
+    let num = (num * z.clone()) + C[1];
+    let num = (num * z.clone()) + C[0];
+    let dem = z.clone() * D[1] + D[0];
+    let dem = (dem * z) + 1.0;
     y.sign() * num / dem
 }
 
@@ -92,9 +92,7 @@ fn apply_newton_raphson<B: Backend, const D: usize>(
     let two_over_sqrt_pi = 2.0 / std::f32::consts::PI.sqrt();
     for _ in 0..2 {
         let correction = (result.clone().erf() - y.clone())
-            / ((-result.clone().powf_scalar(2.0))
-                .exp()
-                .mul_scalar(two_over_sqrt_pi));
+            / ((-result.clone().powf_scalar(2.0)).exp() * two_over_sqrt_pi);
         result = result - correction;
     }
     result

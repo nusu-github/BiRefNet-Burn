@@ -37,7 +37,7 @@ pub struct _ASPPModule<B: Backend> {
 }
 
 impl<B: Backend> _ASPPModule<B> {
-    pub fn forward(&self, x: Tensor<B, 4, Float>) -> Tensor<B, 4, Float> {
+    pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         todo!()
     }
 }
@@ -76,7 +76,7 @@ pub struct ASPP<B: Backend> {
 }
 
 impl<B: Backend> ASPP<B> {
-    pub fn forward(&self, x: Tensor<B, 4, Float>) -> Tensor<B, 4, Float> {
+    pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         todo!()
     }
 }
@@ -118,7 +118,7 @@ pub struct _ASPPModuleDeformable<B: Backend> {
 }
 
 impl<B: Backend> _ASPPModuleDeformable<B> {
-    pub fn forward(&self, x: Tensor<B, 4, Float>) -> Tensor<B, 4, Float> {
+    pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         let x = self.atrous_conv.forward(x);
         let x = if let Some(bn) = self.bn.as_ref() {
             bn.forward(x)
@@ -211,7 +211,7 @@ pub struct ASPPDeformable<B: Backend> {
 }
 
 impl<B: Backend> ASPPDeformable<B> {
-    pub fn forward(&self, x: Tensor<B, 4, Float>) -> Tensor<B, 4, Float> {
+    pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         let x1 = self.aspp1.forward(x.clone());
         let x_aspp_deforms = self
             .aspp_deforms

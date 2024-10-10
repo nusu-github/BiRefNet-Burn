@@ -3,7 +3,6 @@ mod decoder_blocks;
 mod deform_conv;
 mod lateral_blocks;
 mod mlp;
-mod prompt_encoder;
 mod utils;
 
 pub use aspp::*;
