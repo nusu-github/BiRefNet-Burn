@@ -1,0 +1,13 @@
+[package]
+name = "inference"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+birefnet-burn = { path = "../../birefnet" }
+burn = { workspace = true, default-features = false, features = ["cuda-jit"] }
+image = { version = "0.25.2", default-features = false, features = ["png", "jpeg"] }
+anyhow = "1.0.89"
+num-traits = "0.2.19"

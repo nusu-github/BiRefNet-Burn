@@ -824,7 +824,7 @@ impl SwinTransformerConfig {
             pos_drop: DropoutConfig::new(self.drop_rate).init(),
             num_layers,
             layers,
-            num_features,
+            num_features: num_features.try_into().unwrap(),
             norm_layers,
             out_indices: self.out_indices,
             absolute_pos_embed,
@@ -841,7 +841,7 @@ pub struct SwinTransformer<B: Backend> {
     layers: Vec<BasicLayer<B>>,
     norm_layers: Vec<LayerNorm<B>>,
     out_indices: [usize; 4],
-    num_features: Vec<usize>,
+    num_features: [usize; 4],
 }
 
 impl<B: Backend> SwinTransformer<B> {
@@ -892,6 +892,7 @@ pub fn swin_v1_t<B: Backend>(device: &Device<B>) -> SwinTransformer<B> {
         .with_depths([2, 2, 6, 2])
         .with_num_heads([3, 6, 12, 24])
         .with_window_size(7)
+        .with_patch_norm(true)
         .init(device)
 }
 
@@ -901,6 +902,7 @@ pub fn swin_v1_s<B: Backend>(device: &Device<B>) -> SwinTransformer<B> {
         .with_depths([2, 2, 18, 2])
         .with_num_heads([3, 6, 12, 24])
         .with_window_size(7)
+        .with_patch_norm(true)
         .init(device)
 }
 
@@ -910,6 +912,7 @@ pub fn swin_v1_b<B: Backend>(device: &Device<B>) -> SwinTransformer<B> {
         .with_depths([2, 2, 18, 2])
         .with_num_heads([4, 8, 16, 32])
         .with_window_size(12)
+        .with_patch_norm(true)
         .init(device)
 }
 
@@ -919,5 +922,6 @@ pub fn swin_v1_l<B: Backend>(device: &Device<B>) -> SwinTransformer<B> {
         .with_depths([2, 2, 18, 2])
         .with_num_heads([6, 12, 24, 48])
         .with_window_size(12)
+        .with_patch_norm(true)
         .init(device)
 }

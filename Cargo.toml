@@ -1,25 +1,19 @@
-[package]
-name = "birefnet-burn"
-version = "0.1.0"
+[workspace]
+resolver = "2"
+
+members = [
+    "birefnet",
+    "examples/*",
+    #    "tests/*",
+]
+
+[workspace.package]
 edition = "2021"
+version = "0.1.0"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 
-[features]
-tch-cpu = ["burn/tch"]
-tch-gpu = ["burn/tch"]
-cuda = ["burn/cuda-jit"]
-wgpu = ["burn/wgpu"]
-ndarray = ["burn/ndarray"]
-
-# To import pytorch weights
-import = ["burn-import"]
-
-[dependencies]
-anyhow = "1"
-burn = { git = "https://github.com/tracel-ai/burn", default-features = false, features = ["std"] }
-burn-import = { git = "https://github.com/tracel-ai/burn", optional = true }
-libm = "0.2.8"
-
-[dev-dependencies]
+[workspace.dependencies]
 burn = { git = "https://github.com/tracel-ai/burn", default-features = false }
+burn-import = { git = "https://github.com/tracel-ai/burn" }
+libm = "0.2.8"

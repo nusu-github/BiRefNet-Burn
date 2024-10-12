@@ -1,0 +1,11 @@
+[package]
+name = "converter"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+birefnet-burn = { path = "../../birefnet" }
+burn = { workspace = true, default-features = false, features = ["wgpu"] }
+burn-import = { workspace = true }

@@ -1,16 +1,3 @@
-use burn::{
-    nn::{
-        conv::{Conv2d, Conv2dConfig},
-        BatchNormConfig, PaddingConfig2d, Relu,
-    },
-    prelude::*,
-    tensor::{
-        activation::sigmoid,
-        module::interpolate,
-        ops::{InterpolateMode, InterpolateOptions},
-    },
-};
-
 use super::{
     build_backbone, ASPPConfig, ASPPDeformable, ASPPDeformableConfig, BackboneEnum, BasicDecBlk,
     BasicDecBlkConfig, BasicLatBlk, BasicLatBlkConfig, ResBlk, ResBlkConfig, ASPP,
@@ -18,7 +5,19 @@ use super::{
 use crate::config::{DecBlk, LatBlk, MulSclIpt};
 use crate::{
     config::{ModelConfig, SqueezeBlock},
-    special::{Identity, Sequential, SequentialType},
+    special::Identity,
+};
+use burn::{
+    nn::{
+        conv::{Conv2d, Conv2dConfig},
+        BatchNorm, BatchNormConfig, PaddingConfig2d, Relu,
+    },
+    prelude::*,
+    tensor::{
+        activation::sigmoid,
+        module::interpolate,
+        ops::{InterpolateMode, InterpolateOptions},
+    },
 };
 
 #[derive(Module, Debug)]
@@ -303,6 +302,32 @@ pub struct DecoderConfig {
     channels: [usize; 4],
 }
 
+#[derive(Module, Debug)]
+struct GdtConvs<B: Backend> {
+    conv: Conv2d<B>,
+    bn: BatchNorm<B, 2>,
+    relu: Relu,
+}
+
+impl<B: Backend> GdtConvs<B> {
+    fn init(
+        conv2d_config: Conv2dConfig,
+        batch_norm_config: BatchNormConfig,
+        device: &Device<B>,
+    ) -> Self {
+        let conv = conv2d_config.init(device);
+        let bn = batch_norm_config.init(device);
+        let relu = Relu::new();
+        Self { conv, bn, relu }
+    }
+
+    fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
+        let x = self.conv.forward(x);
+        let x = self.bn.forward(x);
+        self.relu.forward(x)
+    }
+}
+
 impl DecoderConfig {
     const N_DEC_IPT: usize = 64;
     const IC: usize = 64;
@@ -430,36 +455,27 @@ impl DecoderConfig {
             );
 
             if self.config.out_ref {
-                gdt_convs_4 = Some(Sequential::new(vec![
-                    SequentialType::Conv2d(
-                        Conv2dConfig::new([self.channels[1], Self::_N], [3, 3])
-                            .with_stride([1, 1])
-                            .with_padding(PaddingConfig2d::Explicit(1, 1))
-                            .init(device),
-                    ),
-                    SequentialType::BatchNorm2d(BatchNormConfig::new(Self::_N).init(device)),
-                    SequentialType::ReLU(Relu::new()),
-                ]));
-                gdt_convs_3 = Some(Sequential::new(vec![
-                    SequentialType::Conv2d(
-                        Conv2dConfig::new([self.channels[2], Self::_N], [3, 3])
-                            .with_stride([1, 1])
-                            .with_padding(PaddingConfig2d::Explicit(1, 1))
-                            .init(device),
-                    ),
-                    SequentialType::BatchNorm2d(BatchNormConfig::new(Self::_N).init(device)),
-                    SequentialType::ReLU(Relu::new()),
-                ]));
-                gdt_convs_2 = Some(Sequential::new(vec![
-                    SequentialType::Conv2d(
-                        Conv2dConfig::new([self.channels[3], Self::_N], [3, 3])
-                            .with_stride([1, 1])
-                            .with_padding(PaddingConfig2d::Explicit(1, 1))
-                            .init(device),
-                    ),
-                    SequentialType::BatchNorm2d(BatchNormConfig::new(Self::_N).init(device)),
-                    SequentialType::ReLU(Relu::new()),
-                ]));
+                gdt_convs_4 = Some(GdtConvs::init(
+                    Conv2dConfig::new([self.channels[1], Self::_N], [3, 3])
+                        .with_stride([1, 1])
+                        .with_padding(PaddingConfig2d::Explicit(1, 1)),
+                    BatchNormConfig::new(Self::_N),
+                    device,
+                ));
+                gdt_convs_3 = Some(GdtConvs::init(
+                    Conv2dConfig::new([self.channels[2], Self::_N], [3, 3])
+                        .with_stride([1, 1])
+                        .with_padding(PaddingConfig2d::Explicit(1, 1)),
+                    BatchNormConfig::new(Self::_N),
+                    device,
+                ));
+                gdt_convs_2 = Some(GdtConvs::init(
+                    Conv2dConfig::new([self.channels[3], Self::_N], [3, 3])
+                        .with_stride([1, 1])
+                        .with_padding(PaddingConfig2d::Explicit(1, 1)),
+                    BatchNormConfig::new(Self::_N),
+                    device,
+                ));
 
                 gdt_convs_pred_4 = Some(
                     Conv2dConfig::new([Self::_N, 1], [1, 1])
@@ -593,9 +609,9 @@ pub struct Decoder<B: Backend> {
     conv_ms_spvn_4: Option<Conv2d<B>>,
     conv_ms_spvn_3: Option<Conv2d<B>>,
     conv_ms_spvn_2: Option<Conv2d<B>>,
-    gdt_convs_4: Option<Sequential<B>>,
-    gdt_convs_3: Option<Sequential<B>>,
-    gdt_convs_2: Option<Sequential<B>>,
+    gdt_convs_4: Option<GdtConvs<B>>,
+    gdt_convs_3: Option<GdtConvs<B>>,
+    gdt_convs_2: Option<GdtConvs<B>>,
     gdt_convs_pred_4: Option<Conv2d<B>>,
     gdt_convs_pred_3: Option<Conv2d<B>>,
     gdt_convs_pred_2: Option<Conv2d<B>>,

@@ -65,10 +65,10 @@ pub struct ASPP<B: Backend> {
     aspp3: _ASPPModule<B>,
     aspp4: _ASPPModule<B>,
     // nn.Sequential
-    global_avg_pool_1: AdaptiveAvgPool2d,
-    global_avg_pool_2: Conv2d<B>,
-    global_avg_pool_3: Option<BatchNorm<B, 2>>,
-    global_avg_pool_4: Relu,
+    global_avg_pool_0: AdaptiveAvgPool2d,
+    global_avg_pool_1: Conv2d<B>,
+    global_avg_pool_2: Option<BatchNorm<B, 2>>,
+    global_avg_pool_3: Relu,
     conv1: Conv2d<B>,
     bn1: Option<BatchNorm<B, 2>>,
     relu: Relu,
@@ -161,13 +161,13 @@ impl ASPPDeformableConfig {
             })
             .collect::<Vec<_>>();
 
-        let global_avg_pool_1 = AdaptiveAvgPool2dConfig::new([1, 1]).init();
-        let global_avg_pool_2 = Conv2dConfig::new([self.in_channels, in_channelster], [1, 1])
+        let global_avg_pool_0 = AdaptiveAvgPool2dConfig::new([1, 1]).init();
+        let global_avg_pool_1 = Conv2dConfig::new([self.in_channels, in_channelster], [1, 1])
             .with_stride([1, 1])
             .with_bias(false)
             .init(device);
-        let global_avg_pool_3 = BatchNormConfig::new(in_channelster).init(device);
-        let global_avg_pool_4 = Relu::new();
+        let global_avg_pool_2 = BatchNormConfig::new(in_channelster).init(device);
+        let global_avg_pool_3 = Relu::new();
         let conv1 = Conv2dConfig::new(
             [
                 self.in_channels * (2 + self.parallel_block_sizes.len()),
@@ -184,10 +184,10 @@ impl ASPPDeformableConfig {
         ASPPDeformable {
             aspp1,
             aspp_deforms,
+            global_avg_pool_0,
             global_avg_pool_1,
-            global_avg_pool_2,
-            global_avg_pool_3: Some(global_avg_pool_3),
-            global_avg_pool_4,
+            global_avg_pool_2: Some(global_avg_pool_2),
+            global_avg_pool_3,
             conv1,
             bn1: Some(bn1),
             relu,
@@ -200,10 +200,10 @@ impl ASPPDeformableConfig {
 pub struct ASPPDeformable<B: Backend> {
     aspp1: _ASPPModuleDeformable<B>,
     aspp_deforms: Vec<_ASPPModuleDeformable<B>>,
-    global_avg_pool_1: AdaptiveAvgPool2d,
-    global_avg_pool_2: Conv2d<B>,
-    global_avg_pool_3: Option<BatchNorm<B, 2>>,
-    global_avg_pool_4: Relu,
+    global_avg_pool_0: AdaptiveAvgPool2d,
+    global_avg_pool_1: Conv2d<B>,
+    global_avg_pool_2: Option<BatchNorm<B, 2>>,
+    global_avg_pool_3: Relu,
     conv1: Conv2d<B>,
     bn1: Option<BatchNorm<B, 2>>,
     relu: Relu,
@@ -218,14 +218,14 @@ impl<B: Backend> ASPPDeformable<B> {
             .iter()
             .map(|aspp| aspp.forward(x.clone()))
             .collect::<Vec<_>>();
-        let x5 = self.global_avg_pool_1.forward(x.clone());
-        let x5 = self.global_avg_pool_2.forward(x5);
-        let x5 = if let Some(bn) = &self.global_avg_pool_3 {
+        let x5 = self.global_avg_pool_0.forward(x.clone());
+        let x5 = self.global_avg_pool_1.forward(x5);
+        let x5 = if let Some(bn) = &self.global_avg_pool_2 {
             bn.forward(x5)
         } else {
             x5
         };
-        let x5 = self.global_avg_pool_4.forward(x5);
+        let x5 = self.global_avg_pool_3.forward(x5);
         let [_, _, d3, d4] = x1.dims();
         let x5 = interpolate(
             x5,
