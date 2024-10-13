@@ -1,13 +1,14 @@
 use std::ops::{Div, Mul};
 
-use image::{GenericImageView, ImageBuffer, Luma, LumaA, Pixel, Primitive};
+use crate::imageops_ai::Image;
+use image::{GenericImageView, Luma, LumaA, Pixel, Primitive};
 use num_traits::ToPrimitive;
 
 pub trait ClipMinimumBorder {
     fn clip_minimum_border(self, iterations: usize, threshold: u8) -> Self;
 }
 
-impl<P, S> ClipMinimumBorder for ImageBuffer<P, Vec<S>>
+impl<P, S> ClipMinimumBorder for Image<P>
 where
     P: Pixel<Subpixel = S> + 'static,
     S: Primitive + 'static,
@@ -35,7 +36,7 @@ trait ImageProcessing<P: Pixel> {
         -> u8;
 }
 
-impl<P: Pixel> ImageProcessing<P> for ImageBuffer<P, Vec<P::Subpixel>>
+impl<P: Pixel> ImageProcessing<P> for Image<P>
 where
     <P as Pixel>::Subpixel: 'static,
 {

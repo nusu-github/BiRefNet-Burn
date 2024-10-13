@@ -33,20 +33,22 @@ impl BasicDecBlkConfig {
             .with_padding(PaddingConfig2d::Explicit(1, 1))
             .init(device);
         let relu_in = Relu::new();
-        let dec_att = match self.dec_att {
-            SqueezeBlock::ASPP(_) => Some(BasicDecSqueezeBlockModuleEnum::ASPP(
-                ASPPConfig::new()
-                    .with_in_channels(self.inter_channels)
-                    .init(device),
-            )),
-            SqueezeBlock::ASPPDeformable(_) => {
-                Some(BasicDecSqueezeBlockModuleEnum::ASPPDeformable(
-                    ASPPDeformableConfig::new()
+        let dec_att = {
+            match self.dec_att {
+                SqueezeBlock::ASPP(_) => Some(BasicDecSqueezeBlockModuleEnum::ASPP(
+                    ASPPConfig::new()
                         .with_in_channels(self.inter_channels)
                         .init(device),
-                ))
+                )),
+                SqueezeBlock::ASPPDeformable(_) => {
+                    Some(BasicDecSqueezeBlockModuleEnum::ASPPDeformable(
+                        ASPPDeformableConfig::new()
+                            .with_in_channels(self.inter_channels)
+                            .init(device),
+                    ))
+                }
+                _ => None,
             }
-            _ => None,
         };
         let conv_out = Conv2dConfig::new([self.inter_channels, self.out_channels], [3, 3])
             .with_stride([1, 1])
@@ -79,26 +81,27 @@ pub struct BasicDecBlk<B: Backend> {
 impl<B: Backend> BasicDecBlk<B> {
     pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         let x = self.conv_in.forward(x);
-        let x = if let Some(bn_in) = &self.bn_in {
-            bn_in.forward(x)
-        } else {
-            x
+        let x = {
+            match &self.bn_in {
+                Some(bn_in) => bn_in.forward(x),
+                None => x,
+            }
         };
         let x = self.relu_in.forward(x);
-        let x = if let Some(dec_att) = &self.dec_att {
-            match dec_att {
-                BasicDecSqueezeBlockModuleEnum::ASPP(dec_att) => dec_att.forward(x),
-                BasicDecSqueezeBlockModuleEnum::ASPPDeformable(dec_att) => dec_att.forward(x),
+        let x = {
+            match &self.dec_att {
+                Some(dec_att) => match dec_att {
+                    BasicDecSqueezeBlockModuleEnum::ASPP(dec_att) => dec_att.forward(x),
+                    BasicDecSqueezeBlockModuleEnum::ASPPDeformable(dec_att) => dec_att.forward(x),
+                },
+                None => x,
             }
-        } else {
-            x
         };
         let x = self.conv_out.forward(x);
 
-        if let Some(bn_out) = &self.bn_out {
-            bn_out.forward(x)
-        } else {
-            x
+        match &self.bn_out {
+            Some(bn_out) => bn_out.forward(x),
+            None => x,
         }
     }
 }
@@ -134,22 +137,25 @@ impl<B: Backend> ResBlk<B> {
     pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         let _x = self.conv_resi.forward(x.clone());
         let x = self.conv_in.forward(x);
-        let x = if let Some(bn_in) = &self.bn_in {
-            bn_in.forward(x)
-        } else {
-            x
+        let x = {
+            match &self.bn_in {
+                Some(bn_in) => bn_in.forward(x),
+                None => x,
+            }
         };
         let x = self.relu_in.forward(x);
-        let x = if let Some(dec_att) = &self.dec_att {
-            dec_att.forward(x)
-        } else {
-            x
+        let x = {
+            match &self.dec_att {
+                Some(dec_att) => dec_att.forward(x),
+                None => x,
+            }
         };
         let x = self.conv_out.forward(x);
-        let x = if let Some(bn_out) = &self.bn_out {
-            bn_out.forward(x)
-        } else {
-            x
+        let x = {
+            match &self.bn_out {
+                Some(bn_out) => bn_out.forward(x),
+                None => x,
+            }
         };
         x + _x
     }

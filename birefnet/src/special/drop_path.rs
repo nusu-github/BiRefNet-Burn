@@ -1,8 +1,4 @@
-use burn::{
-    config::Config,
-    module::Module,
-    tensor::{backend::Backend, Distribution, Float, Tensor},
-};
+use burn::{prelude::*, tensor::Distribution};
 
 #[derive(Config, Debug)]
 pub struct DropPathConfig {

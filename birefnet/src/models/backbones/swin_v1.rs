@@ -1,5 +1,3 @@
-use std::ops::Deref;
-
 use burn::{
     module::Param,
     nn::{
@@ -132,7 +130,7 @@ impl WindowAttentionConfig {
                 .float();
         let coords_flatten: Tensor<B, 2> = coords.flatten(1, 2);
         let relative_coords =
-            coords_flatten.clone().unsqueeze_dim(2) - coords_flatten.unsqueeze_dim(1);
+            coords_flatten.clone().unsqueeze_dim(2) - coords_flatten.clone().unsqueeze_dim(1);
         let relative_coords = relative_coords.permute([1, 2, 0]);
         let [b, d1, _] = relative_coords.dims();
         let relative_coords = relative_coords.clone().slice_assign(
@@ -212,18 +210,14 @@ impl<B: Backend> WindowAttention<B> {
             .clone()
             .slice([1..2, 0..d2, 0..d3, 0..d4m, 0..d5])
             .squeeze(0);
-        let v: Tensor<B, 4> = qkv
-            .clone()
-            .slice([2..3, 0..d2, 0..d3, 0..d4m, 0..d5])
-            .squeeze(0);
+        let v: Tensor<B, 4> = qkv.slice([2..3, 0..d2, 0..d3, 0..d4m, 0..d5]).squeeze(0);
 
         let q = q * self.scale;
 
         let attn = q.matmul(k.swap_dims(2, 3));
         let relative_position_bias = self
             .relative_position_bias_table
-            .deref()
-            .clone()
+            .val()
             .select(0, self.relative_position_index.val().reshape([-1]).int())
             .reshape([
                 (self.window_size[0] * self.window_size[1]) as i32,
@@ -233,14 +227,16 @@ impl<B: Backend> WindowAttention<B> {
             .permute([2, 0, 1]);
         let attn = attn + relative_position_bias.unsqueeze();
 
-        let attn = match mask {
-            Some(mask) => {
-                let [nw, _, _] = mask.dims();
-                let attn = attn.reshape([b / nw, nw, self.num_heads, n, n])
-                    + mask.unsqueeze_dim::<4>(1).unsqueeze();
-                attn.reshape([-1, self.num_heads as i32, n as i32, n as i32])
+        let attn = {
+            match mask {
+                Some(mask) => {
+                    let [nw, _, _] = mask.dims();
+                    let attn = attn.reshape([b / nw, nw, self.num_heads, n, n])
+                        + mask.unsqueeze_dim::<4>(1).unsqueeze();
+                    attn.reshape([-1, self.num_heads as i32, n as i32, n as i32])
+                }
+                None => attn,
             }
-            None => attn,
         };
 
         let attn = softmax(attn, 3);
@@ -345,20 +341,25 @@ impl<B: Backend> SwinTransformerBlock<B> {
         let pad_b = (self.window_size - h % self.window_size) % self.window_size;
         let x = x
             .permute([0, 3, 1, 2])
-            .pad((pad_l, pad_r, pad_t, pad_b), B::FloatElem::from_elem(0.0))
+            .pad(
+                (pad_l, pad_r, pad_t, pad_b),
+                ElementConversion::from_elem(0.0),
+            )
             .permute([0, 2, 3, 1]);
         let [_, hp, wp, _] = x.dims();
 
-        let (shifted_x, attn_mask) = if self.shift_size > 0 {
-            let shifted_x = roll(
-                x,
-                &vec![-(self.shift_size as i64), -(self.shift_size as i64)],
-                &vec![1, 2],
-            );
-            let attn_mask = mask_matrix;
-            (shifted_x, Some(attn_mask))
-        } else {
-            (x, None)
+        let (shifted_x, attn_mask) = {
+            if self.shift_size > 0 {
+                let shifted_x = roll(
+                    x,
+                    &vec![-(self.shift_size as i64), -(self.shift_size as i64)],
+                    &vec![1, 2],
+                );
+                let attn_mask = mask_matrix;
+                (shifted_x, Some(attn_mask))
+            } else {
+                (x, None)
+            }
         };
 
         let x_window = window_partition(shifted_x, self.window_size);
@@ -375,21 +376,25 @@ impl<B: Backend> SwinTransformerBlock<B> {
         ]);
         let shifted_x = window_reverse(attn_window, self.window_size, hp, wp);
 
-        let x = if self.shift_size > 0 {
-            roll(
-                shifted_x,
-                &vec![self.shift_size as i64, self.shift_size as i64],
-                &vec![1, 2],
-            )
-        } else {
-            shifted_x
+        let x = {
+            if self.shift_size > 0 {
+                roll(
+                    shifted_x,
+                    &vec![self.shift_size as i64, self.shift_size as i64],
+                    &vec![1, 2],
+                )
+            } else {
+                shifted_x
+            }
         };
 
-        let x = if pad_r > 0 || pad_b > 0 {
-            let [d1, _, _, d4] = x.dims();
-            x.slice([0..d1, 0..h, 0..w, 0..d4])
-        } else {
-            x
+        let x = {
+            if pad_r > 0 || pad_b > 0 {
+                let [d1, _, _, d4] = x.dims();
+                x.slice([0..d1, 0..h, 0..w, 0..d4])
+            } else {
+                x
+            }
         };
 
         let x = x.reshape([b, h * w, c]);
@@ -426,19 +431,22 @@ pub struct PatchMerging<B: Backend> {
 
 impl<B: Backend> PatchMerging<B> {
     pub fn forward(&self, x: Tensor<B, 3>, h: usize, w: usize) -> Tensor<B, 3> {
+        let device = x.device();
+
         let [b, _l, c] = x.dims();
 
         let x = x.reshape([b, h, w, c]);
 
         let pad_input = h % 2 == 1 || w % 2 == 1;
 
-        let x = if pad_input {
-            x.pad((0, h % 2, 0, w % 2), B::FloatElem::from_elem(0.0))
-        } else {
-            x
+        let x = {
+            if pad_input {
+                x.pad((0, h % 2, 0, w % 2), ElementConversion::from_elem(0.0))
+            } else {
+                x
+            }
         };
 
-        let device = x.device();
         let top_idx = Tensor::arange_step(0..h as i64, 2, &device);
         let bottom_idx = Tensor::arange_step(1..h as i64, 2, &device);
         let left_idx = Tensor::arange_step(0..w as i64, 2, &device);
@@ -501,10 +509,12 @@ impl BasicLayerConfig {
                     .init(device)
             })
             .collect::<Vec<_>>();
-        let downsample = if self.downsample {
-            Some(PatchMergingConfig::new(self.dim).init(device))
-        } else {
-            None
+        let downsample = {
+            if self.downsample {
+                Some(PatchMergingConfig::new(self.dim).init(device))
+            } else {
+                None
+            }
         };
 
         BasicLayer {
@@ -521,9 +531,6 @@ pub struct BasicLayer<B: Backend> {
     window_size: usize,
     shift_size: usize,
     blocks: Vec<SwinTransformerBlock<B>>,
-    // TODO: Checkpoint
-    // #[config(default = "false")]
-    // use_checkpoint: bool,
     downsample: Option<PatchMerging<B>>,
 }
 
@@ -534,9 +541,11 @@ impl<B: Backend> BasicLayer<B> {
         h: usize,
         w: usize,
     ) -> (Tensor<B, 3>, usize, usize, Tensor<B, 3>, usize, usize) {
+        let device = x.device();
+
         let hp = ((h as f64) / self.window_size as f64).ceil() as usize * self.window_size;
         let wp = ((w as f64) / self.window_size as f64).ceil() as usize * self.window_size;
-        let mut img_mask: Tensor<B, 4> = Tensor::zeros([1, hp, wp, 1], &x.device());
+        let mut img_mask: Tensor<B, 4> = Tensor::zeros([1, hp, wp, 1], &device);
         let h_slices = [
             (0, -(self.window_size as isize)),
             (-(self.window_size as isize), -(self.shift_size as isize)),
@@ -566,7 +575,7 @@ impl<B: Backend> BasicLayer<B> {
                         }..((d3 as isize + we) as usize),
                         0..d4,
                     ],
-                    Tensor::zeros(
+                    Tensor::full(
                         [
                             d1,
                             (if hs > 0 {
@@ -583,9 +592,9 @@ impl<B: Backend> BasicLayer<B> {
                                 .end,
                             d4,
                         ],
-                        &x.device(),
-                    )
-                    .add_scalar(cnt),
+                        cnt,
+                        &device,
+                    ),
                 );
                 cnt += 1;
             }
@@ -636,10 +645,12 @@ impl PatchEmbedConfig {
         )
         .with_stride([self.patch_size, self.patch_size])
         .init(device);
-        let norm = if self.norm_layer {
-            Some(LayerNormConfig::new(self.embed_dim).init(device))
-        } else {
-            None
+        let norm = {
+            if self.norm_layer {
+                Some(LayerNormConfig::new(self.embed_dim).init(device))
+            } else {
+                None
+            }
         };
 
         PatchEmbed {
@@ -662,32 +673,38 @@ pub struct PatchEmbed<B: Backend> {
 impl<B: Backend> PatchEmbed<B> {
     pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         let [_, _, h, w] = x.dims();
-        let x = if w % self.patch_size != 0 {
-            x.pad(
-                (0, self.patch_size - (w % self.patch_size), 0, 0),
-                B::FloatElem::from_elem(0.0),
-            )
-        } else {
-            x
+        let x = {
+            if w % self.patch_size != 0 {
+                x.pad(
+                    (0, self.patch_size - (w % self.patch_size), 0, 0),
+                    B::FloatElem::from_elem(0.0),
+                )
+            } else {
+                x
+            }
         };
-        let x = if h % self.patch_size != 0 {
-            x.pad(
-                (0, 0, 0, self.patch_size - (h % self.patch_size)),
-                B::FloatElem::from_elem(0.0),
-            )
-        } else {
-            x
+        let x = {
+            if h % self.patch_size != 0 {
+                x.pad(
+                    (0, 0, 0, self.patch_size - (h % self.patch_size)),
+                    B::FloatElem::from_elem(0.0),
+                )
+            } else {
+                x
+            }
         };
         let x = self.proj.forward(x);
-        let x = match &self.norm {
-            Some(norm) => {
-                let [_, _, wh, ww] = x.dims();
-                let x: Tensor<B, 3> = x.flatten(2, 3).swap_dims(1, 2);
-                let x = norm.forward(x);
-                x.swap_dims(1, 2)
-                    .reshape([-1, self.embed_dim as i32, wh as i32, ww as i32])
+        let x = {
+            match &self.norm {
+                Some(norm) => {
+                    let [_, _, wh, ww] = x.dims();
+                    let x: Tensor<B, 3> = x.flatten(2, 3).swap_dims(1, 2);
+                    let x = norm.forward(x);
+                    x.swap_dims(1, 2)
+                        .reshape([-1, self.embed_dim as i32, wh as i32, ww as i32])
+                }
+                None => x,
             }
-            None => x,
         };
 
         x
@@ -725,15 +742,12 @@ pub struct SwinTransformerConfig {
     // norm_layer: f64,
     #[config(default = "false")]
     ape: bool,
-    #[config(default = "false")]
+    #[config(default = "true")]
     patch_norm: bool,
     #[config(default = "[0, 1, 2, 3]")]
     out_indices: [usize; 4],
     #[config(default = "-1")]
     frozen_stages: i32,
-    // TODO: Checkpoint
-    // #[config(default = "false")]
-    // use_checkpoint: bool,
 }
 
 fn linspace(start: f64, end: f64, steps: usize) -> Vec<f64> {
@@ -850,17 +864,19 @@ impl<B: Backend> SwinTransformer<B> {
 
         let [_, _, wh, ww] = x.dims();
 
-        let x = match &self.absolute_pos_embed {
-            Some(absolute_pos_embed) => {
-                let absolute_pos_embed = interpolate(
-                    absolute_pos_embed.deref().to_owned(),
-                    [wh, ww],
-                    InterpolateOptions::new(InterpolateMode::Bicubic),
-                );
+        let x = {
+            match &self.absolute_pos_embed {
+                Some(absolute_pos_embed) => {
+                    let absolute_pos_embed = interpolate(
+                        absolute_pos_embed.val(),
+                        [wh, ww],
+                        InterpolateOptions::new(InterpolateMode::Bicubic),
+                    );
 
-                x + absolute_pos_embed
+                    x + absolute_pos_embed
+                }
+                None => x,
             }
-            None => x,
         };
 
         let mut outs = Vec::new();
@@ -870,12 +886,12 @@ impl<B: Backend> SwinTransformer<B> {
         let mut wh = wh;
         let mut ww = ww;
         for i in 0..self.num_layers {
-            let (x_out, h, w, x_, wh_, ww_) = self.layers[i].forward(x.clone(), wh, ww);
+            let (x_out, h, w, x_, wh_, ww_) = self.layers[i].forward(x, wh, ww);
             x = x_;
             wh = wh_;
             ww = ww_;
             if self.out_indices.contains(&i) {
-                let x_out = self.norm_layers[i].forward(x_out.clone());
+                let x_out = self.norm_layers[i].forward(x_out);
                 let out = x_out
                     .reshape([-1, h as i32, w as i32, self.num_features[i] as i32])
                     .permute([0, 3, 1, 2]);
@@ -892,7 +908,6 @@ pub fn swin_v1_t<B: Backend>(device: &Device<B>) -> SwinTransformer<B> {
         .with_depths([2, 2, 6, 2])
         .with_num_heads([3, 6, 12, 24])
         .with_window_size(7)
-        .with_patch_norm(true)
         .init(device)
 }
 
@@ -902,7 +917,6 @@ pub fn swin_v1_s<B: Backend>(device: &Device<B>) -> SwinTransformer<B> {
         .with_depths([2, 2, 18, 2])
         .with_num_heads([3, 6, 12, 24])
         .with_window_size(7)
-        .with_patch_norm(true)
         .init(device)
 }
 
@@ -912,7 +926,6 @@ pub fn swin_v1_b<B: Backend>(device: &Device<B>) -> SwinTransformer<B> {
         .with_depths([2, 2, 18, 2])
         .with_num_heads([4, 8, 16, 32])
         .with_window_size(12)
-        .with_patch_norm(true)
         .init(device)
 }
 
@@ -922,6 +935,5 @@ pub fn swin_v1_l<B: Backend>(device: &Device<B>) -> SwinTransformer<B> {
         .with_depths([2, 2, 18, 2])
         .with_num_heads([6, 12, 24, 48])
         .with_window_size(12)
-        .with_patch_norm(true)
         .init(device)
 }

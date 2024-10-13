@@ -5,9 +5,18 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[features]
+ndarray = ["burn/ndarray"]
+wgpu = ["burn/wgpu"]
+
+openblas = ["burn/openblas"]
+openblas-system = ["burn/openblas-system"]
+
 [dependencies]
 birefnet-burn = { path = "../../birefnet" }
-burn = { workspace = true, default-features = false, features = ["cuda-jit"] }
-image = { version = "0.25.2", default-features = false, features = ["png", "jpeg"] }
-anyhow = "1.0.89"
-num-traits = "0.2.19"
+burn = { workspace = true, default-features = false }
+
+anyhow = "1"
+clap = { version = "^4.5.20", features = ["derive"] }
+image = { version = "^0.25.2", default-features = false, features = ["png", "jpeg"] }
+num-traits = "^0.2.19"

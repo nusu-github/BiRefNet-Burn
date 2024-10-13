@@ -8,10 +8,7 @@
 /// Author:  Gary L. Pavlis, Indiana University
 /// Date:  February 1996
 ///
-use burn::{
-    tensor::backend::Backend,
-    tensor::{Float, Tensor},
-};
+use burn::prelude::*;
 
 const CENTRAL_RANGE: f32 = 0.7;
 const A: [f32; 4] = [0.886_226_9, -1.645_349_6, 0.914_624_87, -0.140_543_33];
@@ -23,20 +20,20 @@ pub trait Erfinv {
     fn erfinv(self) -> Self;
 }
 
-impl<B: Backend, const D: usize> Erfinv for Tensor<B, D, Float> {
+impl<B: Backend, const D: usize> Erfinv for Tensor<B, D> {
     fn erfinv(self) -> Self {
         erfinv_(self)
     }
 }
 
-pub fn erfinv_<B: Backend, const D: usize>(y: Tensor<B, D, Float>) -> Tensor<B, D, Float> {
+pub fn erfinv_<B: Backend, const D: usize>(y: Tensor<B, D>) -> Tensor<B, D> {
     let y_abs = y.clone().abs();
     let result = y.zeros_like() + f32::NAN;
 
     // Handle edge cases
     let mask = y_abs.clone().lower_equal_elem(1.0);
     let inf_mask = y_abs.clone().equal_elem(1.0);
-    let result = result.mask_fill(inf_mask.clone(), f32::INFINITY);
+    let result = result.mask_fill(inf_mask, f32::INFINITY);
 
     // Compute for central range
     let central_mask = y_abs
@@ -44,23 +41,18 @@ pub fn erfinv_<B: Backend, const D: usize>(y: Tensor<B, D, Float>) -> Tensor<B, 
         .lower_equal_elem(CENTRAL_RANGE)
         .equal(mask.clone());
     let central_result = compute_central_range(y.clone());
-    let result = result.mask_where(central_mask.clone(), central_result);
+    let result = result.mask_where(central_mask, central_result);
 
     // Compute for outer range
-    let outer_mask = y_abs
-        .clone()
-        .greater_elem(CENTRAL_RANGE)
-        .equal(mask.clone());
+    let outer_mask = y_abs.greater_elem(CENTRAL_RANGE).equal(mask);
     let outer_result = compute_outer_range(y.clone());
-    let result = result.mask_where(outer_mask.clone(), outer_result);
+    let result = result.mask_where(outer_mask, outer_result);
 
     // Apply Newton-Raphson correction
     apply_newton_raphson(result, y)
 }
 
-fn compute_central_range<B: Backend, const D: usize>(
-    y: Tensor<B, D, Float>,
-) -> Tensor<B, D, Float> {
+fn compute_central_range<B: Backend, const D: usize>(y: Tensor<B, D>) -> Tensor<B, D> {
     let z = y.clone().powf_scalar(2.0);
     let num = z.clone() * A[3] + A[2];
     let num = (num * z.clone()) + A[1];
@@ -72,11 +64,9 @@ fn compute_central_range<B: Backend, const D: usize>(
     y * num / dem
 }
 
-fn compute_outer_range<B: Backend, const _D: usize>(
-    y: Tensor<B, _D, Float>,
-) -> Tensor<B, _D, Float> {
+fn compute_outer_range<B: Backend, const _D: usize>(y: Tensor<B, _D>) -> Tensor<B, _D> {
     let y_abs = y.clone().abs();
-    let z = (-(-y_abs.clone() - 1.0 / 2.0).log()).sqrt();
+    let z = (-(-y_abs - 1.0 / 2.0).log()).sqrt();
     let num = z.clone() * C[3] + C[2];
     let num = (num * z.clone()) + C[1];
     let num = (num * z.clone()) + C[0];
@@ -86,9 +76,9 @@ fn compute_outer_range<B: Backend, const _D: usize>(
 }
 
 fn apply_newton_raphson<B: Backend, const D: usize>(
-    mut result: Tensor<B, D, Float>,
-    y: Tensor<B, D, Float>,
-) -> Tensor<B, D, Float> {
+    mut result: Tensor<B, D>,
+    y: Tensor<B, D>,
+) -> Tensor<B, D> {
     let two_over_sqrt_pi = 2.0 / std::f32::consts::PI.sqrt();
     for _ in 0..2 {
         let correction = (result.clone().erf() - y.clone())

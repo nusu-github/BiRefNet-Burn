@@ -1,5 +1,3 @@
-use std::ops::{Deref, Div};
-
 use burn::{
     module::Param,
     nn::{
@@ -28,12 +26,11 @@ impl DeformableConv2dConfig {
         )
         .with_stride([self.stride, self.stride])
         .with_padding(PaddingConfig2d::Explicit(self.padding, self.padding))
-        .with_bias(true)
         .init(device);
 
-        offset_conv.weight = Param::from_tensor(offset_conv.weight.deref().zeros_like());
+        offset_conv.weight = Param::from_tensor(offset_conv.weight.val().zeros_like());
         offset_conv.bias = Some(Param::from_tensor(
-            offset_conv.bias.unwrap().deref().zeros_like(),
+            offset_conv.bias.unwrap().val().zeros_like(),
         ));
 
         let mut modulator_conv = Conv2dConfig::new(
@@ -42,12 +39,11 @@ impl DeformableConv2dConfig {
         )
         .with_stride([self.stride, self.stride])
         .with_padding(PaddingConfig2d::Explicit(self.padding, self.padding))
-        .with_bias(true)
         .init(device);
 
-        modulator_conv.weight = Param::from_tensor(modulator_conv.weight.deref().zeros_like());
+        modulator_conv.weight = Param::from_tensor(modulator_conv.weight.val().zeros_like());
         modulator_conv.bias = Some(Param::from_tensor(
-            modulator_conv.bias.unwrap().deref().zeros_like(),
+            modulator_conv.bias.unwrap().val().zeros_like(),
         ));
 
         let regular_conv = Conv2dConfig::new(
@@ -91,9 +87,8 @@ impl<B: Backend> DeformableConv2d<B> {
         let offset = self.offset_conv.forward(x.clone());
         let modulator = sigmoid(self.modulator_conv.forward(x.clone())).mul_scalar(2.0);
 
-        let weights_h = self.regular_conv.weight.dims()[2];
-        let weights_w = self.regular_conv.weight.dims()[3];
-        let n_offset_grps = offset.dims()[1].div(2 * weights_h * weights_w);
+        let [_, _, weights_h, weights_w] = self.regular_conv.weight.dims();
+        let n_offset_grps = offset.dims()[1] / (2 * weights_h * weights_w);
         let n_weight_grps = self.in_channels / self.regular_conv.weight.dims()[1];
 
         let x = deform_conv2d(

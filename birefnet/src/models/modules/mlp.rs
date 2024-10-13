@@ -81,19 +81,23 @@ impl AttentionConfig {
         let kv = LinearConfig::new(self.dim, self.dim * 2).init(device);
         let proj = LinearConfig::new(self.dim, self.dim).init(device);
 
-        let sr = if self.sr_ratio > 1 {
-            Some(
-                Conv2dConfig::new([self.dim, self.dim], [self.sr_ratio, self.sr_ratio])
-                    .init(device),
-            )
-        } else {
-            None
+        let sr = {
+            if self.sr_ratio > 1 {
+                Some(
+                    Conv2dConfig::new([self.dim, self.dim], [self.sr_ratio, self.sr_ratio])
+                        .init(device),
+                )
+            } else {
+                None
+            }
         };
 
-        let norm = if self.sr_ratio > 1 {
-            Some(LayerNormConfig::new(self.dim).init(device))
-        } else {
-            None
+        let norm = {
+            if self.sr_ratio > 1 {
+                Some(LayerNormConfig::new(self.dim).init(device))
+            } else {
+                None
+            }
         };
 
         Attention {
@@ -171,10 +175,12 @@ impl BlockConfig {
             .with_hidden_features(Some(mlp_hidden_dim))
             .with_drop(self.drop)
             .init(device);
-        let drop_path = if self.drop_path > 0.0 {
-            Some(DropPathConfig::new().with_drop_prob(self.drop_path).init())
-        } else {
-            None
+        let drop_path = {
+            if self.drop_path > 0.0 {
+                Some(DropPathConfig::new().with_drop_prob(self.drop_path).init())
+            } else {
+                None
+            }
         };
 
         Block {
@@ -198,25 +204,26 @@ pub struct Block<B: Backend> {
 
 impl<B: Backend> Block<B> {
     pub fn forward(&self, x: Tensor<B, 3>, h: usize, w: usize) -> Tensor<B, 3> {
-        let x = x.clone();
         let shortcut = x.clone();
 
         let x = self.norm1.forward(x);
         let x = self.attn.forward(x, h, w);
-        let x = if let Some(drop_path) = &self.drop_path {
-            drop_path.forward(x)
-        } else {
-            x
+        let x = {
+            match &self.drop_path {
+                Some(drop_path) => drop_path.forward(x),
+                None => x,
+            }
         };
         let x = x + shortcut;
 
         let shortcut = x.clone();
         let x = self.norm2.forward(x);
         let x = self.mlp.forward(x);
-        let x = if let Some(drop_path) = &self.drop_path {
-            drop_path.forward(x)
-        } else {
-            x
+        let x = {
+            match &self.drop_path {
+                Some(drop_path) => drop_path.forward(x),
+                None => x,
+            }
         };
         x + shortcut
     }

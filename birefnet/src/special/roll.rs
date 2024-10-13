@@ -15,8 +15,8 @@ pub fn roll<B: Backend, const D: usize>(
         let t0 = input
             .clone()
             .narrow(dim, start as usize, (size - start) as usize);
-        let t1 = input.clone().narrow(dim, 0, start as usize);
-        return Tensor::cat([t0, t1].to_vec(), dim);
+        let t1 = input.narrow(dim, 0, start as usize);
+        return Tensor::cat(vec![t0, t1], dim);
     }
     roll_common(input, shifts, dims)
 }

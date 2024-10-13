@@ -3,12 +3,12 @@ use burn::{prelude::*, tensor::Distribution};
 use super::erfinv::Erfinv;
 
 pub fn trunc_normal<B: Backend, const D: usize>(
-    x: Tensor<B, D, Float>,
+    x: Tensor<B, D>,
     mean: f64,
     std: f64,
     a: f64,
     b: f64,
-) -> Tensor<B, D, Float> {
+) -> Tensor<B, D> {
     fn norm_cdf(x: f64) -> f64 {
         (1. + libm::erf(x / 2.0_f64.sqrt())) / 2.
     }

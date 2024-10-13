@@ -120,10 +120,11 @@ pub struct _ASPPModuleDeformable<B: Backend> {
 impl<B: Backend> _ASPPModuleDeformable<B> {
     pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         let x = self.atrous_conv.forward(x);
-        let x = if let Some(bn) = self.bn.as_ref() {
-            bn.forward(x)
-        } else {
-            x
+        let x = {
+            match &self.bn {
+                Some(bn) => bn.forward(x),
+                None => x,
+            }
         };
 
         self.relu.forward(x)
@@ -220,10 +221,11 @@ impl<B: Backend> ASPPDeformable<B> {
             .collect::<Vec<_>>();
         let x5 = self.global_avg_pool_0.forward(x.clone());
         let x5 = self.global_avg_pool_1.forward(x5);
-        let x5 = if let Some(bn) = &self.global_avg_pool_2 {
-            bn.forward(x5)
-        } else {
-            x5
+        let x5 = {
+            match &self.global_avg_pool_2 {
+                Some(bn) => bn.forward(x5),
+                None => x5,
+            }
         };
         let x5 = self.global_avg_pool_3.forward(x5);
         let [_, _, d3, d4] = x1.dims();
@@ -238,10 +240,11 @@ impl<B: Backend> ASPPDeformable<B> {
         let x = Tensor::cat(x_, 1);
 
         let x = self.conv1.forward(x);
-        let x = if let Some(bn) = &self.bn1 {
-            bn.forward(x)
-        } else {
-            x
+        let x = {
+            match &self.bn1 {
+                Some(bn) => bn.forward(x),
+                None => x,
+            }
         };
         let x = self.relu.forward(x);
 

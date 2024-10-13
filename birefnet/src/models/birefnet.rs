@@ -95,7 +95,7 @@ impl BiRefNetConfig {
             cxt,
             bb,
             squeeze_module,
-            decoder: DecoderConfig::new(self.config.clone(), channels).init(device),
+            decoder: DecoderConfig::new(self.config.to_owned(), channels).init(device),
         }
     }
 }
@@ -127,7 +127,7 @@ impl<B: Backend> BiRefNet<B> {
                 let [_, _, h, w] = x.dims();
                 let [x1_, x2_, x3_, x4_] = match &self.bb {
                     BackboneEnum::SwinTransformer(bb) => bb.forward(interpolate(
-                        x.clone(),
+                        x,
                         [h / 2, w / 2],
                         InterpolateOptions::new(InterpolateMode::Bilinear),
                     )),
@@ -168,7 +168,7 @@ impl<B: Backend> BiRefNet<B> {
                 let [_, _, h, w] = x.dims();
                 let [x1_, x2_, x3_, x4_] = match &self.bb {
                     BackboneEnum::SwinTransformer(bb) => bb.forward(interpolate(
-                        x.clone(),
+                        x,
                         [h / 2, w / 2],
                         InterpolateOptions::new(InterpolateMode::Bilinear),
                     )),
@@ -336,7 +336,7 @@ impl DecoderConfig {
 
     pub fn init<B: Backend>(&self, device: &B::Device) -> Decoder<B> {
         let split = if self.config.dec_ipt {
-            self.config.dec_ipt_split.clone()
+            self.config.dec_ipt_split
         } else {
             false
         };
@@ -778,9 +778,11 @@ impl<B: Backend> Decoder<B> {
                 1,
             );
         };
-        let _p1 = match &self.decoder_block1 {
-            DecoderBlockModuleEnum::BasicDecBlk(decoder_block1) => decoder_block1.forward(_p1),
-            DecoderBlockModuleEnum::ResBlk(decoder_block1) => decoder_block1.forward(_p1),
+        let _p1 = {
+            match &self.decoder_block1 {
+                DecoderBlockModuleEnum::BasicDecBlk(decoder_block1) => decoder_block1.forward(_p1),
+                DecoderBlockModuleEnum::ResBlk(decoder_block1) => decoder_block1.forward(_p1),
+            }
         };
         let [_, _, h, w] = x.dims();
         let _p1 = interpolate(
@@ -792,12 +794,12 @@ impl<B: Backend> Decoder<B> {
         // let m1 = None;
         let mut _p1 = _p1;
         if self.dec_ipt {
-            let patches_batch = if self.split {
-                self.get_patches_batch(x.clone(), _p1.clone())
-            } else {
-                x.clone()
-            };
             let [_, _, h, w] = x.dims();
+            let patches_batch = if self.split {
+                self.get_patches_batch(x, _p1.clone())
+            } else {
+                x
+            };
             _p1 = Tensor::cat(
                 Vec::from([
                     _p1,
