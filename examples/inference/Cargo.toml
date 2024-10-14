@@ -6,11 +6,13 @@ edition.workspace = true
 publish = false
 
 [features]
+cuda = ["burn/cuda-jit"]
 ndarray = ["burn/ndarray"]
 wgpu = ["burn/wgpu"]
 
 openblas = ["burn/openblas"]
 openblas-system = ["burn/openblas-system"]
+fusion = ["burn/fusion"]
 
 [dependencies]
 birefnet-burn = { path = "../../birefnet" }

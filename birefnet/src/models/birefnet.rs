@@ -335,10 +335,12 @@ impl DecoderConfig {
     const _N: usize = 16;
 
     pub fn init<B: Backend>(&self, device: &B::Device) -> Decoder<B> {
-        let split = if self.config.dec_ipt {
-            self.config.dec_ipt_split
-        } else {
-            false
+        let split = {
+            if self.config.dec_ipt {
+                self.config.dec_ipt_split
+            } else {
+                false
+            }
         };
 
         let mut ipt_blk5 = None;
@@ -386,8 +388,8 @@ impl DecoderConfig {
         }
 
         let in_channels = |x: usize, y: usize| {
-            self.channels[x]
-                + if self.config.dec_ipt {
+            self.channels[x] + {
+                if self.config.dec_ipt {
                     if Self::IPT_CHA_OPT == 0 {
                         Self::N_DEC_IPT
                     } else {
@@ -396,6 +398,7 @@ impl DecoderConfig {
                 } else {
                     0
                 }
+            }
         };
         let decoder_block4 = self.create_decoder_block(in_channels(0, 0), self.channels[1], device);
         let decoder_block3 = self.create_decoder_block(in_channels(1, 0), self.channels[2], device);
@@ -403,8 +406,8 @@ impl DecoderConfig {
         let decoder_block1 =
             self.create_decoder_block(in_channels(3, 2), self.channels[3] / 2, device);
 
-        let in_channels = (self.channels[3] / 2)
-            + if self.config.dec_ipt {
+        let in_channels = (self.channels[3] / 2) + {
+            if self.config.dec_ipt {
                 if Self::IPT_CHA_OPT == 0 {
                     Self::N_DEC_IPT
                 } else {
@@ -412,7 +415,8 @@ impl DecoderConfig {
                 }
             } else {
                 0
-            };
+            }
+        };
         let conv_out1 = Conv2dConfig::new([in_channels, 1], [1, 1])
             .with_padding(PaddingConfig2d::Valid)
             .init(device);
@@ -518,9 +522,7 @@ impl DecoderConfig {
         };
 
         Decoder {
-            dec_ipt: self.config.dec_ipt,
             split,
-            out_ref: self.config.out_ref,
             ipt_blk5,
             ipt_blk4,
             ipt_blk3,
@@ -590,9 +592,7 @@ impl DecoderConfig {
 
 #[derive(Module, Debug)]
 pub struct Decoder<B: Backend> {
-    dec_ipt: bool,
     split: bool,
-    out_ref: bool,
     ipt_blk5: Option<SimpleConvs<B>>,
     ipt_blk4: Option<SimpleConvs<B>>,
     ipt_blk3: Option<SimpleConvs<B>>,
@@ -624,38 +624,50 @@ impl<B: Backend> Decoder<B> {
     pub fn forward(&self, features: [Tensor<B, 4>; 5]) -> Tensor<B, 4> {
         let [x, x1, x2, x3, x4] = features;
 
-        let mut x4 = x4;
-        if self.dec_ipt {
-            let patches_batch = if self.split {
-                self.get_patches_batch(x.clone(), x4.clone())
-            } else {
-                x.clone()
-            };
-            let [_, _, h, w] = x4.dims();
-            x4 = Tensor::cat(
-                Vec::from([
-                    x4,
-                    self.ipt_blk5.as_ref().unwrap().forward(interpolate(
-                        patches_batch,
-                        [h, w],
-                        InterpolateOptions::new(InterpolateMode::Bilinear),
-                    )),
-                ]),
-                1,
-            );
-        }
+        let x4 = {
+            match &self.ipt_blk5 {
+                Some(ipt_blk5) => {
+                    let patches_batch = {
+                        if self.split {
+                            self.get_patches_batch(x.clone(), x4.clone())
+                        } else {
+                            x.clone()
+                        }
+                    };
+                    let [_, _, h, w] = x4.dims();
+                    Tensor::cat(
+                        Vec::from([
+                            x4,
+                            ipt_blk5.forward(interpolate(
+                                patches_batch,
+                                [h, w],
+                                InterpolateOptions::new(InterpolateMode::Bilinear),
+                            )),
+                        ]),
+                        1,
+                    )
+                }
+                None => x4,
+            }
+        };
 
         // Decoder block 4
-        let p4 = match &self.decoder_block4 {
-            DecoderBlockModuleEnum::BasicDecBlk(decoder_block4) => decoder_block4.forward(x4),
-            DecoderBlockModuleEnum::ResBlk(decoder_block4) => decoder_block4.forward(x4),
+        let p4 = {
+            match &self.decoder_block4 {
+                DecoderBlockModuleEnum::BasicDecBlk(decoder_block4) => decoder_block4.forward(x4),
+                DecoderBlockModuleEnum::ResBlk(decoder_block4) => decoder_block4.forward(x4),
+            }
         };
         // let m4 = None;
-        let mut p4 = p4;
-        if self.out_ref {
-            let p4_gdt = self.gdt_convs_4.as_ref().unwrap().forward(p4.clone());
-            let gdt_attn_4 = sigmoid(self.gdt_convs_attn_4.as_ref().unwrap().forward(p4_gdt));
-            p4 = p4 * gdt_attn_4;
+        let p4 = {
+            match (&self.gdt_convs_4, &self.gdt_convs_attn_4) {
+                (Some(gdt_convs_4), Some(gdt_convs_attn_4)) => {
+                    let p4_gdt = gdt_convs_4.forward(p4.clone());
+                    let gdt_attn_4 = sigmoid(gdt_convs_attn_4.forward(p4_gdt));
+                    p4 * gdt_attn_4
+                }
+                _ => p4,
+            }
         };
         let [_, _, h, w] = x3.dims();
         let _p4 = interpolate(
@@ -663,43 +675,56 @@ impl<B: Backend> Decoder<B> {
             [h, w],
             InterpolateOptions::new(InterpolateMode::Bilinear),
         );
-        let _p3 = _p4
-            + match &self.lateral_block4 {
+        let _p3 = _p4 + {
+            match &self.lateral_block4 {
                 LateralBlockModuleEnum::BasicLatBlk(lateral_block4) => {
                     lateral_block4.forward(x3.clone())
                 }
-            };
-
-        let mut _p3 = _p3;
-        if self.dec_ipt {
-            let patches_batch = if self.split {
-                self.get_patches_batch(x.clone(), _p3.clone())
-            } else {
-                x.clone()
-            };
-            let [_, _, h, w] = x3.dims();
-            _p3 = Tensor::cat(
-                Vec::from([
-                    _p3,
-                    self.ipt_blk4.as_ref().unwrap().forward(interpolate(
-                        patches_batch,
-                        [h, w],
-                        InterpolateOptions::new(InterpolateMode::Bilinear),
-                    )),
-                ]),
-                1,
-            );
+            }
         };
-        let p3 = match &self.decoder_block3 {
-            DecoderBlockModuleEnum::BasicDecBlk(decoder_block3) => decoder_block3.forward(_p3),
-            DecoderBlockModuleEnum::ResBlk(decoder_block3) => decoder_block3.forward(_p3),
+
+        let _p3 = {
+            match &self.ipt_blk4 {
+                Some(ipt_blk4) => {
+                    let patches_batch = {
+                        if self.split {
+                            self.get_patches_batch(x.clone(), _p3.clone())
+                        } else {
+                            x.clone()
+                        }
+                    };
+                    let [_, _, h, w] = x3.dims();
+                    Tensor::cat(
+                        Vec::from([
+                            _p3,
+                            ipt_blk4.forward(interpolate(
+                                patches_batch,
+                                [h, w],
+                                InterpolateOptions::new(InterpolateMode::Bilinear),
+                            )),
+                        ]),
+                        1,
+                    )
+                }
+                None => _p3,
+            }
+        };
+        let p3 = {
+            match &self.decoder_block3 {
+                DecoderBlockModuleEnum::BasicDecBlk(decoder_block3) => decoder_block3.forward(_p3),
+                DecoderBlockModuleEnum::ResBlk(decoder_block3) => decoder_block3.forward(_p3),
+            }
         };
         // let m3 = None;
-        let mut p3 = p3;
-        if self.out_ref {
-            let p3_gdt = self.gdt_convs_3.as_ref().unwrap().forward(p3.clone());
-            let gdt_attn_3 = sigmoid(self.gdt_convs_attn_3.as_ref().unwrap().forward(p3_gdt));
-            p3 = p3 * gdt_attn_3;
+        let p3 = {
+            match (&self.gdt_convs_3, &self.gdt_convs_attn_3) {
+                (Some(gdt_convs_3), Some(gdt_convs_attn_3)) => {
+                    let p3_gdt = gdt_convs_3.forward(p3.clone());
+                    let gdt_attn_3 = sigmoid(gdt_convs_attn_3.forward(p3_gdt));
+                    p3 * gdt_attn_3
+                }
+                _ => p3,
+            }
         };
         let [_, _, h, w] = x2.dims();
         let _p3 = interpolate(
@@ -707,43 +732,56 @@ impl<B: Backend> Decoder<B> {
             [h, w],
             InterpolateOptions::new(InterpolateMode::Bilinear),
         );
-        let _p2 = _p3
-            + match &self.lateral_block3 {
+        let _p2 = _p3 + {
+            match &self.lateral_block3 {
                 LateralBlockModuleEnum::BasicLatBlk(lateral_block3) => {
                     lateral_block3.forward(x2.clone())
                 }
-            };
-
-        let mut _p2 = _p2;
-        if self.dec_ipt {
-            let patches_batch = if self.split {
-                self.get_patches_batch(x.clone(), _p2.clone())
-            } else {
-                x.clone()
-            };
-            let [_, _, h, w] = x2.dims();
-            _p2 = Tensor::cat(
-                Vec::from([
-                    _p2,
-                    self.ipt_blk3.as_ref().unwrap().forward(interpolate(
-                        patches_batch,
-                        [h, w],
-                        InterpolateOptions::new(InterpolateMode::Bilinear),
-                    )),
-                ]),
-                1,
-            );
+            }
         };
-        let p2 = match &self.decoder_block2 {
-            DecoderBlockModuleEnum::BasicDecBlk(decoder_block2) => decoder_block2.forward(_p2),
-            DecoderBlockModuleEnum::ResBlk(decoder_block2) => decoder_block2.forward(_p2),
+
+        let _p2 = {
+            match &self.ipt_blk3 {
+                Some(ipt_blk3) => {
+                    let patches_batch = {
+                        if self.split {
+                            self.get_patches_batch(x.clone(), _p2.clone())
+                        } else {
+                            x.clone()
+                        }
+                    };
+                    let [_, _, h, w] = x2.dims();
+                    Tensor::cat(
+                        Vec::from([
+                            _p2,
+                            ipt_blk3.forward(interpolate(
+                                patches_batch,
+                                [h, w],
+                                InterpolateOptions::new(InterpolateMode::Bilinear),
+                            )),
+                        ]),
+                        1,
+                    )
+                }
+                None => _p2,
+            }
+        };
+        let p2 = {
+            match &self.decoder_block2 {
+                DecoderBlockModuleEnum::BasicDecBlk(decoder_block2) => decoder_block2.forward(_p2),
+                DecoderBlockModuleEnum::ResBlk(decoder_block2) => decoder_block2.forward(_p2),
+            }
         };
         // let m2 = None;
-        let mut p2 = p2;
-        if self.out_ref {
-            let p2_gdt = self.gdt_convs_2.as_ref().unwrap().forward(p2.clone());
-            let gdt_attn_2 = sigmoid(self.gdt_convs_attn_2.as_ref().unwrap().forward(p2_gdt));
-            p2 = p2 * gdt_attn_2;
+        let p2 = {
+            match (&self.gdt_convs_2, &self.gdt_convs_attn_2) {
+                (Some(gdt_convs_2), Some(gdt_convs_attn_2)) => {
+                    let p2_gdt = gdt_convs_2.forward(p2.clone());
+                    let gdt_attn_2 = sigmoid(gdt_convs_attn_2.forward(p2_gdt));
+                    p2 * gdt_attn_2
+                }
+                _ => p2,
+            }
         };
         let [_, _, h, w] = x1.dims();
         let _p2 = interpolate(
@@ -751,32 +789,39 @@ impl<B: Backend> Decoder<B> {
             [h, w],
             InterpolateOptions::new(InterpolateMode::Bilinear),
         );
-        let _p1 = _p2
-            + match &self.lateral_block2 {
+        let _p1 = _p2 + {
+            match &self.lateral_block2 {
                 LateralBlockModuleEnum::BasicLatBlk(lateral_block2) => {
                     lateral_block2.forward(x1.clone())
                 }
-            };
+            }
+        };
 
-        let mut _p1 = _p1;
-        if self.dec_ipt {
-            let patches_batch = if self.split {
-                self.get_patches_batch(x.clone(), _p1.clone())
-            } else {
-                x.clone()
-            };
-            let [_, _, h, w] = x1.dims();
-            _p1 = Tensor::cat(
-                Vec::from([
-                    _p1,
-                    self.ipt_blk2.as_ref().unwrap().forward(interpolate(
-                        patches_batch,
-                        [h, w],
-                        InterpolateOptions::new(InterpolateMode::Bilinear),
-                    )),
-                ]),
-                1,
-            );
+        let _p1 = {
+            match &self.ipt_blk2 {
+                Some(ipt_blk2) => {
+                    let patches_batch = {
+                        if self.split {
+                            self.get_patches_batch(x.clone(), _p1.clone())
+                        } else {
+                            x.clone()
+                        }
+                    };
+                    let [_, _, h, w] = x1.dims();
+                    Tensor::cat(
+                        Vec::from([
+                            _p1,
+                            ipt_blk2.forward(interpolate(
+                                patches_batch,
+                                [h, w],
+                                InterpolateOptions::new(InterpolateMode::Bilinear),
+                            )),
+                        ]),
+                        1,
+                    )
+                }
+                None => _p1,
+            }
         };
         let _p1 = {
             match &self.decoder_block1 {
@@ -792,25 +837,31 @@ impl<B: Backend> Decoder<B> {
         );
 
         // let m1 = None;
-        let mut _p1 = _p1;
-        if self.dec_ipt {
-            let [_, _, h, w] = x.dims();
-            let patches_batch = if self.split {
-                self.get_patches_batch(x, _p1.clone())
-            } else {
-                x
-            };
-            _p1 = Tensor::cat(
-                Vec::from([
-                    _p1,
-                    self.ipt_blk1.as_ref().unwrap().forward(interpolate(
-                        patches_batch,
-                        [h, w],
-                        InterpolateOptions::new(InterpolateMode::Bilinear),
-                    )),
-                ]),
-                1,
-            );
+        let _p1 = {
+            match &self.ipt_blk1 {
+                Some(ipt_blk1) => {
+                    let [_, _, h, w] = x.dims();
+                    let patches_batch = {
+                        if self.split {
+                            self.get_patches_batch(x, _p1.clone())
+                        } else {
+                            x
+                        }
+                    };
+                    Tensor::cat(
+                        Vec::from([
+                            _p1,
+                            ipt_blk1.forward(interpolate(
+                                patches_batch,
+                                [h, w],
+                                InterpolateOptions::new(InterpolateMode::Bilinear),
+                            )),
+                        ]),
+                        1,
+                    )
+                }
+                None => _p1,
+            }
         };
         self.conv_out1.forward(_p1)
     }
@@ -863,8 +914,6 @@ pub struct SimpleConvs<B: Backend> {
 
 impl<B: Backend> SimpleConvs<B> {
     pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
-        let x = self.conv1.forward(x);
-
-        self.conv_out.forward(x)
+        self.conv_out.forward(self.conv1.forward(x))
     }
 }

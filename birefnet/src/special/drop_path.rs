@@ -20,7 +20,7 @@ impl DropPathConfig {
     }
 }
 
-#[derive(Module, Clone, Debug, Default)]
+#[derive(Module, Clone, Debug)]
 pub struct DropPath {
     drop_prob: f64,
     training: bool,
@@ -28,10 +28,7 @@ pub struct DropPath {
 }
 
 impl DropPath {
-    pub fn forward<B: Backend, const D: usize>(
-        &self,
-        x: Tensor<B, D, Float>,
-    ) -> Tensor<B, D, Float> {
+    pub fn forward<B: Backend, const D: usize>(&self, x: Tensor<B, D>) -> Tensor<B, D> {
         if !self.training || self.drop_prob == 0.0 {
             return x;
         }

@@ -124,7 +124,7 @@ impl WindowAttentionConfig {
             device,
         );
 
-        let coords: Tensor<B, 3, _> =
+        let coords: Tensor<B, 3> =
             Tensor::<B, 2, Int>::cartesian_grid([self.window_size[0], self.window_size[1]], device)
                 .permute([2, 0, 1])
                 .float();
@@ -151,8 +151,7 @@ impl WindowAttentionConfig {
         let qkv = LinearConfig::new(self.dim, self.dim * 3)
             .with_bias(self.qkv_bias)
             .init(device);
-        let attn_drop_prob = self.attn_drop;
-        let attn_drop = DropoutConfig::new(attn_drop_prob).init();
+        let attn_drop = DropoutConfig::new(self.attn_drop).init();
         let proj = LinearConfig::new(self.dim, self.dim).init(device);
         let proj_drop = DropoutConfig::new(self.proj_drop).init();
 
@@ -264,8 +263,6 @@ pub struct SwinTransformerBlockConfig {
     qkv_bias: bool,
     #[config(default = "None")]
     qk_scale: Option<f64>,
-    #[config(default = "None")]
-    proj_drop: Option<f64>,
     #[config(default = "0.0")]
     drop: f64,
     #[config(default = "0.0")]
@@ -341,10 +338,7 @@ impl<B: Backend> SwinTransformerBlock<B> {
         let pad_b = (self.window_size - h % self.window_size) % self.window_size;
         let x = x
             .permute([0, 3, 1, 2])
-            .pad(
-                (pad_l, pad_r, pad_t, pad_b),
-                ElementConversion::from_elem(0.0),
-            )
+            .pad((pad_l, pad_r, pad_t, pad_b), B::FloatElem::from_elem(0.0))
             .permute([0, 2, 3, 1]);
         let [_, hp, wp, _] = x.dims();
 
@@ -401,8 +395,10 @@ impl<B: Backend> SwinTransformerBlock<B> {
 
         let x = shortcut + self.drop_path.forward(x);
 
-        self.drop_path
-            .forward(self.mlp.forward(self.norm2.forward(x)))
+        x.clone()
+            + self
+                .drop_path
+                .forward(self.mlp.forward(self.norm2.forward(x)))
     }
 }
 
@@ -441,7 +437,9 @@ impl<B: Backend> PatchMerging<B> {
 
         let x = {
             if pad_input {
-                x.pad((0, h % 2, 0, w % 2), ElementConversion::from_elem(0.0))
+                x.permute([0, 3, 1, 2])
+                    .pad((0, w % 2, 0, h % 2), B::FloatElem::from_elem(0.0))
+                    .permute([0, 2, 3, 1])
             } else {
                 x
             }
@@ -823,13 +821,13 @@ impl SwinTransformerConfig {
             layers.push(layer);
         }
 
-        let num_features = (0..num_layers)
+        let num_features: Vec<_> = (0..num_layers)
             .map(|i| ((self.embed_dim as i32) * 2_i32.pow(i as u32)) as usize)
-            .collect::<Vec<_>>();
+            .collect();
 
         let mut norm_layers = Vec::new();
         for i_layer in self.out_indices {
-            let layer: LayerNorm<B> = LayerNormConfig::new(num_features[i_layer]).init(device);
+            let layer = LayerNormConfig::new(num_features[i_layer]).init(device);
             norm_layers.push(layer);
         }
 

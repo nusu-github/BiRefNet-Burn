@@ -30,7 +30,7 @@ struct Args {
 
 fn main() -> Result<()> {
     type Backend = Wgpu;
-    let device = WgpuDevice::default();
+    let device = WgpuDevice::BestAvailable;
 
     let args = Args::parse();
     let model_path = args.model.as_path();
@@ -42,7 +42,7 @@ fn main() -> Result<()> {
 
     let model = BiRefNetConfig::new(
         ModelConfig::load("config.json").unwrap_or_else(|_| ModelConfig::new()),
-        true,
+        false,
     )
     .init::<Backend>(&device)
     .load_record(record);
@@ -50,14 +50,14 @@ fn main() -> Result<()> {
     let img = image::open(image_path)?.into_rgb8();
     let size = img.dimensions();
 
-    let img_tensor = preprocess(img.clone(), WIDTH as u32, &device);
+    let img_tensor = preprocess(&img, WIDTH as u32, &device);
     let img_tensor = img_tensor.unsqueeze::<4>();
     let x = Normalizer::new(&device).normalize(img_tensor);
 
     let mask = model.forward(x);
     let mask = Sigmoid::new().forward(mask).squeeze::<3>(0);
 
-    let mask = postprocess_mask(mask, WIDTH as u32, size.0, size.1);
+    let mask = postprocess_mask(mask, size.0, size.1);
     let mask_img = img.add_alpha_mask(&mask)?;
 
     mask_img.save("mask.png")?;

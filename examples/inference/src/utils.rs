@@ -1,36 +1,59 @@
-use burn::tensor::module::interpolate;
-use burn::tensor::ops::{InterpolateMode, InterpolateOptions};
-use burn::{prelude::*, record::Recorder, tensor::Element};
-use image::{
-    buffer::ConvertBuffer,
-    imageops::{self, FilterType},
-    GenericImageView, ImageBuffer, Luma, RgbImage,
+use burn::{
+    prelude::*,
+    record::Recorder,
+    tensor::{
+        module::interpolate,
+        ops::{InterpolateMode, InterpolateOptions},
+    },
 };
+use image::{
+    buffer::ConvertBuffer, flat::SampleLayout, GenericImageView, ImageBuffer, Luma, Pixel,
+    Primitive,
+};
+use num_traits::ToPrimitive;
 
-fn to_tensor<B: Backend, T: Element>(
-    data: Vec<T>,
-    shape: [usize; 3],
-    device: &Device<B>,
-) -> Tensor<B, 3> {
-    Tensor::<B, 3>::from_data(
-        TensorData::new(data, shape).convert::<B::FloatElem>(),
-        device,
-    )
-    .permute([2, 0, 1]) // [C, H, W]
+pub trait IntoTensor3<B: Backend> {
+    type Out;
+
+    fn into_tensor3(self, device: &Device<B>) -> Self::Out;
 }
 
-pub fn preprocess<B: Backend>(
-    image: RgbImage,
+impl<B: Backend, P> IntoTensor3<B> for ImageBuffer<P, Vec<P::Subpixel>>
+where
+    P: Pixel + 'static,
+{
+    type Out = Tensor<B, 3>;
+
+    fn into_tensor3(self, device: &Device<B>) -> Self::Out {
+        let SampleLayout {
+            channels,
+            height,
+            width,
+            ..
+        } = self.sample_layout();
+        let shape = Vec::from([height as usize, width as usize, channels as usize]);
+        Self::Out::from_data(
+            TensorData::new(
+                self.into_iter().map(|x| x.to_f32().unwrap()).collect(),
+                shape,
+            )
+            .convert::<B::FloatElem>(),
+            device,
+        )
+    }
+}
+
+pub fn preprocess<B: Backend, P>(
+    image: &ImageBuffer<P, Vec<P::Subpixel>>,
     image_size: u32,
     device: &Device<B>,
-) -> Tensor<B, 3> {
-    let width = image.width();
-    let height = image.height();
-    let tensor = to_tensor(
-        image.into_raw(),
-        [height as usize, width as usize, 3],
-        device,
-    );
+) -> Tensor<B, 3>
+where
+    P: Pixel + 'static,
+{
+    let tensor = image.clone().into_tensor3(device)
+        .permute([2, 0, 1]) // [C, H, W]
+        / P::Subpixel::DEFAULT_MAX_VALUE.to_f32().unwrap();
 
     let tensor = interpolate(
         tensor.unsqueeze(),
@@ -38,28 +61,25 @@ pub fn preprocess<B: Backend>(
         InterpolateOptions::new(InterpolateMode::Bilinear),
     );
 
-    tensor.squeeze(0) / 255.0
-}
-
-fn to_image<B: Backend>(
-    tensor: Tensor<B, 3>,
-    width: u32,
-    height: u32,
-) -> ImageBuffer<Luma<f32>, Vec<f32>> {
-    let tensor = tensor.permute([1, 2, 0]); // [H, W, C]
-    let tensor = tensor.into_data().convert::<f32>();
-    let tensor = tensor.to_vec::<f32>().unwrap();
-    ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(width, height, tensor).unwrap()
+    tensor.squeeze(0)
 }
 
 pub fn postprocess_mask<B: Backend>(
     mask: Tensor<B, 3>,
-    image_size: u32,
     width: u32,
     height: u32,
 ) -> ImageBuffer<Luma<f32>, Vec<f32>> {
-    let mask = to_image(mask, image_size, image_size);
-    imageops::resize(&mask, width, height, FilterType::Lanczos3)
+    let mask: Tensor<B, 3> = interpolate(
+        mask.unsqueeze(),
+        [height as usize, width as usize],
+        InterpolateOptions::new(InterpolateMode::Bilinear),
+    )
+    .squeeze(0);
+
+    let mask = mask.into_data().convert::<f32>();
+    let mask = mask.to_vec::<f32>().unwrap();
+
+    ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(width, height, mask).unwrap()
 }
 
 const MEAN: [f32; 3] = [0.485, 0.456, 0.406];

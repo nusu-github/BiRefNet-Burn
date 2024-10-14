@@ -27,7 +27,6 @@ fn roll_common<B: Backend, const D: usize>(
     dims: &[usize],
 ) -> Tensor<B, D> {
     assert!(dims.len() > 1, "dimension must be > 1");
-    // other checks ...
     let tail_shifts = shifts[1];
     let tail_dims = dims[1];
     let first_dim_rolled = roll::<B, D>(input, &[shifts[0]], &[dims[0]]);

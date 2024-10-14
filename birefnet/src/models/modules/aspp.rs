@@ -91,15 +91,12 @@ pub struct _ASPPModuleDeformableConfig {
 
 impl _ASPPModuleDeformableConfig {
     pub fn init<B: Backend>(&self, device: &Device<B>) -> _ASPPModuleDeformable<B> {
-        let atrous_conv = DeformableConv2dConfig::new(
-            self.in_channels,
-            self.planes,
-            self.kernel_size,
-            1,
-            self.padding,
-            false,
-        )
-        .init(device);
+        let atrous_conv = DeformableConv2dConfig::new(self.in_channels, self.planes)
+            .with_kernel_size(self.kernel_size)
+            .with_stride(1)
+            .with_padding(self.padding)
+            .with_bias(false)
+            .init(device);
         let bn = BatchNormConfig::new(self.planes).init(device);
         let relu = Relu::new();
         _ASPPModuleDeformable {
@@ -151,11 +148,11 @@ impl ASPPDeformableConfig {
         let aspp_deforms = self
             .parallel_block_sizes
             .iter()
-            .map(|conv_size| {
+            .map(|&conv_size| {
                 _ASPPModuleDeformableConfig::new(
                     self.in_channels,
                     in_channelster,
-                    *conv_size,
+                    conv_size,
                     conv_size / 2,
                 )
                 .init(device)

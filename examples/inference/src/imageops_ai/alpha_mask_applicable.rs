@@ -34,11 +34,21 @@ where
         let processed_pixels = self
             .pixels()
             .zip(mask.pixels())
-            .flat_map(|(&image_pixel, mask_pixel)| {
+            .flat_map(|(&image_pixel, mask_pixel)| unsafe {
                 let Rgb([red, green, blue]) = image_pixel;
                 let Luma([alpha]) = mask_pixel;
-                let alpha = alpha.to_f32().unwrap() / sm_max * si_max;
-                [red, green, blue, S::from(alpha).unwrap()]
+                let alpha = if sm_max == 1.0 {
+                    alpha.to_f32().unwrap_unchecked()
+                } else {
+                    alpha.to_f32().unwrap_unchecked() / sm_max
+                };
+                if si_max == 1.0 {
+                    let alpha = S::from(alpha).unwrap_unchecked();
+                    [red, green, blue, alpha]
+                } else {
+                    let alpha = S::from(alpha * si_max).unwrap_unchecked();
+                    [red, green, blue, alpha]
+                }
             })
             .collect();
 

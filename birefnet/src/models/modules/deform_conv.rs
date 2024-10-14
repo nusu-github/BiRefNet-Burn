@@ -12,9 +12,13 @@ use burn::{
 pub struct DeformableConv2dConfig {
     in_channels: usize,
     out_channels: usize,
+    #[config(default = "3")]
     kernel_size: usize,
+    #[config(default = "1")]
     stride: usize,
+    #[config(default = "1")]
     padding: usize,
+    #[config(default = "false")]
     bias: bool,
 }
 
@@ -83,7 +87,7 @@ pub struct DeformableConv2d<B: Backend> {
 }
 
 impl<B: Backend> DeformableConv2d<B> {
-    pub fn forward(&self, x: Tensor<B, 4, Float>) -> Tensor<B, 4, Float> {
+    pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         let offset = self.offset_conv.forward(x.clone());
         let modulator = sigmoid(self.modulator_conv.forward(x.clone())).mul_scalar(2.0);
 
