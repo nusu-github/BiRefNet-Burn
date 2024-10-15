@@ -12,7 +12,7 @@ use burn::{
     },
 };
 
-use crate::special::{roll, trunc_normal, DropPath, DropPathConfig};
+use crate::special::{roll, trunc_normal, DropPath, DropPathConfig, Slice};
 
 #[derive(Config, Debug)]
 pub struct MlpConfig {
@@ -454,8 +454,8 @@ impl<B: Backend> PatchMerging<B> {
             .clone()
             .select(1, top_idx.clone())
             .select(2, left_idx.clone());
-        let x1 = x.clone().select(1, top_idx).select(2, right_idx.clone());
-        let x2 = x.clone().select(1, bottom_idx.clone()).select(2, left_idx);
+        let x1 = x.clone().select(1, bottom_idx.clone()).select(2, left_idx);
+        let x2 = x.clone().select(1, top_idx).select(2, right_idx.clone());
         let x3 = x.select(1, bottom_idx).select(2, right_idx);
 
         let x = Tensor::cat(vec![x0, x1, x2, x3], 3);
@@ -545,55 +545,35 @@ impl<B: Backend> BasicLayer<B> {
         let wp = ((w as f64) / self.window_size as f64).ceil() as usize * self.window_size;
         let mut img_mask: Tensor<B, 4> = Tensor::zeros([1, hp, wp, 1], &device);
         let h_slices = [
-            (0, -(self.window_size as isize)),
-            (-(self.window_size as isize), -(self.shift_size as isize)),
-            (-(self.shift_size as isize), 0),
+            Slice::new(Some(0), Some(-(self.window_size as isize))),
+            Slice::new(
+                Some(-(self.window_size as isize)),
+                Some(-(self.shift_size as isize)),
+            ),
+            Slice::new(Some(-(self.shift_size as isize)), None),
         ];
         let w_slices = [
-            (0, -(self.window_size as isize)),
-            (-(self.window_size as isize), -(self.shift_size as isize)),
-            (-(self.shift_size as isize), 0),
+            Slice::new(Some(0), Some(-(self.window_size as isize))),
+            Slice::new(
+                Some(-(self.window_size as isize)),
+                Some(-(self.shift_size as isize)),
+            ),
+            Slice::new(Some(-(self.shift_size as isize)), None),
         ];
         let mut cnt = 0;
-        for (hs, he) in h_slices {
-            for (ws, we) in w_slices {
-                let [d1, d2, d3, d4] = img_mask.dims();
-                img_mask = img_mask.slice_assign(
-                    [
-                        0..d1,
-                        if hs > 0 {
-                            (d2 as isize + hs) as usize
-                        } else {
-                            0
-                        }..((d2 as isize + he) as usize),
-                        if ws > 0 {
-                            (d3 as isize + ws) as usize
-                        } else {
-                            0
-                        }..((d3 as isize + we) as usize),
-                        0..d4,
-                    ],
-                    Tensor::full(
-                        [
-                            d1,
-                            (if hs > 0 {
-                                (d2 as isize + hs) as usize
-                            } else {
-                                0
-                            }..((d2 as isize + he) as usize))
-                                .end,
-                            (if ws > 0 {
-                                (d3 as isize + ws) as usize
-                            } else {
-                                0
-                            }..((d3 as isize + we) as usize))
-                                .end,
-                            d4,
-                        ],
-                        cnt,
-                        &device,
-                    ),
-                );
+        let [d1, d2, d3, d4] = img_mask.dims();
+        for h in &h_slices {
+            for w in &w_slices {
+                if h.slice_length(d2) > 0 && w.slice_length(d3) > 0 {
+                    img_mask = img_mask.slice_assign(
+                        [0..d1, h.to_range(d2), w.to_range(d3), 0..d4],
+                        Tensor::full(
+                            [d1, h.slice_length(d2), w.slice_length(d3), d4],
+                            cnt,
+                            &device,
+                        ),
+                    );
+                };
                 cnt += 1;
             }
         }
@@ -778,15 +758,17 @@ impl SwinTransformerConfig {
                 self.pretrain_img_size / self.patch_size,
                 self.pretrain_img_size / self.patch_size,
             ];
-            let absolute_pos_embed = Tensor::<B, 4>::zeros(
-                [
-                    1,
-                    self.embed_dim,
-                    patches_resolution[0],
-                    patches_resolution[1],
-                ],
-                device,
-            );
+            let absolute_pos_embed: Tensor<B, 4> = {
+                Tensor::zeros(
+                    [
+                        1,
+                        self.embed_dim,
+                        patches_resolution[0],
+                        patches_resolution[1],
+                    ],
+                    device,
+                )
+            };
             Some(Param::from_tensor(trunc_normal(
                 absolute_pos_embed,
                 0.0,
@@ -815,7 +797,10 @@ impl SwinTransformerConfig {
             .with_qk_scale(self.qk_scale)
             .with_drop(self.drop_rate)
             .with_attn_drop(self.attn_drop_rate)
-            .with_drop_path(dpr[start..end].to_owned())
+            .with_drop_path(
+                dpr[Slice::new(Some(start as isize), Some(end as isize)).to_range(dpr.len())]
+                    .to_owned(),
+            )
             .with_downsample(i_layer < num_layers - 1)
             .init(device);
             layers.push(layer);

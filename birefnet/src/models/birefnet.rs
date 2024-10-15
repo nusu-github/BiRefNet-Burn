@@ -461,21 +461,18 @@ impl DecoderConfig {
             if self.config.out_ref {
                 gdt_convs_4 = Some(GdtConvs::init(
                     Conv2dConfig::new([self.channels[1], Self::_N], [3, 3])
-                        .with_stride([1, 1])
                         .with_padding(PaddingConfig2d::Explicit(1, 1)),
                     BatchNormConfig::new(Self::_N),
                     device,
                 ));
                 gdt_convs_3 = Some(GdtConvs::init(
                     Conv2dConfig::new([self.channels[2], Self::_N], [3, 3])
-                        .with_stride([1, 1])
                         .with_padding(PaddingConfig2d::Explicit(1, 1)),
                     BatchNormConfig::new(Self::_N),
                     device,
                 ));
                 gdt_convs_2 = Some(GdtConvs::init(
                     Conv2dConfig::new([self.channels[3], Self::_N], [3, 3])
-                        .with_stride([1, 1])
                         .with_padding(PaddingConfig2d::Explicit(1, 1)),
                     BatchNormConfig::new(Self::_N),
                     device,
@@ -483,38 +480,32 @@ impl DecoderConfig {
 
                 gdt_convs_pred_4 = Some(
                     Conv2dConfig::new([Self::_N, 1], [1, 1])
-                        .with_stride([1, 1])
                         .with_padding(PaddingConfig2d::Valid)
                         .init(device),
                 );
                 gdt_convs_pred_3 = Some(
                     Conv2dConfig::new([Self::_N, 1], [1, 1])
-                        .with_stride([1, 1])
                         .with_padding(PaddingConfig2d::Valid)
                         .init(device),
                 );
                 gdt_convs_pred_2 = Some(
                     Conv2dConfig::new([Self::_N, 1], [1, 1])
-                        .with_stride([1, 1])
                         .with_padding(PaddingConfig2d::Valid)
                         .init(device),
                 );
 
                 gdt_convs_attn_4 = Some(
                     Conv2dConfig::new([Self::_N, 1], [1, 1])
-                        .with_stride([1, 1])
                         .with_padding(PaddingConfig2d::Valid)
                         .init(device),
                 );
                 gdt_convs_attn_3 = Some(
                     Conv2dConfig::new([Self::_N, 1], [1, 1])
-                        .with_stride([1, 1])
                         .with_padding(PaddingConfig2d::Valid)
                         .init(device),
                 );
                 gdt_convs_attn_2 = Some(
                     Conv2dConfig::new([Self::_N, 1], [1, 1])
-                        .with_stride([1, 1])
                         .with_padding(PaddingConfig2d::Valid)
                         .init(device),
                 );
@@ -840,14 +831,14 @@ impl<B: Backend> Decoder<B> {
         let _p1 = {
             match &self.ipt_blk1 {
                 Some(ipt_blk1) => {
-                    let [_, _, h, w] = x.dims();
                     let patches_batch = {
                         if self.split {
-                            self.get_patches_batch(x, _p1.clone())
+                            self.get_patches_batch(x.clone(), _p1.clone())
                         } else {
-                            x
+                            x.clone()
                         }
                     };
+                    let [_, _, h, w] = x.dims();
                     Tensor::cat(
                         Vec::from([
                             _p1,
@@ -893,12 +884,10 @@ pub struct SimpleConvsConfig {
 impl SimpleConvsConfig {
     pub fn init<B: Backend>(&self, device: &Device<B>) -> SimpleConvs<B> {
         let conv1 = Conv2dConfig::new([self.in_channels, self.inter_channels], [3, 3])
-            .with_stride([1, 1])
             .with_padding(PaddingConfig2d::Explicit(1, 1))
             .init(device);
 
         let conv_out = Conv2dConfig::new([self.inter_channels, self.out_channels], [3, 3])
-            .with_stride([1, 1])
             .with_padding(PaddingConfig2d::Explicit(1, 1))
             .init(device);
 

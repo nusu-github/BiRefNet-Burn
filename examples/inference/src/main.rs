@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use birefnet_burn::{BiRefNetConfig, ModelConfig};
 use burn::{
-    backend::wgpu::{Wgpu, WgpuDevice},
     nn::Sigmoid,
     prelude::*,
     record::{FullPrecisionSettings, NamedMpkFileRecorder, Recorder},
@@ -28,9 +27,11 @@ struct Args {
     image: PathBuf,
 }
 
+type Backend = burn::backend::wgpu::Wgpu;
+// type Backend = burn::backend::cuda_jit::Cuda;
+
 fn main() -> Result<()> {
-    type Backend = Wgpu;
-    let device = WgpuDevice::BestAvailable;
+    let device = Default::default();
 
     let args = Args::parse();
     let model_path = args.model.as_path();
