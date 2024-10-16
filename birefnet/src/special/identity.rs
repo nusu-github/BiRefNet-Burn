@@ -7,10 +7,10 @@ use burn::{
 pub struct Identity {}
 
 impl Identity {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {}
     }
-    pub fn forward<B: Backend, const D: usize>(&self, x: Tensor<B, D>) -> Tensor<B, D> {
+    pub const fn forward<B: Backend, const D: usize>(&self, x: Tensor<B, D>) -> Tensor<B, D> {
         x
     }
 }

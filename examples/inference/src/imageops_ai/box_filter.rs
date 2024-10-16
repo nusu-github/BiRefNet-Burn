@@ -7,7 +7,7 @@ pub trait BoxFilter {
 }
 
 impl BoxFilter for Image<Rgb<f32>> {
-    type Output = Image<Rgb<f32>>;
+    type Output = Self;
 
     fn box_filter(&self, x_radius: u32, y_radius: u32) -> Self::Output {
         fn row_running_sum(image: &Rgb32FImage, row: u32, buffer: &mut [[f32; 3]], padding: u32) {
@@ -97,7 +97,7 @@ impl BoxFilter for Image<Rgb<f32>> {
                 unsafe {
                     debug_assert!(out.in_bounds(0, y));
                     out.unsafe_put_pixel(0, y, Rgb(val));
-                }
+                };
                 for x in 1..width {
                     let u = (x + 2 * x_radius) as usize;
                     let l = (x - 1) as usize;
@@ -117,7 +117,7 @@ impl BoxFilter for Image<Rgb<f32>> {
                 unsafe {
                     debug_assert!(out.in_bounds(x, 0));
                     out.unsafe_put_pixel(x, 0, Rgb(val));
-                }
+                };
                 for y in 1..height {
                     let u = (y + 2 * y_radius) as usize;
                     let l = (y - 1) as usize;
@@ -138,7 +138,7 @@ impl BoxFilter for Image<Rgb<f32>> {
 }
 
 impl BoxFilter for Image<Luma<f32>> {
-    type Output = Image<Luma<f32>>;
+    type Output = Self;
 
     fn box_filter(&self, x_radius: u32, y_radius: u32) -> Self::Output {
         fn row_running_sum(image: &Image<Luma<f32>>, row: u32, buffer: &mut [f32], padding: u32) {
@@ -215,7 +215,7 @@ impl BoxFilter for Image<Luma<f32>> {
                 unsafe {
                     debug_assert!(out.in_bounds(0, y));
                     out.unsafe_put_pixel(0, y, Luma([val]));
-                }
+                };
                 for x in 1..width {
                     let u = (x + 2 * x_radius) as usize;
                     let l = (x - 1) as usize;
@@ -234,7 +234,7 @@ impl BoxFilter for Image<Luma<f32>> {
                 unsafe {
                     debug_assert!(out.in_bounds(x, 0));
                     out.unsafe_put_pixel(x, 0, Luma([val]));
-                }
+                };
                 for y in 1..height {
                     let u = (y + 2 * y_radius) as usize;
                     let l = (y - 1) as usize;

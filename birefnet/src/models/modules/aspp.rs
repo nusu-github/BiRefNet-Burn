@@ -216,7 +216,7 @@ impl<B: Backend> ASPPDeformable<B> {
             .iter()
             .map(|aspp| aspp.forward(x.clone()))
             .collect::<Vec<_>>();
-        let x5 = self.global_avg_pool_0.forward(x.clone());
+        let x5 = self.global_avg_pool_0.forward(x);
         let x5 = self.global_avg_pool_1.forward(x5);
         let x5 = {
             match &self.global_avg_pool_2 {

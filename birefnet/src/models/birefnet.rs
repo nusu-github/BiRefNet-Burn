@@ -31,12 +31,11 @@ pub enum SqueezeBlockModule<B: Backend> {
 #[derive(Config, Debug)]
 pub struct BiRefNetConfig {
     config: ModelConfig,
-    bb_pretrained: bool,
 }
 
 impl BiRefNetConfig {
     pub fn init<B: Backend>(&self, device: &Device<B>) -> BiRefNet<B> {
-        let bb = build_backbone(&self.config, self.bb_pretrained, device);
+        let bb = build_backbone(&self.config, device);
         let channels = self.config.lateral_channels_in_collection();
         let cxt = self.config.cxt();
 
@@ -95,7 +94,7 @@ impl BiRefNetConfig {
             cxt,
             bb,
             squeeze_module,
-            decoder: DecoderConfig::new(self.config.to_owned(), channels).init(device),
+            decoder: DecoderConfig::new(self.config.clone(), channels).init(device),
         }
     }
 }
@@ -618,6 +617,7 @@ impl<B: Backend> Decoder<B> {
         let x4 = {
             match &self.ipt_blk5 {
                 Some(ipt_blk5) => {
+                    let [_, _, h, w] = x4.dims();
                     let patches_batch = {
                         if self.split {
                             self.get_patches_batch(x.clone(), x4.clone())
@@ -625,7 +625,6 @@ impl<B: Backend> Decoder<B> {
                             x.clone()
                         }
                     };
-                    let [_, _, h, w] = x4.dims();
                     Tensor::cat(
                         Vec::from([
                             x4,
@@ -677,6 +676,7 @@ impl<B: Backend> Decoder<B> {
         let _p3 = {
             match &self.ipt_blk4 {
                 Some(ipt_blk4) => {
+                    let [_, _, h, w] = x3.dims();
                     let patches_batch = {
                         if self.split {
                             self.get_patches_batch(x.clone(), _p3.clone())
@@ -684,7 +684,6 @@ impl<B: Backend> Decoder<B> {
                             x.clone()
                         }
                     };
-                    let [_, _, h, w] = x3.dims();
                     Tensor::cat(
                         Vec::from([
                             _p3,
@@ -734,6 +733,7 @@ impl<B: Backend> Decoder<B> {
         let _p2 = {
             match &self.ipt_blk3 {
                 Some(ipt_blk3) => {
+                    let [_, _, h, w] = x2.dims();
                     let patches_batch = {
                         if self.split {
                             self.get_patches_batch(x.clone(), _p2.clone())
@@ -741,7 +741,6 @@ impl<B: Backend> Decoder<B> {
                             x.clone()
                         }
                     };
-                    let [_, _, h, w] = x2.dims();
                     Tensor::cat(
                         Vec::from([
                             _p2,
@@ -791,6 +790,7 @@ impl<B: Backend> Decoder<B> {
         let _p1 = {
             match &self.ipt_blk2 {
                 Some(ipt_blk2) => {
+                    let [_, _, h, w] = x1.dims();
                     let patches_batch = {
                         if self.split {
                             self.get_patches_batch(x.clone(), _p1.clone())
@@ -798,7 +798,6 @@ impl<B: Backend> Decoder<B> {
                             x.clone()
                         }
                     };
-                    let [_, _, h, w] = x1.dims();
                     Tensor::cat(
                         Vec::from([
                             _p1,
@@ -831,14 +830,14 @@ impl<B: Backend> Decoder<B> {
         let _p1 = {
             match &self.ipt_blk1 {
                 Some(ipt_blk1) => {
+                    let [_, _, h, w] = x.dims();
                     let patches_batch = {
                         if self.split {
-                            self.get_patches_batch(x.clone(), _p1.clone())
+                            self.get_patches_batch(x, _p1.clone())
                         } else {
-                            x.clone()
+                            x
                         }
                     };
-                    let [_, _, h, w] = x.dims();
                     Tensor::cat(
                         Vec::from([
                             _p1,

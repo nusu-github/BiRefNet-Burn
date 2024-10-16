@@ -1,4 +1,4 @@
-use std::ops::Range;
+use core::ops::Range;
 
 pub struct Slice {
     start: Option<isize>,
@@ -6,8 +6,8 @@ pub struct Slice {
 }
 
 impl Slice {
-    pub fn new(start: Option<isize>, end: Option<isize>) -> Self {
-        Slice { start, end }
+    pub const fn new(start: Option<isize>, end: Option<isize>) -> Self {
+        Self { start, end }
     }
 
     pub fn to_range(&self, len: usize) -> Range<usize> {

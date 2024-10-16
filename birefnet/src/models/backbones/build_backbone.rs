@@ -8,11 +8,7 @@ pub enum BackboneEnum<B: Backend> {
     SwinTransformer(SwinTransformer<B>),
 }
 
-pub fn build_backbone<B: Backend>(
-    config: &ModelConfig,
-    pretrained: bool,
-    device: &Device<B>,
-) -> BackboneEnum<B> {
+pub fn build_backbone<B: Backend>(config: &ModelConfig, device: &Device<B>) -> BackboneEnum<B> {
     match config.backbone {
         Backbone::Vgg16 => unimplemented!(),
         Backbone::Vgg16bn => unimplemented!(),

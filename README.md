@@ -2,15 +2,14 @@
 
 ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)
 
-BiRefNet-Burn is an ambitious project that ports the cutting-edge BiRefNet model from PyTorch to the Burn framework, enabling efficient inference for high-resolution dichotomous image segmentation tasks.
+The objective of the BiRefNet-Burn project is to adapt the cutting-edge BiRefNet model, which has been developed within the PyTorch framework, for utilisation within the Burn framework.
 
 > [!NOTE]
-> We'll start with the inference implementation of the Swin v1 backbone, which is a key component of the original BiRefNet architecture.
+> At the moment, it works with the combination of the BiRefNet Swin v1 backbone and the Burn WebGPU backend.
 
 ## Table of Contents
 
 - [Overview](#overview)
-- [Features](#features)
 - [Installation](#installation)
 - [Usage](#usage)
 - [License](#license)
@@ -18,17 +17,10 @@ BiRefNet-Burn is an ambitious project that ports the cutting-edge BiRefNet model
 
 ## Overview
 
-BiRefNet is a state-of-the-art model designed for high-resolution dichotomous image segmentation, introduced in the paper "Bilateral Reference for High-Resolution Dichotomous Image Segmentation" [1]. This project leverages the Burn framework, a unified deep learning framework in Rust, to reimplement BiRefNet, aiming for improved performance and efficiency.
+BiRefNet is a cutting-edge model designed for high-resolution dichotomous image segmentation, as detailed in the paper "Bilateral Reference for High-Resolution Dichotomous Image Segmentation" [1]. This project employs the Burn framework, a unified deep learning framework written in Rust, with the objective of reimplementing BiRefNet in order to achieve enhanced performance and efficiency.
 
 - **BiRefNet**: [ZhengPeng7/BiRefNet](https://github.com/ZhengPeng7/BiRefNet)
 - **Burn**: [tracel-ai/burn](https://github.com/tracel-ai/burn)
-
-## Features
-
-- Rust implementation of BiRefNet using the Burn framework
-- Efficient inference for high-resolution segmentation tasks
-- Maintained accuracy and performance consistency with the original PyTorch implementation
-- Utilizes Swin Transformer v1 as the backbone, known for its hierarchical structure and shifted windows [2]
 
 ## Installation
 

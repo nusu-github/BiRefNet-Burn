@@ -30,8 +30,8 @@ impl MLPLayerConfig {
         MLPLayer {
             fc1,
             act,
-            drop,
             fc2,
+            drop,
         }
     }
 }

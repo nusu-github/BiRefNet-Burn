@@ -41,7 +41,7 @@ pub enum NormLayerEnum<B: Backend> {
 pub struct ChannelsFirst;
 
 impl ChannelsFirst {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {}
     }
     pub fn forward<B: Backend>(&self, input: Tensor<B, 4>) -> Tensor<B, 4> {
@@ -53,7 +53,7 @@ impl ChannelsFirst {
 pub struct ChannelsLast;
 
 impl ChannelsLast {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {}
     }
     pub fn forward<B: Backend>(&self, input: Tensor<B, 4>) -> Tensor<B, 4> {
@@ -110,7 +110,7 @@ pub enum ActLayerEnum {
 pub struct Silu;
 
 impl Silu {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {}
     }
     pub fn forward<B: Backend, const D: usize>(&self, input: Tensor<B, D>) -> Tensor<B, D> {

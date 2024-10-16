@@ -130,7 +130,7 @@ impl WindowAttentionConfig {
                 .float();
         let coords_flatten: Tensor<B, 2> = coords.flatten(1, 2);
         let relative_coords =
-            coords_flatten.clone().unsqueeze_dim(2) - coords_flatten.clone().unsqueeze_dim(1);
+            coords_flatten.clone().unsqueeze_dim(2) - coords_flatten.unsqueeze_dim(1);
         let relative_coords = relative_coords.permute([1, 2, 0]);
         let [b, d1, _] = relative_coords.dims();
         let relative_coords = relative_coords.clone().slice_assign(
@@ -143,7 +143,8 @@ impl WindowAttentionConfig {
         );
         let relative_coords = relative_coords.clone().slice_assign(
             [0..b, 0..d1, 0..1],
-            relative_coords.slice([0..b, 0..d1, 0..1]) * (2.0 * (self.window_size[1] as f64) - 1.),
+            relative_coords.slice([0..b, 0..d1, 0..1])
+                * 2.0_f64.mul_add(self.window_size[1] as f64, -1.),
         );
         let relative_position_index = relative_coords.sum_dim(2).squeeze_dims(&[-1]);
         let relative_position_index = Param::from_tensor(relative_position_index);
@@ -346,8 +347,8 @@ impl<B: Backend> SwinTransformerBlock<B> {
             if self.shift_size > 0 {
                 let shifted_x = roll(
                     x,
-                    &vec![-(self.shift_size as i64), -(self.shift_size as i64)],
-                    &vec![1, 2],
+                    &[-(self.shift_size as i64), -(self.shift_size as i64)],
+                    &[1, 2],
                 );
                 let attn_mask = mask_matrix;
                 (shifted_x, Some(attn_mask))
@@ -374,8 +375,8 @@ impl<B: Backend> SwinTransformerBlock<B> {
             if self.shift_size > 0 {
                 roll(
                     shifted_x,
-                    &vec![self.shift_size as i64, self.shift_size as i64],
-                    &vec![1, 2],
+                    &[self.shift_size as i64, self.shift_size as i64],
+                    &[1, 2],
                 )
             } else {
                 shifted_x
@@ -672,20 +673,17 @@ impl<B: Backend> PatchEmbed<B> {
             }
         };
         let x = self.proj.forward(x);
-        let x = {
-            match &self.norm {
-                Some(norm) => {
-                    let [_, _, wh, ww] = x.dims();
-                    let x: Tensor<B, 3> = x.flatten(2, 3).swap_dims(1, 2);
-                    let x = norm.forward(x);
-                    x.swap_dims(1, 2)
-                        .reshape([-1, self.embed_dim as i32, wh as i32, ww as i32])
-                }
-                None => x,
-            }
-        };
 
-        x
+        match &self.norm {
+            Some(norm) => {
+                let [_, _, wh, ww] = x.dims();
+                let x: Tensor<B, 3> = x.flatten(2, 3).swap_dims(1, 2);
+                let x = norm.forward(x);
+                x.swap_dims(1, 2)
+                    .reshape([-1, self.embed_dim as i32, wh as i32, ww as i32])
+            }
+            None => x,
+        }
     }
 }
 
@@ -736,7 +734,7 @@ fn linspace(start: f64, end: f64, steps: usize) -> Vec<f64> {
     let step_size = (end - start) / (steps as f64 - 1.0);
 
     for i in 0..steps {
-        result.push(start + i as f64 * step_size);
+        result.push((i as f64).mul_add(step_size, start));
     }
 
     result
@@ -785,7 +783,7 @@ impl SwinTransformerConfig {
         let mut layers = Vec::new();
         for i_layer in 0..num_layers {
             let start: usize = self.depths[..i_layer].iter().sum();
-            let end: usize = self.depths[..i_layer + 1].iter().sum();
+            let end: usize = self.depths[..=i_layer].iter().sum();
             let layer = BasicLayerConfig::new(
                 ((self.embed_dim as i32) * 2_i32.pow(i_layer as u32)) as usize,
                 self.depths[i_layer],

@@ -12,7 +12,7 @@ use burn::prelude::*;
 
 const CENTRAL_RANGE: f32 = 0.7;
 const A: [f32; 4] = [0.886_226_9, -1.645_349_6, 0.914_624_87, -0.140_543_33];
-const B: [f32; 4] = [-2.118_377_7, 1.442_710_5, -0.329_097_5, 0.012229801];
+const B: [f32; 4] = [-2.118_377_7, 1.442_710_5, -0.329_097_5, 0.012_229_801];
 const C: [f32; 4] = [-1.970_840_5, -1.624_906_5, 3.429_567_8, 1.641_345_3];
 const D: [f32; 2] = [3.543_889_3, 1.637_067_8];
 
@@ -79,7 +79,7 @@ fn apply_newton_raphson<B: Backend, const D: usize>(
     mut result: Tensor<B, D>,
     y: Tensor<B, D>,
 ) -> Tensor<B, D> {
-    let two_over_sqrt_pi = 2.0 / std::f32::consts::PI.sqrt();
+    let two_over_sqrt_pi = 2.0 / core::f32::consts::PI.sqrt();
     for _ in 0..2 {
         let correction = (result.clone().erf() - y.clone())
             / ((-result.clone().powf_scalar(2.0)).exp() * two_over_sqrt_pi);

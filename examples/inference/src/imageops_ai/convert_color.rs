@@ -61,7 +61,7 @@ where
     Luma<S>: Pixel<Subpixel = S>,
     S: Primitive + 'static,
 {
-    fn estimate_foreground<SM>(self, mask: &Image<Luma<SM>>, r: u32) -> Image<Rgb<S>>
+    fn estimate_foreground<SM>(self, mask: &Image<Luma<SM>>, r: u32) -> Self
     where
         SM: Primitive + 'static,
     {

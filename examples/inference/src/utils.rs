@@ -1,15 +1,11 @@
 use burn::{
     prelude::*,
-    record::Recorder,
     tensor::{
         module::interpolate,
         ops::{InterpolateMode, InterpolateOptions},
     },
 };
-use image::{
-    buffer::ConvertBuffer, flat::SampleLayout, GenericImageView, ImageBuffer, Luma, Pixel,
-    Primitive,
-};
+use image::{flat::SampleLayout, ImageBuffer, Luma, Pixel, Primitive};
 use num_traits::ToPrimitive;
 
 pub trait IntoTensor3<B: Backend> {
@@ -33,11 +29,8 @@ where
         } = self.sample_layout();
         let shape = Vec::from([height as usize, width as usize, channels as usize]);
         Self::Out::from_data(
-            TensorData::new(
-                self.into_iter().map(|x| x.to_f32().unwrap()).collect(),
-                shape,
-            )
-            .convert::<B::FloatElem>(),
+            TensorData::new(self.iter().map(|x| x.to_f32().unwrap()).collect(), shape)
+                .convert::<B::FloatElem>(),
             device,
         )
     }

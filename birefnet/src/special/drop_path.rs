@@ -11,7 +11,7 @@ pub struct DropPathConfig {
 }
 
 impl DropPathConfig {
-    pub fn init(&self) -> DropPath {
+    pub const fn init(&self) -> DropPath {
         DropPath {
             drop_prob: self.drop_prob,
             training: self.training,
@@ -34,7 +34,7 @@ impl DropPath {
         }
         let keep_prob = 1.0 - self.drop_prob;
         let other_dims = vec![1; D - 1];
-        let shape: Vec<_> = std::iter::once(x.dims()[0]).chain(other_dims).collect();
+        let shape: Vec<_> = core::iter::once(x.dims()[0]).chain(other_dims).collect();
         let random_tensor = Tensor::random(shape, Distribution::Bernoulli(keep_prob), &x.device());
         if self.scale_by_keep {
             x * random_tensor / keep_prob

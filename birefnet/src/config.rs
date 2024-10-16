@@ -67,6 +67,7 @@ pub struct ModelConfig {
 }
 
 impl ModelConfig {
+    #[must_use]
     pub fn lateral_channels_in_collection(&self) -> [usize; 4] {
         let channels = match self.backbone {
             Backbone::Vgg16 | Backbone::Vgg16bn => [512, 256, 128, 64],
@@ -85,12 +86,13 @@ impl ModelConfig {
         }
     }
 
+    #[must_use]
     pub fn cxt(&self) -> [usize; 3] {
         if self.cxt_num > 0 {
             let reversed: Vec<usize> = self.lateral_channels_in_collection()[1..]
                 .iter()
                 .rev()
-                .cloned()
+                .copied()
                 .collect();
             reversed[reversed.len().saturating_sub(self.cxt_num)..]
                 .try_into()
@@ -117,7 +119,7 @@ pub enum Prompt4loc {
     Sparse,
 }
 
-#[derive(Config, Debug, PartialEq)]
+#[derive(Config, Debug, PartialEq, Eq)]
 pub enum MulSclIpt {
     None,
     Add,
@@ -131,7 +133,7 @@ pub enum DecAtt {
     ASPPDeformable,
 }
 
-#[derive(Config, Debug, PartialEq)]
+#[derive(Config, Debug, PartialEq, Eq)]
 pub enum SqueezeBlock {
     None,
     BasicDecBlk(usize),
@@ -141,13 +143,14 @@ pub enum SqueezeBlock {
 }
 
 impl SqueezeBlock {
-    pub fn count(&self) -> usize {
+    #[must_use]
+    pub const fn count(&self) -> usize {
         match self {
-            SqueezeBlock::None => 0,
-            SqueezeBlock::BasicDecBlk(x) => *x,
-            SqueezeBlock::ResBlk(x) => *x,
-            SqueezeBlock::ASPP(x) => *x,
-            SqueezeBlock::ASPPDeformable(x) => *x,
+            Self::None => 0,
+            Self::BasicDecBlk(x) => *x,
+            Self::ResBlk(x) => *x,
+            Self::ASPP(x) => *x,
+            Self::ASPPDeformable(x) => *x,
         }
     }
 }
