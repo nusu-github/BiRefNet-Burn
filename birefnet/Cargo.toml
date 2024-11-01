@@ -5,5 +5,5 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-burn = { workspace = true, default-features = false, features = ["std"] }
+burn = { workspace = true, features = ["std"] }
 libm = { workspace = true }

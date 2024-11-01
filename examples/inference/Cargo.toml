@@ -16,9 +16,9 @@ fusion = ["burn/fusion"]
 
 [dependencies]
 birefnet-burn = { path = "../../birefnet" }
-burn = { workspace = true, default-features = false }
+burn = { workspace = true }
 
 anyhow = "1"
 clap = { version = "^4.5.20", features = ["derive"] }
-image = "^0.25.2"
+image = "^0.25.4"
 num-traits = "^0.2.19"

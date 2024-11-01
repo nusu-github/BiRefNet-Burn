@@ -4,7 +4,7 @@ resolver = "2"
 members = [
     "birefnet",
     "examples/*",
-    #    "tests/*",
+    # "tests/*",
 ]
 
 [workspace.package]
@@ -14,6 +14,6 @@ readme = "README.md"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-burn = { git = "https://github.com/tracel-ai/burn", default-features = false }
-burn-import = { git = "https://github.com/tracel-ai/burn" }
+burn = "0.15.0"
+burn-import = "0.15.0"
 libm = "0.2.8"
