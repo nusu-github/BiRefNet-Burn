@@ -58,6 +58,13 @@ pub enum BiRefNetError {
         reason: String,
     },
 
+    /// Error for when dataset operations fail.
+    #[error("Dataset error: {message}")]
+    DatasetError {
+        /// The error message.
+        message: String,
+    },
+
     /// A general-purpose error for cases not covered by other variants.
     #[error("General error: {message}")]
     General {

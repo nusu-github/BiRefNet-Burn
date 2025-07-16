@@ -1,0 +1,8 @@
+[package]
+name = "dataset_test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+birefnet-burn = { path = "../../birefnet", features = ["train"] }
+burn = { workspace = true, features = ["ndarray", "dataset"] }

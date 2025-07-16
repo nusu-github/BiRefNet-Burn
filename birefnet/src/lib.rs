@@ -25,9 +25,15 @@ mod error;
 mod models;
 mod special;
 
+#[cfg(feature = "train")]
+mod dataset;
+
 #[cfg(test)]
 mod tests;
 
 pub use config::*;
 pub use error::{BiRefNetError, BiRefNetResult};
 pub use models::{BiRefNet, BiRefNetConfig, BiRefNetRecord};
+
+#[cfg(feature = "train")]
+pub use dataset::{BiRefNetDataset, BiRefNetItem};

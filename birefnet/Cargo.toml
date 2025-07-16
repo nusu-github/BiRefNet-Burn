@@ -4,10 +4,17 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+
+train = ["burn/train", "burn/vision", "dep:image", "dep:walkdir"]
+
 [dependencies]
-burn = { workspace = true, features = ["std"] }
+burn = { workspace = true }
+image = { workspace = true, optional = true }
 libm = { workspace = true }
 thiserror = "2"
+walkdir = { workspace = true, optional = true }
 
 [dev-dependencies]
-burn = { workspace = true, features = ["std", "ndarray"] }
+burn = { workspace = true, features = ["ndarray"] }

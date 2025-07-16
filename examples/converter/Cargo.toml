@@ -7,7 +7,7 @@ publish = false
 
 [dependencies]
 birefnet-burn = { path = "../../birefnet" }
-burn = { workspace = true, features = ["std", "ndarray"] }
+burn = { workspace = true, features = ["ndarray"] }
 burn-import = { workspace = true }
 
 anyhow = "1"
