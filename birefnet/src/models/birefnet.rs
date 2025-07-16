@@ -1,3 +1,20 @@
+//! # BiRefNet Model Implementation
+//!
+//! This module defines the main `BiRefNet` model, which combines a backbone encoder
+//! with a sophisticated decoder to produce segmentation masks.
+//!
+//! ## Core Components
+//!
+//! - `BiRefNetConfig`: A configuration struct to initialize the `BiRefNet` model.
+//! - `BiRefNet`: The main model struct, which orchestrates the forward pass through
+//!   the encoder and decoder.
+//! - `Decoder`: The decoder module that takes features from the encoder and progressively
+//!   upsamples them to produce the final segmentation map.
+//! - `DecoderConfig`: Configuration for the `Decoder` module.
+//!
+//! The implementation closely follows the original PyTorch version, including support for
+//! multi-scale inputs, context aggregation, and various decoder block configurations.
+
 use super::{
     build_backbone, ASPPConfig, ASPPDeformable, ASPPDeformableConfig, BackboneEnum, BasicDecBlk,
     BasicDecBlkConfig, BasicLatBlk, BasicLatBlkConfig, ResBlk, ResBlkConfig, ASPP,
@@ -5,6 +22,7 @@ use super::{
 use crate::config::{DecBlk, LatBlk, MulSclIpt};
 use crate::{
     config::{ModelConfig, SqueezeBlock},
+    error::{BiRefNetError, BiRefNetResult},
     special::Identity,
 };
 use burn::{
@@ -20,6 +38,7 @@ use burn::{
     },
 };
 
+/// An enum to wrap different types of squeeze blocks used in the decoder.
 #[derive(Module, Debug)]
 pub enum SqueezeBlockModule<B: Backend> {
     BasicDecBlk(BasicDecBlk<B>),
@@ -28,53 +47,73 @@ pub enum SqueezeBlockModule<B: Backend> {
     ASPPDeformable(ASPPDeformable<B>),
 }
 
+/// Configuration for the `BiRefNet` model.
 #[derive(Config, Debug)]
 pub struct BiRefNetConfig {
+    /// The detailed model configuration.
     config: ModelConfig,
 }
 
 impl BiRefNetConfig {
-    pub fn init<B: Backend>(&self, device: &Device<B>) -> BiRefNet<B> {
-        let bb = build_backbone(&self.config, device);
+    /// Initializes a `BiRefNet` model with the given configuration.
+    ///
+    /// # Arguments
+    ///
+    /// * `device` - The device to create the model on.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the configuration is invalid or model initialization fails.
+    pub fn init<B: Backend>(&self, device: &Device<B>) -> BiRefNetResult<BiRefNet<B>> {
+        let bb = build_backbone(&self.config, device)?;
         let channels = self.config.lateral_channels_in_collection();
-        let cxt = self.config.cxt();
+        let cxt = self.config.cxt()?;
 
-        let squeeze_module = if self.config.squeeze_block == SqueezeBlock::None {
+        let squeeze_module = if self.config.decoder.squeeze_block == SqueezeBlock::None {
             vec![]
         } else {
-            let mut squeeze_module = Vec::with_capacity(self.config.squeeze_block.count());
+            let mut squeeze_module = Vec::with_capacity(self.config.decoder.squeeze_block.count());
 
-            for _ in 0..self.config.squeeze_block.count() {
-                match self.config.squeeze_block {
+            for _ in 0..self.config.decoder.squeeze_block.count() {
+                match self.config.decoder.squeeze_block {
                     SqueezeBlock::BasicDecBlk(_) => {
+                        let cxt_sum = cxt.iter().sum::<usize>();
                         let model = BasicDecBlkConfig::new(SqueezeBlock::ASPPDeformable(0))
-                            .with_in_channels(channels[0] + cxt.iter().sum::<usize>())
+                            .with_in_channels(channels[0] + cxt_sum)
                             .with_out_channels(channels[0])
-                            .init(device);
+                            .init(device)?;
                         squeeze_module.push(SqueezeBlockModule::BasicDecBlk(model));
                     }
                     SqueezeBlock::ResBlk(_) => {
+                        let cxt_sum = cxt.iter().sum::<usize>();
                         let model = ResBlkConfig::new()
-                            .with_in_channels(channels[0] + cxt.iter().sum::<usize>())
+                            .with_in_channels(channels[0] + cxt_sum)
                             .with_out_channels(Some(channels[0]))
-                            .init(device);
+                            .init(device)?;
                         squeeze_module.push(SqueezeBlockModule::ResBlk(model));
                     }
                     SqueezeBlock::ASPP(_) => {
+                        let cxt_sum = cxt.iter().sum::<usize>();
                         let model = ASPPConfig::new()
-                            .with_in_channels(channels[0] + cxt.iter().sum::<usize>())
+                            .with_in_channels(channels[0] + cxt_sum)
                             .with_out_channels(Some(channels[0]))
                             .init(device);
                         squeeze_module.push(SqueezeBlockModule::ASPP(model));
                     }
                     SqueezeBlock::ASPPDeformable(_) => {
+                        let cxt_sum = cxt.iter().sum::<usize>();
                         let model = ASPPDeformableConfig::new()
-                            .with_in_channels(channels[0] + cxt.iter().sum::<usize>())
+                            .with_in_channels(channels[0] + cxt_sum)
                             .with_out_channels(Some(channels[0]))
-                            .init(device);
+                            .init(device)?;
                         squeeze_module.push(SqueezeBlockModule::ASPPDeformable(model));
                     }
-                    SqueezeBlock::None => unreachable!(),
+                    SqueezeBlock::None => {
+                        return Err(BiRefNetError::InvalidConfiguration {
+                            reason: "SqueezeBlock::None should not be processed in this loop"
+                                .to_string(),
+                        });
+                    }
                 };
             }
 
@@ -83,22 +122,23 @@ impl BiRefNetConfig {
 
         // TODO: refine
 
-        let mul_scl_ipt = match self.config.mul_scl_ipt {
+        let mul_scl_ipt = match self.config.decoder.mul_scl_ipt {
             MulSclIpt::None => MulSclIpt_::None(Identity::new()),
             MulSclIpt::Add => MulSclIpt_::Add(Identity::new()),
             MulSclIpt::Cat => MulSclIpt_::Cat(Identity::new()),
         };
 
-        BiRefNet {
+        Ok(BiRefNet {
             mul_scl_ipt,
             cxt,
             bb,
             squeeze_module,
-            decoder: DecoderConfig::new(self.config.clone(), channels).init(device),
-        }
+            decoder: DecoderConfig::new(self.config.clone(), channels).init(device)?,
+        })
     }
 }
 
+/// An enum to handle different multi-scale input strategies.
 #[derive(Module, Debug, Clone)]
 enum MulSclIpt_ {
     None(Identity),
@@ -106,19 +146,34 @@ enum MulSclIpt_ {
     Cat(Identity),
 }
 
+/// The main BiRefNet model.
 #[derive(Module, Debug)]
 pub struct BiRefNet<B: Backend> {
+    /// The multi-scale input handling module.
     mul_scl_ipt: MulSclIpt_,
+    /// Context channel sizes.
     cxt: [usize; 3],
+    /// The backbone encoder.
     bb: BackboneEnum<B>,
+    /// The squeeze module applied to the deepest encoder feature.
     squeeze_module: Vec<SqueezeBlockModule<B>>,
+    /// The decoder module.
     decoder: Decoder<B>,
 }
 
 impl<B: Backend> BiRefNet<B> {
-    pub fn forward_enc(&self, x: Tensor<B, 4>) -> [Tensor<B, 4>; 4] {
+    /// Performs the forward pass through the encoder part of the network.
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - The input tensor of shape `[B, C, H, W]`.
+    ///
+    /// # Returns
+    ///
+    /// A result containing a 4-element array of feature maps from the encoder stages.
+    pub fn forward_enc(&self, x: Tensor<B, 4>) -> BiRefNetResult<[Tensor<B, 4>; 4]> {
         let [x1, x2, x3, x4] = match &self.bb {
-            BackboneEnum::SwinTransformer(bb) => bb.forward(x.clone()),
+            BackboneEnum::SwinTransformer(bb) => bb.forward(x.clone())?,
         };
         let [x1, x2, x3, x4] = match self.mul_scl_ipt {
             MulSclIpt_::None(_) => [x1, x2, x3, x4],
@@ -129,7 +184,7 @@ impl<B: Backend> BiRefNet<B> {
                         x,
                         [h / 2, w / 2],
                         InterpolateOptions::new(InterpolateMode::Bilinear),
-                    )),
+                    ))?,
                 };
 
                 let [_, _, h, w] = x1.dims();
@@ -170,7 +225,7 @@ impl<B: Backend> BiRefNet<B> {
                         x,
                         [h / 2, w / 2],
                         InterpolateOptions::new(InterpolateMode::Bilinear),
-                    )),
+                    ))?,
                 };
 
                 let [_, _, h, w] = x1.dims();
@@ -249,14 +304,26 @@ impl<B: Backend> BiRefNet<B> {
             result.push(x4);
 
             let x4 = Tensor::cat(result, 1);
-            [x1, x2, x3, x4]
+            Ok([x1, x2, x3, x4])
         } else {
-            [x1, x2, x3, x4]
+            Ok([x1, x2, x3, x4])
         }
     }
-    pub fn forward_ori(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
+
+    /// The original forward pass of the model.
+    ///
+    /// This method encapsulates the full process from encoder to decoder.
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - The input tensor of shape `[B, C, H, W]`.
+    ///
+    /// # Returns
+    ///
+    /// A result containing the final segmentation map.
+    pub fn forward_ori(&self, x: Tensor<B, 4>) -> BiRefNetResult<Tensor<B, 4>> {
         // ########## Encoder ##########
-        let [x1, x2, x3, x4] = self.forward_enc(x.clone());
+        let [x1, x2, x3, x4] = self.forward_enc(x.clone())?;
         let mut x4 = x4;
         for squeeze_module in &self.squeeze_module {
             match squeeze_module {
@@ -277,30 +344,46 @@ impl<B: Backend> BiRefNet<B> {
         // ########## Decoder ##########
         let features = [x, x1, x2, x3, x4];
 
-        self.decoder.forward(features)
+        Ok(self.decoder.forward(features))
     }
-    pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
+
+    /// The main forward pass for the `BiRefNet` model.
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - The input tensor of shape `[B, C, H, W]`.
+    ///
+    /// # Returns
+    ///
+    /// A result containing the final segmentation map.
+    pub fn forward(&self, x: Tensor<B, 4>) -> BiRefNetResult<Tensor<B, 4>> {
         self.forward_ori(x)
     }
 }
 
+/// An enum to wrap different types of decoder blocks.
 #[derive(Module, Debug)]
 pub enum DecoderBlockModuleEnum<B: Backend> {
     BasicDecBlk(BasicDecBlk<B>),
     ResBlk(ResBlk<B>),
 }
 
+/// An enum to wrap different types of lateral blocks.
 #[derive(Module, Debug)]
 pub enum LateralBlockModuleEnum<B: Backend> {
     BasicLatBlk(BasicLatBlk<B>),
 }
 
+/// Configuration for the `Decoder` module.
 #[derive(Config, Debug)]
 pub struct DecoderConfig {
+    /// The main model configuration.
     config: ModelConfig,
+    /// The channel sizes of the encoder features.
     channels: [usize; 4],
 }
 
+/// A small convolutional module used for gradient guidance.
 #[derive(Module, Debug)]
 struct GdtConvs<B: Backend> {
     conv: Conv2d<B>,
@@ -333,10 +416,19 @@ impl DecoderConfig {
     const IPT_CHA_OPT: usize = 1;
     const _N: usize = 16;
 
-    pub fn init<B: Backend>(&self, device: &B::Device) -> Decoder<B> {
+    /// Initializes a `Decoder` module.
+    ///
+    /// # Arguments
+    ///
+    /// * `device` - The device to create the module on.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if initialization fails.
+    pub fn init<B: Backend>(&self, device: &B::Device) -> BiRefNetResult<Decoder<B>> {
         let split = {
-            if self.config.dec_ipt {
-                self.config.dec_ipt_split
+            if self.config.decoder.dec_ipt {
+                self.config.decoder.dec_ipt_split
             } else {
                 false
             }
@@ -348,7 +440,7 @@ impl DecoderConfig {
         let mut ipt_blk2 = None;
         let mut ipt_blk1 = None;
 
-        if self.config.dec_ipt {
+        if self.config.decoder.dec_ipt {
             let out_channels = |x: usize| {
                 if Self::IPT_CHA_OPT == 0 {
                     Self::N_DEC_IPT
@@ -388,7 +480,7 @@ impl DecoderConfig {
 
         let in_channels = |x: usize, y: usize| {
             self.channels[x] + {
-                if self.config.dec_ipt {
+                if self.config.decoder.dec_ipt {
                     if Self::IPT_CHA_OPT == 0 {
                         Self::N_DEC_IPT
                     } else {
@@ -399,14 +491,17 @@ impl DecoderConfig {
                 }
             }
         };
-        let decoder_block4 = self.create_decoder_block(in_channels(0, 0), self.channels[1], device);
-        let decoder_block3 = self.create_decoder_block(in_channels(1, 0), self.channels[2], device);
-        let decoder_block2 = self.create_decoder_block(in_channels(2, 1), self.channels[3], device);
+        let decoder_block4 =
+            self.create_decoder_block(in_channels(0, 0), self.channels[1], device)?;
+        let decoder_block3 =
+            self.create_decoder_block(in_channels(1, 0), self.channels[2], device)?;
+        let decoder_block2 =
+            self.create_decoder_block(in_channels(2, 1), self.channels[3], device)?;
         let decoder_block1 =
-            self.create_decoder_block(in_channels(3, 2), self.channels[3] / 2, device);
+            self.create_decoder_block(in_channels(3, 2), self.channels[3] / 2, device)?;
 
         let in_channels = (self.channels[3] / 2) + {
-            if self.config.dec_ipt {
+            if self.config.decoder.dec_ipt {
                 if Self::IPT_CHA_OPT == 0 {
                     Self::N_DEC_IPT
                 } else {
@@ -440,7 +535,7 @@ impl DecoderConfig {
         let mut gdt_convs_attn_3 = None;
         let mut gdt_convs_attn_2 = None;
 
-        if self.config.ms_supervision {
+        if self.config.decoder.ms_supervision {
             conv_ms_spvn_4 = Some(
                 Conv2dConfig::new([self.channels[1], 1], [1, 1])
                     .with_padding(PaddingConfig2d::Valid)
@@ -457,7 +552,7 @@ impl DecoderConfig {
                     .init(device),
             );
 
-            if self.config.out_ref {
+            if self.config.decoder.out_ref {
                 gdt_convs_4 = Some(GdtConvs::init(
                     Conv2dConfig::new([self.channels[1], Self::_N], [3, 3])
                         .with_padding(PaddingConfig2d::Explicit(1, 1)),
@@ -511,7 +606,7 @@ impl DecoderConfig {
             }
         };
 
-        Decoder {
+        Ok(Decoder {
             split,
             ipt_blk5,
             ipt_blk4,
@@ -538,7 +633,7 @@ impl DecoderConfig {
             gdt_convs_attn_4,
             gdt_convs_attn_3,
             gdt_convs_attn_2,
-        }
+        })
     }
 
     fn create_decoder_block<B: Backend>(
@@ -546,20 +641,20 @@ impl DecoderConfig {
         in_channels: usize,
         out_channels: usize,
         device: &Device<B>,
-    ) -> DecoderBlockModuleEnum<B> {
-        match self.config.dec_blk {
-            DecBlk::BasicDecBlk => DecoderBlockModuleEnum::BasicDecBlk(
+    ) -> BiRefNetResult<DecoderBlockModuleEnum<B>> {
+        match self.config.decoder.dec_blk {
+            DecBlk::BasicDecBlk => Ok(DecoderBlockModuleEnum::BasicDecBlk(
                 BasicDecBlkConfig::new(SqueezeBlock::ASPPDeformable(0))
                     .with_in_channels(in_channels)
                     .with_out_channels(out_channels)
-                    .init(device),
-            ),
-            DecBlk::ResBlk => DecoderBlockModuleEnum::ResBlk(
+                    .init(device)?,
+            )),
+            DecBlk::ResBlk => Ok(DecoderBlockModuleEnum::ResBlk(
                 ResBlkConfig::new()
                     .with_in_channels(in_channels)
                     .with_out_channels(Some(out_channels))
-                    .init(device),
-            ),
+                    .init(device)?,
+            )),
         }
     }
 
@@ -569,7 +664,7 @@ impl DecoderConfig {
         out_channels: usize,
         device: &Device<B>,
     ) -> LateralBlockModuleEnum<B> {
-        match self.config.lat_blk {
+        match self.config.decoder.lat_blk {
             LatBlk::BasicLatBlk => LateralBlockModuleEnum::BasicLatBlk(
                 BasicLatBlkConfig::new()
                     .with_in_channels(in_channels)
@@ -580,6 +675,7 @@ impl DecoderConfig {
     }
 }
 
+/// The decoder module of BiRefNet.
 #[derive(Module, Debug)]
 pub struct Decoder<B: Backend> {
     split: bool,
@@ -611,6 +707,16 @@ pub struct Decoder<B: Backend> {
 }
 
 impl<B: Backend> Decoder<B> {
+    /// Forward pass for the decoder.
+    ///
+    /// # Arguments
+    ///
+    /// * `features` - A 5-element array containing the input image and the four
+    ///   feature maps from the encoder `[x, x1, x2, x3, x4]`.
+    ///
+    /// # Returns
+    ///
+    /// The final segmentation map.
     pub fn forward(&self, features: [Tensor<B, 4>; 5]) -> Tensor<B, 4> {
         let [x, x1, x2, x3, x4] = features;
 
@@ -872,6 +978,7 @@ impl<B: Backend> Decoder<B> {
     }
 }
 
+/// A simple two-layer convolutional block.
 #[derive(Config, Debug)]
 pub struct SimpleConvsConfig {
     in_channels: usize,
@@ -881,6 +988,7 @@ pub struct SimpleConvsConfig {
 }
 
 impl SimpleConvsConfig {
+    /// Initializes a `SimpleConvs` module.
     pub fn init<B: Backend>(&self, device: &Device<B>) -> SimpleConvs<B> {
         let conv1 = Conv2dConfig::new([self.in_channels, self.inter_channels], [3, 3])
             .with_padding(PaddingConfig2d::Explicit(1, 1))
@@ -894,6 +1002,7 @@ impl SimpleConvsConfig {
     }
 }
 
+/// A simple two-layer convolutional block used for decoder input processing.
 #[derive(Module, Debug)]
 pub struct SimpleConvs<B: Backend> {
     conv1: Conv2d<B>,

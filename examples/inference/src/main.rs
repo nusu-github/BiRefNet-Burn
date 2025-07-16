@@ -1,3 +1,7 @@
+// NOT EDITED recursion_limit
+// wgpu backends requires a higher recursion limit
+#![recursion_limit = "256"]
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -8,11 +12,11 @@ use burn::{
     record::{FullPrecisionSettings, NamedMpkFileRecorder, Recorder},
 };
 use clap::Parser;
+use image::{ImageBuffer, Luma};
+use imageops_kit::{ApplyAlphaMaskExt, ForegroundEstimationExt};
 
-use crate::imageops_ai::{AlphaMaskImage, ForegroundEstimator};
 use crate::utils::{postprocess_mask, preprocess, Normalizer};
 
-mod imageops_ai;
 mod utils;
 
 const HEIGHT: usize = 1024;
@@ -25,7 +29,8 @@ struct Args {
     image: PathBuf,
 }
 
-type Backend = burn::backend::wgpu::Wgpu;
+type Backend = burn::backend::NdArray;
+// type Backend = burn::backend::wgpu::Wgpu;
 // type Backend = burn::backend::cuda_jit::Cuda;
 
 fn main() -> Result<()> {
@@ -42,10 +47,10 @@ fn main() -> Result<()> {
     let model_name = model_path.file_stem().unwrap().to_str().unwrap();
     let dir = model_path
         .parent()
-        .or_else(|| return Some(Path::new(".")))
+        .or_else(|| Some(Path::new(".")))
         .unwrap();
     let model = BiRefNetConfig::new(ModelConfig::load(dir.join(format!("{model_name}.json")))?)
-        .init::<Backend>(&device)
+        .init::<Backend>(&device)?
         .load_record(record);
 
     let img = image::open(image_path)?.into_rgb8();
@@ -55,11 +60,19 @@ fn main() -> Result<()> {
     let img_tensor = img_tensor.unsqueeze::<4>();
     let x = Normalizer::new(&device).normalize(img_tensor);
 
-    let mask = model.forward(x);
+    let mask = model.forward(x)?;
     let mask = Sigmoid::new().forward(mask).squeeze::<3>(0);
 
     let mask = postprocess_mask(mask, size.0, size.1);
-    let mask_img = img.estimate_foreground(&mask, 90).add_alpha_mask(&mask)?;
+
+    // Convert f32 mask to u8 mask
+    let mask_u8 = ImageBuffer::<Luma<u8>, Vec<u8>>::from_fn(mask.width(), mask.height(), |x, y| {
+        let pixel = mask.get_pixel(x, y);
+        Luma([(pixel.0[0] * 255.0) as u8])
+    });
+
+    let mask_img = img.estimate_foreground_colors(&mask_u8, 91)?;
+    let mask_img = mask_img.apply_alpha_mask(&mask_u8)?;
 
     mask_img.save("mask.png")?;
 

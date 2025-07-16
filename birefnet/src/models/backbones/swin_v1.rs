@@ -1,3 +1,35 @@
+//! # Swin Transformer v1 Implementation
+//!
+//! This module provides a Rust implementation of the Swin Transformer backbone using the Burn framework.
+//! The Swin Transformer is a hierarchical vision transformer that uses shifted windows for efficient
+//! self-attention computation.
+//!
+//! ## Architecture Overview
+//!
+//! The Swin Transformer consists of several key components:
+//! - **PatchEmbed**: Converts input images into patch embeddings
+//! - **SwinTransformerBlock**: Core transformer block with window-based multi-head self-attention
+//! - **WindowAttention**: Multi-head self-attention with relative position bias
+//! - **PatchMerging**: Downsampling layer that merges neighboring patches
+//! - **BasicLayer**: A sequence of Swin transformer blocks at a particular resolution
+//!
+//! ## Key Features
+//! - Hierarchical feature representation with 4 stages
+//! - Window-based self-attention with shifted windows for cross-window connections
+//! - Relative position bias for improved spatial understanding
+//! - Configurable window sizes and model depths
+//!
+//! ## Model Variants
+//! - **Swin-T**: Tiny model (96 dim, [2,2,6,2] depths, [3,6,12,24] heads)
+//! - **Swin-S**: Small model (96 dim, [2,2,18,2] depths, [3,6,12,24] heads)  
+//! - **Swin-B**: Base model (128 dim, [2,2,18,2] depths, [4,8,16,32] heads)
+//! - **Swin-L**: Large model (192 dim, [2,2,18,2] depths, [6,12,24,48] heads)
+//!
+//! ## Reference
+//! Based on "Swin Transformer: Hierarchical Vision Transformer using Shifted Windows"
+//! - Paper: https://arxiv.org/pdf/2103.14030
+//! - Original PyTorch implementation: Microsoft Research
+
 use burn::{
     module::Param,
     nn::{
@@ -12,8 +44,24 @@ use burn::{
     },
 };
 
+use crate::error::{BiRefNetError, BiRefNetResult};
 use crate::special::{roll, trunc_normal, DropPath, DropPathConfig, Slice};
 
+/// Configuration for a Multi-Layer Perceptron (MLP) used in Swin Transformer blocks.
+///
+/// The MLP consists of two linear transformations with a GELU activation function
+/// and dropout applied between them. This follows the standard transformer FFN design.
+///
+/// # Architecture
+/// ```text
+/// Input -> Linear -> GELU -> Dropout -> Linear -> Dropout -> Output
+/// ```
+///
+/// # Arguments
+/// - `in_features`: Number of input features
+/// - `hidden_features`: Number of hidden features (defaults to `in_features` if None)
+/// - `out_features`: Number of output features (defaults to `in_features` if None)
+/// - `drop`: Dropout probability applied after each linear layer
 #[derive(Config, Debug)]
 pub struct MlpConfig {
     in_features: usize,
@@ -44,6 +92,16 @@ impl MlpConfig {
     }
 }
 
+/// Multi-Layer Perceptron (MLP) module for Swin Transformer blocks.
+///
+/// This is the feed-forward network component used in each Swin Transformer block.
+/// It applies two linear transformations with GELU activation and dropout.
+///
+/// # Components
+/// - `fc1`: First linear transformation (input -> hidden)
+/// - `act`: GELU activation function
+/// - `fc2`: Second linear transformation (hidden -> output)  
+/// - `drop`: Dropout layer applied after both linear layers
 #[derive(Module, Debug)]
 pub struct Mlp<B: Backend> {
     fc1: Linear<B>,
@@ -53,6 +111,15 @@ pub struct Mlp<B: Backend> {
 }
 
 impl<B: Backend> Mlp<B> {
+    /// Forward pass through the MLP.
+    ///
+    /// Applies the sequence: Linear -> GELU -> Dropout -> Linear -> Dropout
+    ///
+    /// # Arguments
+    /// - `x`: Input tensor of shape `[batch_size, sequence_length, features]`
+    ///
+    /// # Returns
+    /// Output tensor of shape `[batch_size, sequence_length, out_features]`
     pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
         let x = self.fc1.forward(x);
         let x = self.act.forward(x);
@@ -63,6 +130,44 @@ impl<B: Backend> Mlp<B> {
     }
 }
 
+/// Create a 2D coordinate grid matching PyTorch's torch.meshgrid([coords_h, coords_w], indexing='ij').
+/// PyTorch produces: coords shape [2, Wh, Ww] where coords[0] is height mesh, coords[1] is width mesh
+/// Uses stable tensor operations (arange, reshape, repeat_dim, stack) instead of complex operations.
+fn create_coordinate_grid<B: Backend>(
+    height: usize,
+    width: usize,
+    device: &Device<B>,
+) -> Tensor<B, 3> {
+    // Create height coordinates (first dimension in PyTorch meshgrid)
+    let h_coords = Tensor::arange(0..height as i64, device)
+        .reshape([height, 1])
+        .repeat_dim(1, width)
+        .reshape([height, width]);
+    // Create width coordinates (second dimension in PyTorch meshgrid)
+    let w_coords = Tensor::arange(0..width as i64, device)
+        .reshape([1, width])
+        .repeat_dim(0, height)
+        .reshape([height, width]);
+
+    // Stack in [h, w] order with first dimension as stacking dim to match PyTorch [2, Wh, Ww]
+    Tensor::stack(vec![h_coords.float(), w_coords.float()], 0)
+}
+
+/// Partitions input feature maps into non-overlapping windows.
+///
+/// This function divides the input tensor into windows of size `window_size x window_size`
+/// for efficient window-based attention computation in Swin Transformer.
+///
+/// # Arguments
+/// - `x`: Input tensor of shape `[batch_size, height, width, channels]`
+/// - `window_size`: Size of each window (e.g., 7 for 7x7 windows)
+///
+/// # Returns
+/// Tensor of shape `[num_windows * batch_size, window_size, window_size, channels]`
+/// where `num_windows = (height / window_size) * (width / window_size)`
+///
+/// # Panics
+/// The function assumes that both height and width are divisible by `window_size`.
 fn window_partition<B: Backend>(x: Tensor<B, 4>, window_size: usize) -> Tensor<B, 4> {
     let [b, h, w, c] = x.dims();
     let x = x.reshape([
@@ -74,30 +179,67 @@ fn window_partition<B: Backend>(x: Tensor<B, 4>, window_size: usize) -> Tensor<B
         c,
     ]);
 
-    x.permute([0, 1, 3, 2, 4, 5])
-        .reshape([-1, window_size as i32, window_size as i32, c as i32])
+    x.permute([0, 1, 3, 2, 4, 5]).reshape([
+        b * (h / window_size) * (w / window_size),
+        window_size,
+        window_size,
+        c,
+    ])
 }
 
+/// Reverses the window partitioning operation, merging windows back into feature maps.
+///
+/// This function is the inverse of `window_partition`, reconstructing the original
+/// feature map layout from windowed tensors.
+///
+/// # Arguments
+/// - `windows`: Windowed tensor of shape `[num_windows * batch_size, window_size, window_size, channels]`
+/// - `window_size`: Size of each window that was used in partitioning
+/// - `h`: Original height of the feature map
+/// - `w`: Original width of the feature map
+///
+/// # Returns
+/// Tensor of shape `[batch_size, height, width, channels]` representing the
+/// reconstructed feature map
 fn window_reverse<B: Backend>(
     windows: Tensor<B, 4>,
     window_size: usize,
     h: usize,
     w: usize,
 ) -> Tensor<B, 4> {
-    let b = windows.shape().dims[0] / (h * w / window_size / window_size);
+    let [total_windows, _, _, channels] = windows.dims();
+    let b = total_windows / (h * w / window_size / window_size);
     let x = windows.reshape([
-        b as i32,
-        (h / window_size) as i32,
-        (w / window_size) as i32,
-        window_size as i32,
-        window_size as i32,
-        -1,
+        b,
+        h / window_size,
+        w / window_size,
+        window_size,
+        window_size,
+        channels,
     ]);
 
-    x.permute([0, 1, 3, 2, 4, 5])
-        .reshape([b as i32, h as i32, w as i32, -1])
+    x.permute([0, 1, 3, 2, 4, 5]).reshape([b, h, w, channels])
 }
 
+/// Configuration for Window-based Multi-Head Self-Attention.
+///
+/// This is the core attention mechanism in Swin Transformer that performs
+/// self-attention within non-overlapping windows with relative position bias.
+///
+/// # Key Features
+/// - Window-based attention computation for efficiency
+/// - Relative position bias for better spatial understanding
+/// - Multi-head attention with configurable head dimensions
+/// - Support for both regular and shifted window attention
+///
+/// # Arguments
+/// - `dim`: Number of input channels/embedding dimension
+/// - `window_size`: Height and width of the attention window (typically [7, 7])
+/// - `num_heads`: Number of attention heads
+/// - `qkv_bias`: Whether to add learnable bias to query, key, value projections
+/// - `qk_scale`: Override default scale factor (head_dim^-0.5) if provided
+/// - `attn_drop`: Dropout probability for attention weights
+/// - `proj_drop`: Dropout probability for output projection
 #[derive(Config, Debug)]
 pub struct WindowAttentionConfig {
     dim: usize,
@@ -124,30 +266,44 @@ impl WindowAttentionConfig {
             device,
         );
 
-        let coords: Tensor<B, 3> =
-            Tensor::<B, 2, Int>::cartesian_grid([self.window_size[0], self.window_size[1]], device)
-                .permute([2, 0, 1])
-                .float();
-        let coords_flatten: Tensor<B, 2> = coords.flatten(1, 2);
-        let relative_coords =
-            coords_flatten.clone().unsqueeze_dim(2) - coords_flatten.unsqueeze_dim(1);
+        // Recreate PyTorch's exact relative position calculation
+        // coords: [2, Wh, Ww] -> coords_flatten: [2, Wh*Ww]
+        let coords = create_coordinate_grid(self.window_size[0], self.window_size[1], device);
+        let coords_flatten: Tensor<B, 2> = coords.flatten(1, 2); // Shape: [2, window_size^2]
+
+        // relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]
+        // Result shape: [2, Wh*Ww, Wh*Ww]
+        let relative_coords: Tensor<B, 3> =
+            coords_flatten.clone().unsqueeze_dim::<3>(2) - coords_flatten.unsqueeze_dim::<3>(1);
+
+        // relative_coords = relative_coords.permute(1, 2, 0)
+        // Result shape: [Wh*Ww, Wh*Ww, 2]
         let relative_coords = relative_coords.permute([1, 2, 0]);
-        let [b, d1, _] = relative_coords.dims();
-        let relative_coords = relative_coords.clone().slice_assign(
-            [0..b, 0..d1, 0..1],
-            relative_coords.slice([0..b, 0..d1, 0..1]) + (self.window_size[1] - 1) as f64,
-        );
-        let relative_coords = relative_coords.clone().slice_assign(
-            [0..b, 0..d1, 1..2],
-            relative_coords.slice([0..b, 0..d1, 1..2]) + (self.window_size[1] - 2) as f64,
-        );
-        let relative_coords = relative_coords.clone().slice_assign(
-            [0..b, 0..d1, 0..1],
-            relative_coords.slice([0..b, 0..d1, 0..1])
-                * 2.0_f64.mul_add(self.window_size[1] as f64, -1.),
-        );
-        let relative_position_index = relative_coords.sum_dim(2).squeeze_dims(&[-1]);
-        let relative_position_index = Param::from_tensor(relative_position_index);
+
+        // Extract h and w coordinates (now in correct order)
+        let [num_positions, _, _] = relative_coords.dims();
+        let h_coords = relative_coords
+            .clone()
+            .slice([0..num_positions, 0..num_positions, 0..1]);
+        let w_coords = relative_coords.slice([0..num_positions, 0..num_positions, 1..2]);
+
+        // Remove the last dimension using reshape
+        let h_coords = h_coords.reshape([num_positions, num_positions]);
+        let w_coords = w_coords.reshape([num_positions, num_positions]);
+
+        // Apply shifts exactly as in PyTorch
+        // relative_coords[:, :, 0] += self.window_size[0] - 1
+        // relative_coords[:, :, 1] += self.window_size[1] - 1
+        let h_coords_shifted = h_coords + (self.window_size[0] - 1) as f64;
+        let w_coords_shifted = w_coords + (self.window_size[1] - 1) as f64;
+
+        // relative_coords[:, :, 0] *= 2 * self.window_size[1] - 1
+        let h_index = h_coords_shifted * (2 * self.window_size[1] - 1) as f64;
+        // relative_position_index = relative_coords.sum(-1)
+        let relative_position_index = (h_index + w_coords_shifted).int();
+
+        // Final tensor shape: [window_area, window_area]
+        let relative_position_index = Param::from_tensor(relative_position_index.float());
 
         let qkv = LinearConfig::new(self.dim, self.dim * 3)
             .with_bias(self.qkv_bias)
@@ -179,6 +335,29 @@ impl WindowAttentionConfig {
     }
 }
 
+/// Window-based Multi-Head Self-Attention module.
+///
+/// This module implements the core attention mechanism of Swin Transformer, performing
+/// multi-head self-attention within local windows with relative position bias.
+///
+/// # Architecture
+/// The attention computation follows:
+/// 1. Linear projection to Query, Key, Value
+/// 2. Multi-head attention with relative position bias
+/// 3. Optional attention mask for shifted windows
+/// 4. Output projection with dropout
+///
+/// # Components
+/// - `dim`: Input embedding dimension
+/// - `window_size`: Size of attention window [height, width]
+/// - `num_heads`: Number of attention heads
+/// - `scale`: Scaling factor for attention scores (typically head_dim^-0.5)
+/// - `relative_position_bias_table`: Learnable relative position bias parameters
+/// - `relative_position_index`: Pre-computed relative position indices
+/// - `qkv`: Combined Query-Key-Value projection layer
+/// - `attn_drop`: Dropout for attention weights
+/// - `proj`: Output projection layer
+/// - `proj_drop`: Dropout for output projection
 #[derive(Module, Debug)]
 pub struct WindowAttention<B: Backend> {
     dim: usize,
@@ -194,6 +373,18 @@ pub struct WindowAttention<B: Backend> {
 }
 
 impl<B: Backend> WindowAttention<B> {
+    /// Forward pass of window-based multi-head self-attention.
+    ///
+    /// Computes self-attention within windows with relative position bias.
+    /// Supports optional attention masking for shifted window attention.
+    ///
+    /// # Arguments
+    /// - `x`: Input tensor of shape `[num_windows * batch_size, window_size * window_size, channels]`
+    /// - `mask`: Optional attention mask of shape `[num_windows, window_size * window_size, window_size * window_size]`
+    ///          Used for shifted window attention to mask out invalid cross-window connections
+    ///
+    /// # Returns
+    /// Output tensor of shape `[num_windows * batch_size, window_size * window_size, channels]`
     pub fn forward(&self, x: Tensor<B, 3>, mask: Option<Tensor<B, 3>>) -> Tensor<B, 3> {
         let [b, n, c] = x.dims();
         let qkv = self
@@ -202,38 +393,52 @@ impl<B: Backend> WindowAttention<B> {
             .reshape([b, n, 3, self.num_heads, c / self.num_heads])
             .permute([2, 0, 3, 1, 4]);
         let [_, d2, d3, d4m, d5] = qkv.dims();
+        // Use reshape instead of squeeze to avoid backend-specific issues
         let q: Tensor<B, 4> = qkv
             .clone()
             .slice([0..1, 0..d2, 0..d3, 0..d4m, 0..d5])
-            .squeeze(0);
+            .reshape([d2, d3, d4m, d5]);
         let k: Tensor<B, 4> = qkv
             .clone()
             .slice([1..2, 0..d2, 0..d3, 0..d4m, 0..d5])
-            .squeeze(0);
-        let v: Tensor<B, 4> = qkv.slice([2..3, 0..d2, 0..d3, 0..d4m, 0..d5]).squeeze(0);
+            .reshape([d2, d3, d4m, d5]);
+        let v: Tensor<B, 4> = qkv
+            .slice([2..3, 0..d2, 0..d3, 0..d4m, 0..d5])
+            .reshape([d2, d3, d4m, d5]);
 
         let q = q * self.scale;
 
         let attn = q.matmul(k.swap_dims(2, 3));
+        // Use stable tensor operations for relative position bias
+        let indices = self.relative_position_index.val().flatten(0, 1).int();
         let relative_position_bias = self
             .relative_position_bias_table
             .val()
-            .select(0, self.relative_position_index.val().reshape([-1]).int())
+            .select(0, indices)
             .reshape([
-                (self.window_size[0] * self.window_size[1]) as i32,
-                (self.window_size[0] * self.window_size[1]) as i32,
-                -1,
+                self.window_size[0] * self.window_size[1],
+                self.window_size[0] * self.window_size[1],
+                self.num_heads,
             ])
             .permute([2, 0, 1]);
-        let attn = attn + relative_position_bias.unsqueeze();
+
+        // Add relative position bias with proper broadcasting
+        let [bias_heads, bias_h, bias_w] = relative_position_bias.dims();
+        let bias_expanded = relative_position_bias.reshape([1, bias_heads, bias_h, bias_w]);
+        let attn = attn + bias_expanded;
 
         let attn = {
             match mask {
                 Some(mask) => {
-                    let [nw, _, _] = mask.dims();
-                    let attn = attn.reshape([b / nw, nw, self.num_heads, n, n])
-                        + mask.unsqueeze_dim::<4>(1).unsqueeze();
-                    attn.reshape([-1, self.num_heads as i32, n as i32, n as i32])
+                    let [nw, mask_h, mask_w] = mask.dims();
+                    // Reshape attention for mask application
+                    let attn_reshaped = attn.reshape([b / nw, nw, self.num_heads, n, n]);
+
+                    // Expand mask dimensions properly using reshape instead of unsqueeze
+                    let mask_expanded = mask.reshape([1, nw, 1, mask_h, mask_w]);
+
+                    let attn_masked = attn_reshaped + mask_expanded;
+                    attn_masked.reshape([b, self.num_heads, n, n])
                 }
                 None => attn,
             }
@@ -250,6 +455,35 @@ impl<B: Backend> WindowAttention<B> {
     }
 }
 
+/// Configuration for a Swin Transformer Block.
+///
+/// This is the fundamental building block of the Swin Transformer, combining
+/// window-based multi-head self-attention with a feed-forward network.
+///
+/// # Architecture
+/// Each block consists of:
+/// 1. Layer normalization
+/// 2. Window-based multi-head self-attention (W-MSA or SW-MSA)
+/// 3. Residual connection
+/// 4. Layer normalization  
+/// 5. Multi-layer perceptron (MLP)
+/// 6. Residual connection
+///
+/// # Window Shifting
+/// - When `shift_size = 0`: Regular window-based multi-head self-attention (W-MSA)
+/// - When `shift_size > 0`: Shifted window-based multi-head self-attention (SW-MSA)
+///
+/// # Arguments
+/// - `dim`: Number of input channels
+/// - `num_heads`: Number of attention heads
+/// - `window_size`: Window size (default: 7)
+/// - `shift_size`: Shift size for SW-MSA (default: 0, typically window_size/2 for shifted blocks)
+/// - `mlp_ratio`: Ratio of MLP hidden dimension to embedding dimension (default: 4.0)
+/// - `qkv_bias`: Whether to add bias to QKV projections (default: true)
+/// - `qk_scale`: Override default QK scale if provided
+/// - `drop`: Dropout rate (default: 0.0)
+/// - `attn_drop`: Attention dropout rate (default: 0.0)
+/// - `drop_path`: Stochastic depth rate (default: 0.0)
 #[derive(Config, Debug)]
 pub struct SwinTransformerBlockConfig {
     dim: usize,
@@ -308,6 +542,29 @@ impl SwinTransformerBlockConfig {
     }
 }
 
+/// Swin Transformer Block implementation.
+///
+/// The core building block that combines window-based self-attention with
+/// feed-forward network, following the transformer architecture with
+/// pre-normalization and residual connections.
+///
+/// # Processing Flow
+/// 1. Apply layer normalization to input
+/// 2. Perform window partitioning and optional cyclic shifting
+/// 3. Compute window-based multi-head self-attention  
+/// 4. Reverse shifts and merge windows
+/// 5. Apply residual connection with drop path
+/// 6. Apply layer normalization and MLP
+/// 7. Apply final residual connection with drop path
+///
+/// # Components
+/// - `window_size`: Size of attention windows
+/// - `shift_size`: Amount of cyclic shift (0 for W-MSA, window_size/2 for SW-MSA)
+/// - `norm1`: First layer normalization (before attention)
+/// - `attn`: Window-based multi-head self-attention module
+/// - `norm2`: Second layer normalization (before MLP)
+/// - `mlp`: Feed-forward network
+/// - `drop_path`: Stochastic depth for regularization
 #[derive(Module, Debug)]
 pub struct SwinTransformerBlock<B: Backend> {
     window_size: usize,
@@ -320,6 +577,20 @@ pub struct SwinTransformerBlock<B: Backend> {
 }
 
 impl<B: Backend> SwinTransformerBlock<B> {
+    /// Forward pass through a Swin Transformer block.
+    ///
+    /// Performs the complete Swin Transformer block computation including:
+    /// window partitioning, attention computation, window merging, and MLP processing.
+    ///
+    /// # Arguments
+    /// - `x`: Input tensor of shape `[batch_size, height * width, channels]`
+    /// - `h`: Height of the feature map
+    /// - `w`: Width of the feature map  
+    /// - `mask_matrix`: Attention mask for shifted window attention of shape
+    ///   `[num_windows, window_size * window_size, window_size * window_size]`
+    ///
+    /// # Returns
+    /// Output tensor of shape `[batch_size, height * width, channels]`
     pub fn forward(
         &self,
         x: Tensor<B, 3>,
@@ -333,6 +604,7 @@ impl<B: Backend> SwinTransformerBlock<B> {
         let x = self.norm1.forward(x);
         let x = x.reshape([b, h, w, c]);
 
+        // Pad feature maps to multiples of window size
         let pad_l = 0;
         let pad_t = 0;
         let pad_r = (self.window_size - w % self.window_size) % self.window_size;
@@ -358,17 +630,14 @@ impl<B: Backend> SwinTransformerBlock<B> {
         };
 
         let x_window = window_partition(shifted_x, self.window_size);
-        let x_window =
-            x_window.reshape([-1, (self.window_size * self.window_size) as i32, c as i32]);
+        let num_windows = x_window.dims()[0];
+        let x_window = x_window.reshape([num_windows, self.window_size * self.window_size, c]);
 
         let attn_window = self.attn.forward(x_window, attn_mask);
+        let attn_num_windows = attn_window.dims()[0];
 
-        let attn_window = attn_window.reshape([
-            -1,
-            self.window_size as i32,
-            self.window_size as i32,
-            c as i32,
-        ]);
+        let attn_window =
+            attn_window.reshape([attn_num_windows, self.window_size, self.window_size, c]);
         let shifted_x = window_reverse(attn_window, self.window_size, hp, wp);
 
         let x = {
@@ -403,6 +672,22 @@ impl<B: Backend> SwinTransformerBlock<B> {
     }
 }
 
+/// Configuration for Patch Merging layer.
+///
+/// Patch merging reduces the spatial resolution while increasing the channel dimension,
+/// acting as a downsampling operation between Swin Transformer stages.
+///
+/// # Operation
+/// The patch merging operation:
+/// 1. Takes 2x2 neighboring patches and concatenates their features
+/// 2. Applies layer normalization to the concatenated features  
+/// 3. Uses a linear layer to reduce the dimension from 4C to 2C
+///
+/// This effectively halves the spatial resolution (H/2, W/2) while doubling
+/// the channel dimension.
+///
+/// # Arguments
+/// - `dim`: Input channel dimension (output will be 2*dim channels)
 #[derive(Config, Debug)]
 pub struct PatchMergingConfig {
     dim: usize,
@@ -420,6 +705,22 @@ impl PatchMergingConfig {
     }
 }
 
+/// Patch Merging layer for downsampling in Swin Transformer.
+///
+/// This layer reduces spatial resolution by merging 2x2 neighboring patches
+/// while doubling the channel dimension. It serves as the downsampling operation
+/// between different stages of the Swin Transformer hierarchy.
+///
+/// # Processing Steps
+/// 1. Reshape input from sequence format to spatial format
+/// 2. Extract 2x2 neighboring patches: top-left, top-right, bottom-left, bottom-right
+/// 3. Concatenate the 4 patches along channel dimension (C -> 4C)
+/// 4. Apply layer normalization
+/// 5. Apply linear reduction (4C -> 2C)
+///
+/// # Components
+/// - `norm`: Layer normalization applied to concatenated features (4C dimensions)
+/// - `reduction`: Linear layer that reduces channels from 4C to 2C without bias
 #[derive(Module, Debug)]
 pub struct PatchMerging<B: Backend> {
     norm: LayerNorm<B>,
@@ -427,6 +728,18 @@ pub struct PatchMerging<B: Backend> {
 }
 
 impl<B: Backend> PatchMerging<B> {
+    /// Forward pass through patch merging layer.
+    ///
+    /// Merges 2x2 neighboring patches to reduce spatial resolution while
+    /// increasing channel dimension.
+    ///
+    /// # Arguments
+    /// - `x`: Input tensor of shape `[batch_size, height * width, channels]`
+    /// - `h`: Height of the feature map
+    /// - `w`: Width of the feature map
+    ///
+    /// # Returns
+    /// Output tensor of shape `[batch_size, (height/2) * (width/2), 2*channels]`
     pub fn forward(&self, x: Tensor<B, 3>, h: usize, w: usize) -> Tensor<B, 3> {
         let device = x.device();
 
@@ -460,7 +773,7 @@ impl<B: Backend> PatchMerging<B> {
         let x3 = x.select(1, bottom_idx).select(2, right_idx);
 
         let x = Tensor::cat(vec![x0, x1, x2, x3], 3);
-        let x = x.reshape([b as i32, -1, (4 * c) as i32]);
+        let x = x.reshape([b, h.div_ceil(2) * w.div_ceil(2), 4 * c]);
 
         let x = self.norm.forward(x);
 
@@ -468,6 +781,32 @@ impl<B: Backend> PatchMerging<B> {
     }
 }
 
+/// Configuration for a Basic Layer (stage) in Swin Transformer.
+///
+/// A basic layer represents one stage of the Swin Transformer hierarchy,
+/// consisting of multiple Swin Transformer blocks followed by an optional
+/// patch merging layer for downsampling.
+///
+/// # Stage Structure
+/// Each stage alternates between:
+/// - Even-indexed blocks: Regular window multi-head self-attention (W-MSA)  
+/// - Odd-indexed blocks: Shifted window multi-head self-attention (SW-MSA)
+///
+/// This pattern ensures information exchange between different windows while
+/// maintaining computational efficiency.
+///
+/// # Arguments
+/// - `dim`: Number of input channels for this stage
+/// - `depth`: Number of Swin Transformer blocks in this stage
+/// - `num_heads`: Number of attention heads
+/// - `window_size`: Window size for attention computation (default: 7)
+/// - `mlp_ratio`: Ratio of MLP hidden dimension to embedding dimension (default: 4.0)
+/// - `qkv_bias`: Whether to add bias to QKV projections (default: true)
+/// - `qk_scale`: Override default QK scale if provided
+/// - `drop`: Dropout rate (default: 0.0)
+/// - `attn_drop`: Attention dropout rate (default: 0.0)
+/// - `drop_path`: Stochastic depth rates for each block
+/// - `downsample`: Whether to add patch merging at the end (default: false)
 #[derive(Config, Debug)]
 pub struct BasicLayerConfig {
     dim: usize,
@@ -525,6 +864,25 @@ impl BasicLayerConfig {
     }
 }
 
+/// Basic Layer representing one stage of the Swin Transformer hierarchy.
+///
+/// A basic layer groups multiple Swin Transformer blocks that operate at the same
+/// spatial resolution, with alternating regular and shifted window attention.
+/// It optionally includes a patch merging layer for downsampling to the next stage.
+///
+/// # Attention Pattern
+/// The layer alternates between two types of attention:
+/// - Block 0, 2, 4, ...: Regular window attention (W-MSA) with shift_size = 0
+/// - Block 1, 3, 5, ...: Shifted window attention (SW-MSA) with shift_size = window_size/2
+///
+/// This alternating pattern allows information to flow between different windows
+/// while keeping the computational complexity linear with respect to input size.
+///
+/// # Components
+/// - `window_size`: Size of attention windows
+/// - `shift_size`: Shift amount for SW-MSA (typically window_size/2)
+/// - `blocks`: Sequence of Swin Transformer blocks
+/// - `downsample`: Optional patch merging layer for resolution reduction
 #[derive(Module, Debug)]
 pub struct BasicLayer<B: Backend> {
     window_size: usize,
@@ -534,6 +892,25 @@ pub struct BasicLayer<B: Backend> {
 }
 
 impl<B: Backend> BasicLayer<B> {
+    /// Forward pass through a basic layer.
+    ///
+    /// Processes input through all Swin Transformer blocks in this stage,
+    /// computing attention masks for shifted window attention, and optionally
+    /// applies downsampling via patch merging.
+    ///
+    /// # Arguments
+    /// - `x`: Input tensor of shape `[batch_size, height * width, channels]`
+    /// - `h`: Height of the feature map
+    /// - `w`: Width of the feature map
+    ///
+    /// # Returns
+    /// A tuple containing:
+    /// - `x_out`: Output before downsampling `[batch_size, h * w, channels]`
+    /// - `h_out`: Output height before downsampling
+    /// - `w_out`: Output width before downsampling  
+    /// - `x_down`: Output after optional downsampling `[batch_size, h_down * w_down, channels_down]`
+    /// - `h_down`: Height after downsampling (h/2 if downsampling, else h)
+    /// - `w_down`: Width after downsampling (w/2 if downsampling, else w)
     pub fn forward(
         &self,
         x: Tensor<B, 3>,
@@ -580,13 +957,20 @@ impl<B: Backend> BasicLayer<B> {
         }
 
         let mask_windows = window_partition(img_mask, self.window_size);
-        let mask_windows = mask_windows.reshape([-1, (self.window_size * self.window_size) as i32]);
+        let mask_num_windows = mask_windows.dims()[0];
+        let mask_windows =
+            mask_windows.reshape([mask_num_windows, self.window_size * self.window_size]);
         let attn_mask: Tensor<B, 3> =
             mask_windows.clone().unsqueeze_dim(1) - mask_windows.unsqueeze_dim(2);
-        let attn_mask = attn_mask
-            .clone()
-            .mask_fill(attn_mask.clone().not_equal_elem(0.0), -100.0)
-            .mask_fill(attn_mask.equal_elem(0.0), 0.0);
+        // Use stable tensor operations instead of mask_fill following yolox-burn patterns
+        let zero_mask = attn_mask.clone().equal_elem(0.0);
+        let non_zero_mask = attn_mask.clone().not_equal_elem(0.0);
+
+        let attn_mask = attn_mask * 0.0; // Start with zeros
+        let negative_values = Tensor::full_like(&attn_mask, -100.0);
+
+        // Apply masks using where operations which are more stable
+        let attn_mask = non_zero_mask.float() * negative_values + zero_mask.float() * attn_mask;
 
         let mut x = x;
         for blk in &self.blocks {
@@ -595,8 +979,8 @@ impl<B: Backend> BasicLayer<B> {
         match &self.downsample {
             Some(downsample) => {
                 let x_down = downsample.forward(x.clone(), h, w);
-                let wh = (h + 1) / 2;
-                let ww = (w + 1) / 2;
+                let wh = h.div_ceil(2);
+                let ww = w.div_ceil(2);
                 (x, h, w, x_down, wh, ww)
             }
             None => (x.clone(), h, w, x, h, w),
@@ -604,6 +988,22 @@ impl<B: Backend> BasicLayer<B> {
     }
 }
 
+/// Configuration for Patch Embedding layer.
+///
+/// The patch embedding layer converts input images into patch tokens by:
+/// 1. Dividing the image into non-overlapping patches
+/// 2. Projecting each patch to an embedding vector using a convolutional layer
+/// 3. Optionally applying layer normalization
+///
+/// # Patch Tokenization
+/// An image of size (H, W, C) is divided into patches of size (patch_size, patch_size),
+/// resulting in (H/patch_size) * (W/patch_size) patches, each projected to embed_dim dimensions.
+///
+/// # Arguments
+/// - `patch_size`: Size of each patch (default: 4)
+/// - `in_channels`: Number of input image channels (default: 3 for RGB)
+/// - `embed_dim`: Embedding dimension for each patch (default: 96)
+/// - `norm_layer`: Whether to apply layer normalization (default: false)
 #[derive(Config, Debug)]
 pub struct PatchEmbedConfig {
     #[config(default = "4")]
@@ -641,6 +1041,26 @@ impl PatchEmbedConfig {
     }
 }
 
+/// Patch Embedding layer for converting images to patch tokens.
+///
+/// This layer is the first component of the Swin Transformer that converts
+/// input images into a sequence of patch embeddings using a convolutional projection.
+///
+/// # Processing Steps
+/// 1. Pad input image if dimensions are not divisible by patch_size
+/// 2. Apply 2D convolution with kernel_size=patch_size and stride=patch_size
+/// 3. Optionally apply layer normalization if configured
+///
+/// # Tensor Transformations
+/// - Input: `[batch_size, channels, height, width]`
+/// - After conv: `[batch_size, embed_dim, height/patch_size, width/patch_size]`
+/// - Output: Same shape as after conv (4D tensor format for compatibility)
+///
+/// # Components
+/// - `embed_dim`: Output embedding dimension
+/// - `patch_size`: Size of each patch
+/// - `proj`: 2D convolution layer for patch projection
+/// - `norm`: Optional layer normalization
 #[derive(Module, Debug)]
 pub struct PatchEmbed<B: Backend> {
     embed_dim: usize,
@@ -650,6 +1070,16 @@ pub struct PatchEmbed<B: Backend> {
 }
 
 impl<B: Backend> PatchEmbed<B> {
+    /// Forward pass through patch embedding layer.
+    ///
+    /// Converts input images into patch embeddings by applying convolutional
+    /// projection and optional normalization.
+    ///
+    /// # Arguments
+    /// - `x`: Input tensor of shape `[batch_size, in_channels, height, width]`
+    ///
+    /// # Returns
+    /// Output tensor of shape `[batch_size, embed_dim, height/patch_size, width/patch_size]`
     pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         let [_, _, h, w] = x.dims();
         let x = {
@@ -676,11 +1106,11 @@ impl<B: Backend> PatchEmbed<B> {
 
         match &self.norm {
             Some(norm) => {
-                let [_, _, wh, ww] = x.dims();
+                let [batch_size, _, wh, ww] = x.dims();
                 let x: Tensor<B, 3> = x.flatten(2, 3).swap_dims(1, 2);
                 let x = norm.forward(x);
                 x.swap_dims(1, 2)
-                    .reshape([-1, self.embed_dim as i32, wh as i32, ww as i32])
+                    .reshape([batch_size, self.embed_dim, wh, ww])
             }
             None => x,
         }
@@ -741,7 +1171,7 @@ fn linspace(start: f64, end: f64, steps: usize) -> Vec<f64> {
 }
 
 impl SwinTransformerConfig {
-    pub fn init<B: Backend>(&self, device: &Device<B>) -> SwinTransformer<B> {
+    pub fn init<B: Backend>(&self, device: &Device<B>) -> BiRefNetResult<SwinTransformer<B>> {
         let num_layers = self.depths.len();
 
         let patch_embed = PatchEmbedConfig::new()
@@ -814,16 +1244,23 @@ impl SwinTransformerConfig {
             norm_layers.push(layer);
         }
 
-        SwinTransformer {
+        let num_features =
+            num_features
+                .try_into()
+                .map_err(|_| BiRefNetError::ModelInitializationFailed {
+                    reason: "Failed to convert num_features to array".to_string(),
+                })?;
+
+        Ok(SwinTransformer {
             patch_embed,
             pos_drop: DropoutConfig::new(self.drop_rate).init(),
             num_layers,
             layers,
-            num_features: num_features.try_into().unwrap(),
+            num_features,
             norm_layers,
             out_indices: self.out_indices,
             absolute_pos_embed,
-        }
+        })
     }
 }
 
@@ -840,7 +1277,7 @@ pub struct SwinTransformer<B: Backend> {
 }
 
 impl<B: Backend> SwinTransformer<B> {
-    pub fn forward(&self, x: Tensor<B, 4>) -> [Tensor<B, 4>; 4] {
+    pub fn forward(&self, x: Tensor<B, 4>) -> BiRefNetResult<[Tensor<B, 4>; 4]> {
         let x = self.patch_embed.forward(x);
 
         let [_, _, wh, ww] = x.dims();
@@ -873,17 +1310,21 @@ impl<B: Backend> SwinTransformer<B> {
             ww = ww_;
             if self.out_indices.contains(&i) {
                 let x_out = self.norm_layers[i].forward(x_out);
+                let batch_size = x_out.dims()[0];
                 let out = x_out
-                    .reshape([-1, h as i32, w as i32, self.num_features[i] as i32])
+                    .reshape([batch_size, h, w, self.num_features[i]])
                     .permute([0, 3, 1, 2]);
                 outs.push(out);
             }
         }
-        outs.try_into().unwrap()
+        outs.try_into()
+            .map_err(|_| BiRefNetError::TensorOperationFailed {
+                operation: "Failed to convert outputs to array".to_string(),
+            })
     }
 }
 
-pub fn swin_v1_t<B: Backend>(device: &Device<B>) -> SwinTransformer<B> {
+pub fn swin_v1_t<B: Backend>(device: &Device<B>) -> BiRefNetResult<SwinTransformer<B>> {
     SwinTransformerConfig::new()
         .with_embed_dim(96)
         .with_depths([2, 2, 6, 2])
@@ -892,7 +1333,7 @@ pub fn swin_v1_t<B: Backend>(device: &Device<B>) -> SwinTransformer<B> {
         .init(device)
 }
 
-pub fn swin_v1_s<B: Backend>(device: &Device<B>) -> SwinTransformer<B> {
+pub fn swin_v1_s<B: Backend>(device: &Device<B>) -> BiRefNetResult<SwinTransformer<B>> {
     SwinTransformerConfig::new()
         .with_embed_dim(96)
         .with_depths([2, 2, 18, 2])
@@ -901,7 +1342,7 @@ pub fn swin_v1_s<B: Backend>(device: &Device<B>) -> SwinTransformer<B> {
         .init(device)
 }
 
-pub fn swin_v1_b<B: Backend>(device: &Device<B>) -> SwinTransformer<B> {
+pub fn swin_v1_b<B: Backend>(device: &Device<B>) -> BiRefNetResult<SwinTransformer<B>> {
     SwinTransformerConfig::new()
         .with_embed_dim(128)
         .with_depths([2, 2, 18, 2])
@@ -910,11 +1351,309 @@ pub fn swin_v1_b<B: Backend>(device: &Device<B>) -> SwinTransformer<B> {
         .init(device)
 }
 
-pub fn swin_v1_l<B: Backend>(device: &Device<B>) -> SwinTransformer<B> {
+pub fn swin_v1_l<B: Backend>(device: &Device<B>) -> BiRefNetResult<SwinTransformer<B>> {
     SwinTransformerConfig::new()
         .with_embed_dim(192)
         .with_depths([2, 2, 18, 2])
         .with_num_heads([6, 12, 24, 48])
         .with_window_size(12)
         .init(device)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use burn::backend::ndarray::NdArray;
+
+    type TestBackend = NdArray;
+
+    #[test]
+    fn test_mlp_forward_shape() {
+        let device = Default::default();
+        let config = MlpConfig::new(96).with_hidden_features(Some(384));
+        let mlp = config.init::<TestBackend>(&device);
+
+        let input = Tensor::<TestBackend, 3>::random(
+            [2, 49, 96],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+        let output = mlp.forward(input);
+
+        assert_eq!(output.shape().dims, [2, 49, 96]);
+    }
+
+    #[test]
+    fn test_window_partition_reverse() {
+        let device = Default::default();
+        let window_size = 7;
+        let h = 14;
+        let w = 14;
+
+        let input = Tensor::<TestBackend, 4>::random(
+            [2, h, w, 96],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+
+        // Test window partition
+        let windows = window_partition(input, window_size);
+        let expected_num_windows = (h / window_size) * (w / window_size);
+        assert_eq!(
+            windows.shape().dims,
+            [2 * expected_num_windows, window_size, window_size, 96]
+        );
+
+        // Test window reverse
+        let reversed = window_reverse(windows, window_size, h, w);
+        assert_eq!(reversed.shape().dims, [2, h, w, 96]);
+    }
+
+    #[test]
+    fn test_window_attention_forward_shape() {
+        let device = Default::default();
+        let config = WindowAttentionConfig::new(96, [7, 7], 3);
+        let attention = config.init::<TestBackend>(&device);
+
+        let window_size = 7;
+        let num_windows = 4; // 2x2 grid of windows
+        let input = Tensor::<TestBackend, 3>::random(
+            [num_windows, window_size * window_size, 96],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+
+        let output = attention.forward(input, None);
+        assert_eq!(
+            output.shape().dims,
+            [num_windows, window_size * window_size, 96]
+        );
+    }
+
+    #[test]
+    fn test_patch_embed_forward_shape() {
+        let device = Default::default();
+        let config = PatchEmbedConfig::new()
+            .with_patch_size(4)
+            .with_in_channels(3)
+            .with_embed_dim(96);
+        let patch_embed = config.init::<TestBackend>(&device);
+
+        let input = Tensor::<TestBackend, 4>::random(
+            [2, 3, 224, 224],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+        let output = patch_embed.forward(input);
+
+        assert_eq!(output.shape().dims, [2, 96, 56, 56]); // 224/4 = 56
+    }
+
+    #[test]
+    fn test_patch_merging_forward_shape() {
+        let device = Default::default();
+        let config = PatchMergingConfig::new(96);
+        let patch_merging = config.init::<TestBackend>(&device);
+
+        let h = 56;
+        let w = 56;
+        let input = Tensor::<TestBackend, 3>::random(
+            [2, h * w, 96],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+
+        let output = patch_merging.forward(input, h, w);
+        assert_eq!(output.shape().dims, [2, (h / 2) * (w / 2), 192]); // Double channels, half spatial
+    }
+
+    #[test]
+    fn test_swin_transformer_block_forward_shape() {
+        let device = Default::default();
+        let config = SwinTransformerBlockConfig::new(96, 3);
+        let block = config.init::<TestBackend>(&device);
+
+        let h = 56;
+        let w = 56;
+        let input = Tensor::<TestBackend, 3>::random(
+            [2, h * w, 96],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+        let mask_matrix = Tensor::<TestBackend, 3>::zeros([4, 49, 49], &device); // 4 windows, 7x7 each
+
+        let output = block.forward(input, h, w, mask_matrix);
+        assert_eq!(output.shape().dims, [2, h * w, 96]);
+    }
+
+    #[test]
+    fn test_basic_layer_forward_shape() {
+        let device = Default::default();
+        let config = BasicLayerConfig::new(96, 2, 3)
+            .with_downsample(true)
+            .with_drop_path(vec![0.0, 0.1]);
+        let layer = config.init::<TestBackend>(&device);
+
+        let h = 56;
+        let w = 56;
+        let input = Tensor::<TestBackend, 3>::random(
+            [2, h * w, 96],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+
+        let (x_out, h_out, w_out, x_down, h_down, w_down) = layer.forward(input, h, w);
+
+        // Before downsampling
+        assert_eq!(x_out.shape().dims, [2, h * w, 96]);
+        assert_eq!(h_out, h);
+        assert_eq!(w_out, w);
+
+        // After downsampling
+        assert_eq!(x_down.shape().dims, [2, (h / 2) * (w / 2), 192]);
+        assert_eq!(h_down, h / 2);
+        assert_eq!(w_down, w / 2);
+    }
+
+    #[test]
+    fn test_swin_v1_t_model_forward_shape() {
+        let device = Default::default();
+        let model = swin_v1_t::<TestBackend>(&device).expect("Failed to create Swin-T model");
+
+        let input = Tensor::<TestBackend, 4>::random(
+            [1, 3, 224, 224],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+        let outputs = model.forward(input).expect("Forward pass failed");
+
+        // Swin-T should output 4 feature maps at different scales
+        assert_eq!(outputs.len(), 4);
+
+        // Expected output shapes for each stage
+        let expected_shapes = [
+            [1, 96, 56, 56],  // Stage 0: 224/4 = 56, embed_dim = 96
+            [1, 192, 28, 28], // Stage 1: 56/2 = 28, embed_dim * 2 = 192
+            [1, 384, 14, 14], // Stage 2: 28/2 = 14, embed_dim * 4 = 384
+            [1, 768, 7, 7],   // Stage 3: 14/2 = 7, embed_dim * 8 = 768
+        ];
+
+        for (i, output) in outputs.iter().enumerate() {
+            assert_eq!(output.shape().dims, expected_shapes[i]);
+        }
+    }
+
+    #[test]
+    fn test_swin_v1_s_model_forward_shape() {
+        let device = Default::default();
+        let model = swin_v1_s::<TestBackend>(&device).expect("Failed to create Swin-S model");
+
+        let input = Tensor::<TestBackend, 4>::random(
+            [1, 3, 224, 224],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+        let outputs = model.forward(input).expect("Forward pass failed");
+
+        assert_eq!(outputs.len(), 4);
+
+        // Swin-S has same architecture as Swin-T but deeper (different depths)
+        let expected_shapes = [
+            [1, 96, 56, 56],
+            [1, 192, 28, 28],
+            [1, 384, 14, 14],
+            [1, 768, 7, 7],
+        ];
+
+        for (i, output) in outputs.iter().enumerate() {
+            assert_eq!(output.shape().dims, expected_shapes[i]);
+        }
+    }
+
+    #[test]
+    fn test_swin_v1_b_model_forward_shape() {
+        let device = Default::default();
+        let model = swin_v1_b::<TestBackend>(&device).expect("Failed to create Swin-B model");
+
+        let input = Tensor::<TestBackend, 4>::random(
+            [1, 3, 224, 224],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+        let outputs = model.forward(input).expect("Forward pass failed");
+
+        assert_eq!(outputs.len(), 4);
+
+        // Swin-B has larger embed_dim (128 instead of 96)
+        let expected_shapes = [
+            [1, 128, 56, 56], // embed_dim = 128
+            [1, 256, 28, 28], // embed_dim * 2 = 256
+            [1, 512, 14, 14], // embed_dim * 4 = 512
+            [1, 1024, 7, 7],  // embed_dim * 8 = 1024
+        ];
+
+        for (i, output) in outputs.iter().enumerate() {
+            assert_eq!(output.shape().dims, expected_shapes[i]);
+        }
+    }
+
+    #[test]
+    fn test_swin_v1_l_model_forward_shape() {
+        let device = Default::default();
+        let model = swin_v1_l::<TestBackend>(&device).expect("Failed to create Swin-L model");
+
+        let input = Tensor::<TestBackend, 4>::random(
+            [1, 3, 224, 224],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+        let outputs = model.forward(input).expect("Forward pass failed");
+
+        assert_eq!(outputs.len(), 4);
+
+        // Swin-L has even larger embed_dim (192)
+        let expected_shapes = [
+            [1, 192, 56, 56], // embed_dim = 192
+            [1, 384, 28, 28], // embed_dim * 2 = 384
+            [1, 768, 14, 14], // embed_dim * 4 = 768
+            [1, 1536, 7, 7],  // embed_dim * 8 = 1536
+        ];
+
+        for (i, output) in outputs.iter().enumerate() {
+            assert_eq!(output.shape().dims, expected_shapes[i]);
+        }
+    }
+
+    #[test]
+    fn test_different_input_sizes() {
+        let device = Default::default();
+        let model = swin_v1_t::<TestBackend>(&device).expect("Failed to create Swin-T model");
+
+        // Test with different input sizes
+        let test_sizes = vec![(224, 224), (256, 256), (320, 320), (384, 384)];
+
+        for (h, w) in test_sizes {
+            let input = Tensor::<TestBackend, 4>::random(
+                [1, 3, h, w],
+                burn::tensor::Distribution::Normal(0.0, 1.0),
+                &device,
+            );
+            let outputs = model.forward(input).expect("Forward pass failed");
+
+            assert_eq!(outputs.len(), 4);
+
+            // Check that outputs have correct relative scales
+            let expected_h = h / 4; // Initial patch size is 4
+            let expected_w = w / 4;
+
+            assert_eq!(outputs[0].shape().dims[2], expected_h);
+            assert_eq!(outputs[0].shape().dims[3], expected_w);
+            assert_eq!(outputs[1].shape().dims[2], expected_h / 2);
+            assert_eq!(outputs[1].shape().dims[3], expected_w / 2);
+            assert_eq!(outputs[2].shape().dims[2], expected_h / 4);
+            assert_eq!(outputs[2].shape().dims[3], expected_w / 4);
+            assert_eq!(outputs[3].shape().dims[2], expected_h / 8);
+            assert_eq!(outputs[3].shape().dims[3], expected_w / 8);
+        }
+    }
 }

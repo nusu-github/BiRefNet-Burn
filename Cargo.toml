@@ -14,6 +14,6 @@ readme = "README.md"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-burn = "0.15.0"
-burn-import = "0.15.0"
-libm = "0.2.8"
+burn = "0.17.1"
+burn-import = "0.17.1"
+libm = "0.2.15"

@@ -9,11 +9,12 @@ use super::{
     aspp::{ASPPDeformable, ASPP},
     decoder_blocks::{BasicDecBlk, ResBlk},
 };
+use crate::error::{BiRefNetError, BiRefNetResult};
 use crate::special::Identity;
 
-pub enum OptimizerEnum<B: Backend> {
-    Adam(Adam<B>),
-    AdamW(AdamW<B>),
+pub enum OptimizerEnum {
+    Adam(Adam),
+    AdamW(AdamW),
 }
 
 #[derive(Module, Debug)]
@@ -68,7 +69,7 @@ pub fn build_norm_layer<B: Backend>(
     out_format: bool,
     eps: f64,
     device: &Device<B>,
-) -> Vec<NormLayerEnum<B>> {
+) -> BiRefNetResult<Vec<NormLayerEnum<B>>> {
     match norm_layer {
         "BN" => {
             let mut layer = Vec::with_capacity(3);
@@ -81,7 +82,7 @@ pub fn build_norm_layer<B: Backend>(
             if out_format {
                 layer.push(NormLayerEnum::ChannelsLast(ChannelsLast::new()));
             }
-            layer
+            Ok(layer)
         }
         "LN" => {
             let mut layer = Vec::with_capacity(3);
@@ -94,9 +95,11 @@ pub fn build_norm_layer<B: Backend>(
             if out_format {
                 layer.push(NormLayerEnum::ChannelsLast(ChannelsLast::new()));
             }
-            layer
+            Ok(layer)
         }
-        _ => unimplemented!(),
+        _ => Err(BiRefNetError::UnsupportedSqueezeBlock {
+            block_type: format!("Unsupported norm layer: {}", norm_layer),
+        }),
     }
 }
 
@@ -118,11 +121,13 @@ impl Silu {
     }
 }
 
-pub fn build_act_layer(act_layer: &str) -> ActLayerEnum {
+pub fn build_act_layer(act_layer: &str) -> BiRefNetResult<ActLayerEnum> {
     match act_layer {
-        "ReLU" => ActLayerEnum::ReLU(Relu::new()),
-        "SiLU" => ActLayerEnum::SiLU(Silu::new()),
-        "GELU" => ActLayerEnum::GELU(Gelu::new()),
-        _ => unimplemented!(),
+        "ReLU" => Ok(ActLayerEnum::ReLU(Relu::new())),
+        "SiLU" => Ok(ActLayerEnum::SiLU(Silu::new())),
+        "GELU" => Ok(ActLayerEnum::GELU(Gelu::new())),
+        _ => Err(BiRefNetError::UnsupportedSqueezeBlock {
+            block_type: format!("Unsupported activation layer: {}", act_layer),
+        }),
     }
 }

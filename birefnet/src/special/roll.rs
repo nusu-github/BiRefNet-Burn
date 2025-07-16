@@ -1,5 +1,22 @@
+//! # Tensor Roll
+//!
+//! Provides a function to cyclically shift a tensor along specified dimensions.
+//! This is analogous to `torch.roll` and is particularly useful for implementing
+//! the shifted window mechanism in Swin Transformers.
+
 use burn::prelude::*;
 
+/// Rolls a tensor along the given dimensions.
+///
+/// # Arguments
+///
+/// * `input` - The tensor to be rolled.
+/// * `shifts` - The number of places by which the elements of the tensor are shifted.
+/// * `dims` - The dimensions along which to roll.
+///
+/// # Panics
+///
+/// Panics if `shifts` and `dims` have different lengths.
 pub fn roll<B: Backend, const D: usize>(
     input: Tensor<B, D>,
     shifts: &[i64],
@@ -21,6 +38,7 @@ pub fn roll<B: Backend, const D: usize>(
     roll_common(input, shifts, dims)
 }
 
+/// A helper function to handle rolling along multiple dimensions recursively.
 fn roll_common<B: Backend, const D: usize>(
     input: Tensor<B, D>,
     shifts: &[i64],

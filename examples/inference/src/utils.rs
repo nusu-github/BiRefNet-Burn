@@ -6,7 +6,6 @@ use burn::{
     },
 };
 use image::{flat::SampleLayout, ImageBuffer, Luma, Pixel, Primitive};
-use num_traits::ToPrimitive;
 
 pub trait IntoTensor3<B: Backend> {
     type Out;
@@ -17,6 +16,7 @@ pub trait IntoTensor3<B: Backend> {
 impl<B: Backend, P> IntoTensor3<B> for ImageBuffer<P, Vec<P::Subpixel>>
 where
     P: Pixel + 'static,
+    f32: From<P::Subpixel>,
 {
     type Out = Tensor<B, 3>;
 
@@ -29,7 +29,7 @@ where
         } = self.sample_layout();
         let shape = Vec::from([height as usize, width as usize, channels as usize]);
         Self::Out::from_data(
-            TensorData::new(self.iter().map(|x| x.to_f32().unwrap()).collect(), shape)
+            TensorData::new(self.iter().map(|x| f32::from(*x)).collect(), shape)
                 .convert::<B::FloatElem>(),
             device,
         )
@@ -43,10 +43,11 @@ pub fn preprocess<B: Backend, P>(
 ) -> Tensor<B, 3>
 where
     P: Pixel + 'static,
+    f32: From<P::Subpixel>,
 {
     let tensor = image.clone().into_tensor3(device)
         .permute([2, 0, 1]) // [C, H, W]
-        / P::Subpixel::DEFAULT_MAX_VALUE.to_f32().unwrap();
+        / f32::from(P::Subpixel::DEFAULT_MAX_VALUE);
 
     let tensor = interpolate(
         tensor.unsqueeze(),

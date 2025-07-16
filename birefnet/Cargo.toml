@@ -7,3 +7,7 @@ license.workspace = true
 [dependencies]
 burn = { workspace = true, features = ["std"] }
 libm = { workspace = true }
+thiserror = "2"
+
+[dev-dependencies]
+burn = { workspace = true, features = ["std", "ndarray"] }

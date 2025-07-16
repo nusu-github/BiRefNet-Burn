@@ -18,7 +18,7 @@ use clap::{Parser, ValueEnum};
 struct Args {
     model: PathBuf,
     name: BiRefNetModels,
-    #[clap(short, long, default_value_t = false)]
+    #[clap(long, default_value_t = false)]
     half: bool,
 }
 
@@ -53,10 +53,7 @@ fn main() -> Result<()> {
         BiRefNetModels::BiRefNetLite2k => "BiRefNetLite2k",
         BiRefNetModels::BiRefNetMatting => "BiRefNetMatting",
     };
-    let dir = path
-        .parent()
-        .or_else(|| return Some(Path::new(".")))
-        .unwrap();
+    let dir = path.parent().or_else(|| Some(Path::new("."))).unwrap();
 
     let load_args = LoadArgs::new(path.to_path_buf())
         //
@@ -89,125 +86,196 @@ fn main() -> Result<()> {
         .load(load_args, &device)
         .with_context(|| "Should decode state successfully")?;
 
-    let config = ModelConfig::new();
     let config = match args.name {
-        BiRefNetModels::BiRefNetPortrait => config
-            .with_prompt4_loc(Prompt4loc::Dense)
-            .with_ms_supervision(true)
-            .with_dec_ipt(true)
-            .with_dec_ipt_split(true)
-            .with_cxt_num(3)
-            .with_mul_scl_ipt(MulSclIpt::Cat)
-            .with_dec_att(DecAtt::ASPPDeformable)
-            .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
-            .with_dec_blk(DecBlk::BasicDecBlk)
-            .with_backbone(Backbone::SwinV1L)
-            .with_lat_blk(LatBlk::BasicLatBlk)
-            .with_dec_channels_inter(DecChannelsInter::Fixed),
-        BiRefNetModels::BiRefNet => config
-            .with_prompt4_loc(Prompt4loc::Dense)
-            .with_ms_supervision(true)
-            .with_dec_ipt(true)
-            .with_dec_ipt_split(true)
-            .with_cxt_num(3)
-            .with_mul_scl_ipt(MulSclIpt::Cat)
-            .with_dec_att(DecAtt::ASPPDeformable)
-            .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
-            .with_dec_blk(DecBlk::BasicDecBlk)
-            .with_backbone(Backbone::SwinV1L)
-            .with_lat_blk(LatBlk::BasicLatBlk)
-            .with_dec_channels_inter(DecChannelsInter::Fixed),
-        BiRefNetModels::BiRefNetCOD => config
-            .with_prompt4_loc(Prompt4loc::Dense)
-            .with_ms_supervision(true)
-            .with_dec_ipt(true)
-            .with_dec_ipt_split(true)
-            .with_cxt_num(3)
-            .with_mul_scl_ipt(MulSclIpt::Cat)
-            .with_dec_att(DecAtt::ASPPDeformable)
-            .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
-            .with_dec_blk(DecBlk::BasicDecBlk)
-            .with_backbone(Backbone::SwinV1L)
-            .with_lat_blk(LatBlk::BasicLatBlk)
-            .with_dec_channels_inter(DecChannelsInter::Fixed),
-        BiRefNetModels::BiRefNetDIS5k => config
-            .with_prompt4_loc(Prompt4loc::Dense)
-            .with_ms_supervision(true)
-            .with_dec_ipt(true)
-            .with_dec_ipt_split(true)
-            .with_cxt_num(3)
-            .with_mul_scl_ipt(MulSclIpt::Cat)
-            .with_dec_att(DecAtt::ASPPDeformable)
-            .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
-            .with_dec_blk(DecBlk::BasicDecBlk)
-            .with_backbone(Backbone::SwinV1L)
-            .with_lat_blk(LatBlk::BasicLatBlk)
-            .with_dec_channels_inter(DecChannelsInter::Fixed),
-        BiRefNetModels::BiRefNetHRSOD => config
-            .with_prompt4_loc(Prompt4loc::Dense)
-            .with_ms_supervision(true)
-            .with_dec_ipt(true)
-            .with_dec_ipt_split(true)
-            .with_cxt_num(3)
-            .with_mul_scl_ipt(MulSclIpt::Cat)
-            .with_dec_att(DecAtt::ASPPDeformable)
-            .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
-            .with_dec_blk(DecBlk::BasicDecBlk)
-            .with_backbone(Backbone::SwinV1L)
-            .with_lat_blk(LatBlk::BasicLatBlk)
-            .with_dec_channels_inter(DecChannelsInter::Fixed),
-        BiRefNetModels::BiRefNetDIS5KTRTEs => config
-            .with_prompt4_loc(Prompt4loc::Dense)
-            .with_ms_supervision(true)
-            .with_dec_ipt(true)
-            .with_dec_ipt_split(true)
-            .with_cxt_num(3)
-            .with_mul_scl_ipt(MulSclIpt::Cat)
-            .with_dec_att(DecAtt::ASPPDeformable)
-            .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
-            .with_dec_blk(DecBlk::BasicDecBlk)
-            .with_backbone(Backbone::SwinV1L)
-            .with_lat_blk(LatBlk::BasicLatBlk)
-            .with_dec_channels_inter(DecChannelsInter::Fixed),
-        BiRefNetModels::BiRefNetLite => config
-            .with_prompt4_loc(Prompt4loc::Dense)
-            .with_ms_supervision(true)
-            .with_dec_ipt(true)
-            .with_dec_ipt_split(true)
-            .with_cxt_num(3)
-            .with_mul_scl_ipt(MulSclIpt::Cat)
-            .with_dec_att(DecAtt::ASPPDeformable)
-            .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
-            .with_dec_blk(DecBlk::BasicDecBlk)
-            .with_backbone(Backbone::SwinV1T)
-            .with_lat_blk(LatBlk::BasicLatBlk)
-            .with_dec_channels_inter(DecChannelsInter::Fixed),
-        BiRefNetModels::BiRefNetLite2k => config
-            .with_prompt4_loc(Prompt4loc::Dense)
-            .with_ms_supervision(true)
-            .with_dec_ipt(true)
-            .with_dec_ipt_split(true)
-            .with_cxt_num(3)
-            .with_mul_scl_ipt(MulSclIpt::Cat)
-            .with_dec_att(DecAtt::ASPPDeformable)
-            .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
-            .with_dec_blk(DecBlk::BasicDecBlk)
-            .with_backbone(Backbone::SwinV1T)
-            .with_lat_blk(LatBlk::BasicLatBlk)
-            .with_dec_channels_inter(DecChannelsInter::Fixed),
-        BiRefNetModels::BiRefNetMatting => config
-            .with_prompt4_loc(Prompt4loc::Dense)
-            .with_ms_supervision(true)
-            .with_dec_ipt(true)
-            .with_dec_ipt_split(true)
-            .with_cxt_num(3)
-            .with_mul_scl_ipt(MulSclIpt::Cat)
-            .with_dec_att(DecAtt::ASPPDeformable)
-            .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
-            .with_dec_blk(DecBlk::BasicDecBlk)
-            .with_backbone(Backbone::SwinV1L)
-            .with_lat_blk(LatBlk::BasicLatBlk)
-            .with_dec_channels_inter(DecChannelsInter::Fixed),
+        BiRefNetModels::BiRefNetPortrait => {
+            let base_config = ModelConfig::new();
+            base_config
+                .clone()
+                .with_task(base_config.task.with_prompt4_loc(Prompt4loc::Dense))
+                .with_decoder(
+                    base_config
+                        .decoder
+                        .with_ms_supervision(true)
+                        .with_dec_ipt(true)
+                        .with_dec_ipt_split(true)
+                        .with_cxt_num(3)
+                        .with_mul_scl_ipt(MulSclIpt::Cat)
+                        .with_dec_att(DecAtt::ASPPDeformable)
+                        .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
+                        .with_dec_blk(DecBlk::BasicDecBlk)
+                        .with_lat_blk(LatBlk::BasicLatBlk)
+                        .with_dec_channels_inter(DecChannelsInter::Fixed),
+                )
+                .with_backbone(base_config.backbone.with_backbone(Backbone::SwinV1L))
+        }
+        BiRefNetModels::BiRefNet => {
+            let base_config = ModelConfig::new();
+            base_config
+                .clone()
+                .with_task(base_config.task.with_prompt4_loc(Prompt4loc::Dense))
+                .with_decoder(
+                    base_config
+                        .decoder
+                        .with_ms_supervision(true)
+                        .with_dec_ipt(true)
+                        .with_dec_ipt_split(true)
+                        .with_cxt_num(3)
+                        .with_mul_scl_ipt(MulSclIpt::Cat)
+                        .with_dec_att(DecAtt::ASPPDeformable)
+                        .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
+                        .with_dec_blk(DecBlk::BasicDecBlk)
+                        .with_lat_blk(LatBlk::BasicLatBlk)
+                        .with_dec_channels_inter(DecChannelsInter::Fixed),
+                )
+                .with_backbone(base_config.backbone.with_backbone(Backbone::SwinV1L))
+        }
+        BiRefNetModels::BiRefNetCOD => {
+            let base_config = ModelConfig::new();
+            base_config
+                .clone()
+                .with_task(base_config.task.with_prompt4_loc(Prompt4loc::Dense))
+                .with_decoder(
+                    base_config
+                        .decoder
+                        .with_ms_supervision(true)
+                        .with_dec_ipt(true)
+                        .with_dec_ipt_split(true)
+                        .with_cxt_num(3)
+                        .with_mul_scl_ipt(MulSclIpt::Cat)
+                        .with_dec_att(DecAtt::ASPPDeformable)
+                        .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
+                        .with_dec_blk(DecBlk::BasicDecBlk)
+                        .with_lat_blk(LatBlk::BasicLatBlk)
+                        .with_dec_channels_inter(DecChannelsInter::Fixed),
+                )
+                .with_backbone(base_config.backbone.with_backbone(Backbone::SwinV1L))
+        }
+        BiRefNetModels::BiRefNetDIS5k => {
+            let base_config = ModelConfig::new();
+            base_config
+                .clone()
+                .with_task(base_config.task.with_prompt4_loc(Prompt4loc::Dense))
+                .with_decoder(
+                    base_config
+                        .decoder
+                        .with_ms_supervision(true)
+                        .with_dec_ipt(true)
+                        .with_dec_ipt_split(true)
+                        .with_cxt_num(3)
+                        .with_mul_scl_ipt(MulSclIpt::Cat)
+                        .with_dec_att(DecAtt::ASPPDeformable)
+                        .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
+                        .with_dec_blk(DecBlk::BasicDecBlk)
+                        .with_lat_blk(LatBlk::BasicLatBlk)
+                        .with_dec_channels_inter(DecChannelsInter::Fixed),
+                )
+                .with_backbone(base_config.backbone.with_backbone(Backbone::SwinV1L))
+        }
+        BiRefNetModels::BiRefNetHRSOD => {
+            let base_config = ModelConfig::new();
+            base_config
+                .clone()
+                .with_task(base_config.task.with_prompt4_loc(Prompt4loc::Dense))
+                .with_decoder(
+                    base_config
+                        .decoder
+                        .with_ms_supervision(true)
+                        .with_dec_ipt(true)
+                        .with_dec_ipt_split(true)
+                        .with_cxt_num(3)
+                        .with_mul_scl_ipt(MulSclIpt::Cat)
+                        .with_dec_att(DecAtt::ASPPDeformable)
+                        .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
+                        .with_dec_blk(DecBlk::BasicDecBlk)
+                        .with_lat_blk(LatBlk::BasicLatBlk)
+                        .with_dec_channels_inter(DecChannelsInter::Fixed),
+                )
+                .with_backbone(base_config.backbone.with_backbone(Backbone::SwinV1L))
+        }
+        BiRefNetModels::BiRefNetDIS5KTRTEs => {
+            let base_config = ModelConfig::new();
+            base_config
+                .clone()
+                .with_task(base_config.task.with_prompt4_loc(Prompt4loc::Dense))
+                .with_decoder(
+                    base_config
+                        .decoder
+                        .with_ms_supervision(true)
+                        .with_dec_ipt(true)
+                        .with_dec_ipt_split(true)
+                        .with_cxt_num(3)
+                        .with_mul_scl_ipt(MulSclIpt::Cat)
+                        .with_dec_att(DecAtt::ASPPDeformable)
+                        .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
+                        .with_dec_blk(DecBlk::BasicDecBlk)
+                        .with_lat_blk(LatBlk::BasicLatBlk)
+                        .with_dec_channels_inter(DecChannelsInter::Fixed),
+                )
+                .with_backbone(base_config.backbone.with_backbone(Backbone::SwinV1L))
+        }
+        BiRefNetModels::BiRefNetLite => {
+            let base_config = ModelConfig::new();
+            base_config
+                .clone()
+                .with_task(base_config.task.with_prompt4_loc(Prompt4loc::Dense))
+                .with_decoder(
+                    base_config
+                        .decoder
+                        .with_ms_supervision(true)
+                        .with_dec_ipt(true)
+                        .with_dec_ipt_split(true)
+                        .with_cxt_num(3)
+                        .with_mul_scl_ipt(MulSclIpt::Cat)
+                        .with_dec_att(DecAtt::ASPPDeformable)
+                        .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
+                        .with_dec_blk(DecBlk::BasicDecBlk)
+                        .with_lat_blk(LatBlk::BasicLatBlk)
+                        .with_dec_channels_inter(DecChannelsInter::Fixed),
+                )
+                .with_backbone(base_config.backbone.with_backbone(Backbone::SwinV1T))
+        }
+        BiRefNetModels::BiRefNetLite2k => {
+            let base_config = ModelConfig::new();
+            base_config
+                .clone()
+                .with_task(base_config.task.with_prompt4_loc(Prompt4loc::Dense))
+                .with_decoder(
+                    base_config
+                        .decoder
+                        .with_ms_supervision(true)
+                        .with_dec_ipt(true)
+                        .with_dec_ipt_split(true)
+                        .with_cxt_num(3)
+                        .with_mul_scl_ipt(MulSclIpt::Cat)
+                        .with_dec_att(DecAtt::ASPPDeformable)
+                        .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
+                        .with_dec_blk(DecBlk::BasicDecBlk)
+                        .with_lat_blk(LatBlk::BasicLatBlk)
+                        .with_dec_channels_inter(DecChannelsInter::Fixed),
+                )
+                .with_backbone(base_config.backbone.with_backbone(Backbone::SwinV1T))
+        }
+        BiRefNetModels::BiRefNetMatting => {
+            let base_config = ModelConfig::new();
+            base_config
+                .clone()
+                .with_task(base_config.task.with_prompt4_loc(Prompt4loc::Dense))
+                .with_decoder(
+                    base_config
+                        .decoder
+                        .with_ms_supervision(true)
+                        .with_dec_ipt(true)
+                        .with_dec_ipt_split(true)
+                        .with_cxt_num(3)
+                        .with_mul_scl_ipt(MulSclIpt::Cat)
+                        .with_dec_att(DecAtt::ASPPDeformable)
+                        .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
+                        .with_dec_blk(DecBlk::BasicDecBlk)
+                        .with_lat_blk(LatBlk::BasicLatBlk)
+                        .with_dec_channels_inter(DecChannelsInter::Fixed),
+                )
+                .with_backbone(base_config.backbone.with_backbone(Backbone::SwinV1L))
+        }
     };
     config
         .save(dir.join(format!("{name}.json")))

@@ -6,19 +6,22 @@ edition.workspace = true
 publish = false
 
 [features]
-cuda = ["burn/cuda-jit"]
+default = ["ndarray"]
+
+#cuda = ["burn/cuda-jit"]
 ndarray = ["burn/ndarray"]
 wgpu = ["burn/wgpu"]
 
-openblas = ["burn/openblas"]
-openblas-system = ["burn/openblas-system"]
-fusion = ["burn/fusion"]
+#openblas = ["burn/openblas"]
+#openblas-system = ["burn/openblas-system"]
+#fusion = ["burn/fusion"]
 
 [dependencies]
 birefnet-burn = { path = "../../birefnet" }
 burn = { workspace = true }
 
 anyhow = "1"
-clap = { version = "^4.5.20", features = ["derive"] }
-image = "^0.25.4"
-num-traits = "^0.2.19"
+clap = { version = "4.5.41", features = ["derive"] }
+image = "0.25.6"
+imageops-kit = { git = "https://github.com/nusu-github/imageops-kit", version = "0.1.0" }
+num-traits = "0.2.19"

@@ -1,25 +1,71 @@
+//! # Backbone Builder
+//!
+//! This module provides a factory function `build_backbone` to construct
+//! a backbone model based on the configuration.
+
 use burn::prelude::*;
 
 use super::{swin_v1_b, swin_v1_l, swin_v1_s, swin_v1_t, SwinTransformer};
 use crate::config::{Backbone, ModelConfig};
+use crate::error::{BiRefNetError, BiRefNetResult};
 
+/// An enum to encapsulate different backbone architectures.
+///
+/// This allows for a single type to represent any of the supported backbones,
+/// simplifying the model construction process.
 #[derive(Module, Debug)]
 pub enum BackboneEnum<B: Backend> {
+    /// The Swin Transformer model.
     SwinTransformer(SwinTransformer<B>),
 }
 
-pub fn build_backbone<B: Backend>(config: &ModelConfig, device: &Device<B>) -> BackboneEnum<B> {
-    match config.backbone {
-        Backbone::Vgg16 => unimplemented!(),
-        Backbone::Vgg16bn => unimplemented!(),
-        Backbone::Resnet50 => unimplemented!(),
-        Backbone::SwinV1T => BackboneEnum::SwinTransformer(swin_v1_t(device)),
-        Backbone::SwinV1S => BackboneEnum::SwinTransformer(swin_v1_s(device)),
-        Backbone::SwinV1B => BackboneEnum::SwinTransformer(swin_v1_b(device)),
-        Backbone::SwinV1L => BackboneEnum::SwinTransformer(swin_v1_l(device)),
-        Backbone::PvtV2B0 => unimplemented!(),
-        Backbone::PvtV2B1 => unimplemented!(),
-        Backbone::PvtV2B2 => unimplemented!(),
-        Backbone::PvtV2B5 => unimplemented!(),
+/// Constructs a backbone model based on the provided configuration.
+///
+/// This function acts as a factory, instantiating the correct backbone architecture
+/// as specified in `config.backbone.backbone`.
+///
+/// # Arguments
+///
+/// * `config` - The main model configuration.
+/// * `device` - The device to create the model on.
+///
+/// # Returns
+///
+/// A `BiRefNetResult` containing the constructed `BackboneEnum`.
+///
+/// # Errors
+///
+/// Returns `BiRefNetError::UnsupportedBackbone` if the specified backbone
+/// is not yet implemented in this crate.
+pub fn build_backbone<B: Backend>(
+    config: &ModelConfig,
+    device: &Device<B>,
+) -> BiRefNetResult<BackboneEnum<B>> {
+    match config.backbone.backbone {
+        Backbone::Vgg16 => Err(BiRefNetError::UnsupportedBackbone {
+            backbone: "VGG16".to_string(),
+        }),
+        Backbone::Vgg16bn => Err(BiRefNetError::UnsupportedBackbone {
+            backbone: "VGG16 with BatchNorm".to_string(),
+        }),
+        Backbone::Resnet50 => Err(BiRefNetError::UnsupportedBackbone {
+            backbone: "ResNet50".to_string(),
+        }),
+        Backbone::SwinV1T => Ok(BackboneEnum::SwinTransformer(swin_v1_t(device)?)),
+        Backbone::SwinV1S => Ok(BackboneEnum::SwinTransformer(swin_v1_s(device)?)),
+        Backbone::SwinV1B => Ok(BackboneEnum::SwinTransformer(swin_v1_b(device)?)),
+        Backbone::SwinV1L => Ok(BackboneEnum::SwinTransformer(swin_v1_l(device)?)),
+        Backbone::PvtV2B0 => Err(BiRefNetError::UnsupportedBackbone {
+            backbone: "PVT v2 B0".to_string(),
+        }),
+        Backbone::PvtV2B1 => Err(BiRefNetError::UnsupportedBackbone {
+            backbone: "PVT v2 B1".to_string(),
+        }),
+        Backbone::PvtV2B2 => Err(BiRefNetError::UnsupportedBackbone {
+            backbone: "PVT v2 B2".to_string(),
+        }),
+        Backbone::PvtV2B5 => Err(BiRefNetError::UnsupportedBackbone {
+            backbone: "PVT v2 B5".to_string(),
+        }),
     }
 }
