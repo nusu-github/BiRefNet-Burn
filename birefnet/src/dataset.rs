@@ -288,16 +288,6 @@ impl<B: Backend> BiRefNetMapper<B> {
         width: usize,
         height: usize,
     ) -> Tensor<B, 3> {
-        // Ensure the pixel data matches the expected size
-        let expected_size = height * width * channels;
-        if pixels.len() != expected_size {
-            panic!(
-                "Pixel data size mismatch: expected {}, got {}",
-                expected_size,
-                pixels.len()
-            );
-        }
-
         // Convert pixels to tensor based on channels
         let tensor = if channels == 3 {
             // RGB image: [H, W, C]
@@ -321,6 +311,12 @@ impl<B: Backend> BiRefNetMapper<B> {
         // Convert from [H, W, C] to [C, H, W]
         let tensor = tensor.permute([2, 0, 1]);
 
+        // TODO: Resize image tensor to target_size before normalization
+        // This is critical for batching - all tensors must have the same dimensions
+        // Use image crate for resizing since burn doesn't have data augmentation yet
+        // Expected shape after resize: [C, target_height, target_width]
+        // let tensor = self.resize_tensor(tensor, self.target_size);
+
         // Apply normalization (only for RGB images)
         if channels == 3 {
             self.normalize_tensor(tensor)
@@ -342,6 +338,13 @@ impl<B: Backend> BiRefNetMapper<B> {
             Tensor::<B, 2>::from_data(TensorData::new(mask_data, [height, width]), &self.device);
 
         // Add channel dimension to make it [C, H, W] where C=1
+
+        // TODO: Resize mask tensor to target_size for consistent batching
+        // This is critical - masks must have the same dimensions as images
+        // Use image crate for resizing since burn doesn't have data augmentation yet
+        // Expected shape after resize: [1, target_height, target_width]
+        // let tensor = self.resize_tensor(tensor, self.target_size);
+
         tensor.unsqueeze_dim(0)
     }
 
@@ -354,17 +357,33 @@ impl<B: Backend> BiRefNetMapper<B> {
 
     /// Get mask file path from image path.
     fn get_mask_path_from_image_path(&self, image_path: &str) -> String {
-        // Convert image path to mask path
-        // Replace '/im/' with '/gt/' and change extension to .png
-        let mask_path = image_path.replace("/im/", "/gt/");
+        // Convert image path to mask path by replacing the image directory component
+        let mask_path_str = image_path.replace("/im/", "/gt/");
 
-        // Change extension to .png
-        let path = std::path::Path::new(&mask_path);
-        let stem = path.file_stem().unwrap().to_str().unwrap();
-        let parent = path.parent().unwrap();
-        let mask_path = parent.join(format!("{}.png", stem));
+        // Extract stem and parent directory to reconstruct path with different extensions
+        let path = std::path::Path::new(&mask_path_str);
+        let stem = path
+            .file_stem()
+            .expect("Could not get file stem")
+            .to_str()
+            .expect("Invalid UTF-8 in stem");
+        let parent = path.parent().expect("Could not get parent directory");
 
-        mask_path.to_str().unwrap().to_string()
+        // Search for a mask file with valid extensions
+        let valid_extensions = [".png", ".jpg", ".PNG", ".JPG", ".JPEG"];
+        for ext in valid_extensions {
+            let mask_path = parent.join(format!("{}{}", stem, ext));
+            if mask_path.exists() {
+                return mask_path
+                    .to_str()
+                    .expect("Invalid UTF-8 in path")
+                    .to_string();
+            }
+        }
+
+        // If no mask is found after checking all extensions, panic.
+        // This indicates a problem with the dataset structure or the path logic.
+        panic!("No corresponding mask found for image: {}", image_path);
     }
 
     /// Apply normalization to image tensor.
@@ -380,6 +399,19 @@ impl<B: Backend> BiRefNetMapper<B> {
 
         (tensor - mean) / std
     }
+
+    // TODO: Implement resize_tensor helper function for image and mask resizing
+    // This function should resize a tensor to the target size using the image crate
+    // Example signature:
+    // fn resize_tensor(&self, tensor: Tensor<B, 3>, target_size: (usize, usize)) -> Tensor<B, 3>
+    //
+    // Implementation approach:
+    // 1. Convert tensor back to image using tensor.to_data()
+    // 2. Use image crate's resize() method with appropriate filter (e.g., Lanczos3)
+    // 3. Convert resized image back to tensor
+    // 4. Ensure proper channel ordering is maintained
+    //
+    // This is needed because burn doesn't have built-in data augmentation/resizing yet
 
     /// Get actual image dimensions from the image file.
     fn get_actual_image_info(&self, image_path: &str) -> (usize, usize, usize) {

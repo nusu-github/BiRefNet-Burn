@@ -5,6 +5,10 @@
 //!
 //! The implementation follows the original PyTorch BiRefNet loss.py structure.
 
+use burn::nn::conv::Conv2dConfig;
+use burn::nn::loss::{CrossEntropyLoss, CrossEntropyLossConfig};
+use burn::nn::pool::AvgPool2dConfig;
+use burn::nn::PaddingConfig2d;
 use burn::prelude::*;
 use burn::tensor::{backend::Backend, Tensor};
 
@@ -260,7 +264,7 @@ impl<B: Backend> StructureLoss<B> {
         StructureLossConfig::new().with_weight(weight).init()
     }
 
-    /// Calculate structure loss (simplified version).
+    /// Calculate structure loss.
     ///
     /// # Arguments
     /// * `pred` - Predicted segmentation map with shape [N, C, H, W]
@@ -269,10 +273,548 @@ impl<B: Backend> StructureLoss<B> {
     /// # Returns
     /// Structure loss tensor
     pub fn forward(&self, pred: Tensor<B, 4>, target: Tensor<B, 4>) -> Tensor<B, 1> {
-        // For now, return a simple L1 loss as a placeholder
-        // This should be replaced with proper SSIM or other structural loss
-        let l1_loss = (pred - target).abs().mean();
-        l1_loss * self.weight
+        // Calculate edge-aware weight using average pooling
+        let [n, c, h, w] = target.dims();
+
+        // Create average pooling layer with kernel size 31
+        let avg_pool = AvgPool2dConfig::new([31, 31])
+            .with_strides([1, 1])
+            .with_padding(PaddingConfig2d::Explicit(15, 15))
+            .init();
+
+        // Apply average pooling to get smoothed target
+        let pooled = avg_pool.forward(target.clone());
+
+        // Calculate edge weight: weit = 1 + 5 * |avg_pool(target) - target|
+        let weit = (pooled - target.clone())
+            .abs()
+            .mul_scalar(5.0)
+            .add_scalar(1.0);
+
+        // Weighted BCE loss
+        let max_val = pred.clone().clamp_max(0.0);
+        let bce_term1 = max_val - pred.clone() * target.clone();
+        let bce_term2 = (-pred.clone().abs()).exp().add_scalar(1.0).log();
+        let wbce = (bce_term1 + bce_term2) * weit.clone();
+        let wbce_loss = wbce.sum_dim(2).sum_dim(2) / weit.clone().sum_dim(2).sum_dim(2);
+
+        // Weighted IoU loss
+        let pred_sigmoid = burn::tensor::activation::sigmoid(pred);
+        let inter = (pred_sigmoid.clone() * target.clone() * weit.clone())
+            .sum_dim(2)
+            .sum_dim(2);
+        let union = ((pred_sigmoid + target) * weit).sum_dim(2).sum_dim(2);
+        let wiou = (inter.clone().add_scalar(1.0) / (union - inter).add_scalar(1.0))
+            .neg()
+            .add_scalar(1.0);
+
+        // Combine losses
+        (wbce_loss + wiou).mean() * self.weight
+    }
+}
+
+/// Configuration for Contour Loss function.
+#[derive(Config, Debug)]
+pub struct ContourLossConfig {
+    #[config(default = 10.0)]
+    pub length_weight: f32,
+    #[config(default = 1e-8)]
+    pub epsilon: f32,
+}
+
+/// Contour loss for boundary refinement.
+#[derive(Module, Debug)]
+pub struct ContourLoss<B: Backend> {
+    pub length_weight: f32,
+    pub epsilon: f32,
+    _phantom: std::marker::PhantomData<B>,
+}
+
+impl ContourLossConfig {
+    /// Initialize a new contour loss function with the given configuration.
+    pub const fn init<B: Backend>(&self) -> ContourLoss<B> {
+        ContourLoss {
+            length_weight: self.length_weight,
+            epsilon: self.epsilon,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<B: Backend> Default for ContourLoss<B> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<B: Backend> ContourLoss<B> {
+    /// Create a new contour loss function with default configuration.
+    pub fn new() -> Self {
+        ContourLossConfig::new().init()
+    }
+
+    /// Create a new contour loss function with custom weight.
+    pub fn with_weight(length_weight: f32) -> Self {
+        ContourLossConfig::new()
+            .with_length_weight(length_weight)
+            .init()
+    }
+
+    /// Calculate contour loss.
+    ///
+    /// # Arguments
+    /// * `pred` - Predicted segmentation map with shape [N, C, H, W]
+    /// * `target` - Ground truth segmentation map with shape [N, C, H, W]
+    ///
+    /// # Returns
+    /// Contour loss tensor
+    pub fn forward(&self, pred: Tensor<B, 4>, target: Tensor<B, 4>) -> Tensor<B, 1> {
+        let [n, c, h, w] = pred.dims();
+
+        // Calculate horizontal and vertical gradients
+        // delta_r = pred[:,:,1:,:] - pred[:,:,:-1,:]
+        let delta_r = pred.clone().slice([0..n, 0..c, 1..h, 0..w])
+            - pred.clone().slice([0..n, 0..c, 0..h - 1, 0..w]);
+
+        // delta_c = pred[:,:,:,1:] - pred[:,:,:,:-1]
+        let delta_c = pred.clone().slice([0..n, 0..c, 0..h, 1..w])
+            - pred.clone().slice([0..n, 0..c, 0..h, 0..w - 1]);
+
+        // Ensure overlapping regions have the same dimensions
+        // delta_r has shape [n, c, h-1, w] and delta_c has shape [n, c, h, w-1]
+        // Take the common area [n, c, h-1, w-1]
+        let min_h = h - 1;
+        let min_w = w - 1;
+
+        let delta_r_sq = delta_r
+            .slice([0..n, 0..c, 0..min_h, 0..min_w])
+            .powf_scalar(2.0);
+        let delta_c_sq = delta_c
+            .slice([0..n, 0..c, 0..min_h, 0..min_w])
+            .powf_scalar(2.0);
+
+        // Length term: mean(sqrt(delta_r^2 + delta_c^2 + epsilon))
+        let delta_pred = (delta_r_sq + delta_c_sq).abs();
+        let length = (delta_pred + self.epsilon).sqrt().mean();
+
+        // Region terms
+        let c_in = Tensor::ones_like(&pred);
+        let c_out = Tensor::zeros_like(&pred);
+
+        // region_in = mean(pred * (target - c_in)^2)
+        let region_in = (pred.clone() * (target.clone() - c_in).powf_scalar(2.0)).mean();
+
+        // region_out = mean((1-pred) * (target - c_out)^2)
+        let region_out =
+            ((Tensor::ones_like(&pred) - pred) * (target - c_out).powf_scalar(2.0)).mean();
+
+        let region = region_in + region_out;
+
+        // Total loss = weight * length + region
+        length * self.length_weight + region
+    }
+}
+
+/// Configuration for SSIM Loss function.
+#[derive(Config, Debug)]
+pub struct SSIMLossConfig {
+    #[config(default = 11)]
+    pub window_size: usize,
+    #[config(default = true)]
+    pub size_average: bool,
+}
+
+/// SSIM (Structural Similarity Index) loss.
+#[derive(Module, Debug)]
+pub struct SSIMLoss<B: Backend> {
+    pub window_size: usize,
+    pub size_average: bool,
+    _phantom: std::marker::PhantomData<B>,
+}
+
+impl SSIMLossConfig {
+    /// Initialize a new SSIM loss function with the given configuration.
+    pub const fn init<B: Backend>(&self) -> SSIMLoss<B> {
+        SSIMLoss {
+            window_size: self.window_size,
+            size_average: self.size_average,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<B: Backend> Default for SSIMLoss<B> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<B: Backend> SSIMLoss<B> {
+    /// Create a new SSIM loss function with default configuration.
+    pub fn new() -> Self {
+        SSIMLossConfig::new().init()
+    }
+
+    /// Create Gaussian window for SSIM calculation.
+    fn create_window(&self, channels: usize, device: &B::Device) -> Tensor<B, 4> {
+        let sigma = 1.5;
+        let window_size = self.window_size as i32;
+        let mean = window_size / 2;
+
+        // Create 1D Gaussian window
+        let mut gauss_1d = vec![0.0; self.window_size];
+        let mut sum = 0.0;
+        for (i, val) in gauss_1d.iter_mut().enumerate() {
+            let x = i as i32 - mean;
+            *val = (-(x * x) as f32 / (2.0 * sigma * sigma)).exp();
+            sum += *val;
+        }
+
+        // Normalize
+        for val in &mut gauss_1d {
+            *val /= sum;
+        }
+
+        // Convert to tensor and create 2D window
+        let window_1d = Tensor::<B, 1>::from_floats(gauss_1d.as_slice(), device);
+        let window_1d = window_1d.unsqueeze::<2>();
+        let window_2d = window_1d.clone().matmul(window_1d.transpose());
+
+        // Expand to match channels
+        window_2d
+            .unsqueeze::<4>()
+            .unsqueeze::<4>()
+            .repeat(&[channels, 1, 1, 1])
+    }
+
+    /// Calculate SSIM loss.
+    ///
+    /// # Arguments
+    /// * `img1` - First image tensor with shape [N, C, H, W]
+    /// * `img2` - Second image tensor with shape [N, C, H, W]
+    ///
+    /// # Returns
+    /// SSIM loss tensor (1 - SSIM)
+    pub fn forward(&self, img1: Tensor<B, 4>, img2: Tensor<B, 4>) -> Tensor<B, 1> {
+        let [_, channels, _, _] = img1.dims();
+        let device = img1.device();
+
+        // Create Gaussian window
+        let window = self.create_window(channels, &device);
+
+        // Constants for numerical stability
+        let c1 = 0.01_f32.powi(2);
+        let c2 = 0.03_f32.powi(2);
+
+        let padding = self.window_size / 2;
+
+        // Calculate local means using convolution with Gaussian window
+        let conv_config = Conv2dConfig::new([channels, 1], [self.window_size, self.window_size])
+            .with_padding(PaddingConfig2d::Explicit(padding, padding))
+            .with_groups(channels);
+
+        // This is a simplified version - in practice, you'd use the window as conv weights
+        // For now, using average pooling as approximation
+        let pool_layer = AvgPool2dConfig::new([self.window_size, self.window_size])
+            .with_strides([1, 1])
+            .with_padding(PaddingConfig2d::Explicit(padding, padding))
+            .init();
+
+        let mu1 = pool_layer.forward(img1.clone());
+        let mu2 = pool_layer.forward(img2.clone());
+
+        let mu1_sq = mu1.clone().powf_scalar(2.0);
+        let mu2_sq = mu2.clone().powf_scalar(2.0);
+        let mu1_mu2 = mu1 * mu2;
+
+        let sigma1_sq = pool_layer.forward(img1.clone().powf_scalar(2.0)) - mu1_sq.clone();
+        let sigma2_sq = pool_layer.forward(img2.clone().powf_scalar(2.0)) - mu2_sq.clone();
+        let sigma12 = pool_layer.forward(img1 * img2) - mu1_mu2.clone();
+
+        // SSIM calculation
+        let ssim_n = (mu1_mu2 * 2.0 + c1) * (sigma12 * 2.0 + c2);
+        let ssim_d = (mu1_sq + mu2_sq + c1) * (sigma1_sq + sigma2_sq + c2);
+        let ssim = ssim_n / ssim_d;
+
+        // Return 1 - SSIM as loss
+        let one = Tensor::ones_like(&ssim);
+        let loss = one - (ssim + 1.0) / 2.0;
+
+        if self.size_average {
+            loss.mean()
+        } else {
+            loss.mean_dim(1).mean_dim(1).mean_dim(1).mean()
+        }
+    }
+}
+
+/// Configuration for Patch IoU Loss function.
+#[derive(Config, Debug)]
+pub struct PatchIoULossConfig {
+    #[config(default = 64)]
+    pub patch_size: usize,
+    #[config(default = 1e-6)]
+    pub epsilon: f32,
+}
+
+/// Patch-based IoU loss for local region evaluation.
+#[derive(Module, Debug)]
+pub struct PatchIoULoss<B: Backend> {
+    pub patch_size: usize,
+    pub epsilon: f32,
+    pub base_iou: CombinedLoss<B>,
+}
+
+impl PatchIoULossConfig {
+    /// Initialize a new patch IoU loss function with the given configuration.
+    pub fn init<B: Backend>(&self) -> PatchIoULoss<B> {
+        PatchIoULoss {
+            patch_size: self.patch_size,
+            epsilon: self.epsilon,
+            base_iou: CombinedLoss::with_weights(0.0, 1.0),
+        }
+    }
+}
+
+impl<B: Backend> Default for PatchIoULoss<B> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<B: Backend> PatchIoULoss<B> {
+    /// Create a new patch IoU loss function with default configuration.
+    pub fn new() -> Self {
+        PatchIoULossConfig::new().init()
+    }
+
+    /// Calculate patch-based IoU loss.
+    ///
+    /// # Arguments
+    /// * `pred` - Predicted segmentation map with shape [N, C, H, W]
+    /// * `target` - Ground truth segmentation map with shape [N, C, H, W]
+    ///
+    /// # Returns
+    /// Patch IoU loss tensor
+    pub fn forward(&self, pred: Tensor<B, 4>, target: Tensor<B, 4>) -> Tensor<B, 1> {
+        let [n, c, h, w] = pred.dims();
+        let patch_size = self.patch_size;
+
+        let mut total_loss = Tensor::zeros([1], &pred.device());
+        let mut patch_count = 0;
+
+        // Iterate over patches
+        for y in (0..h).step_by(patch_size) {
+            for x in (0..w).step_by(patch_size) {
+                let y_end = (y + patch_size).min(h);
+                let x_end = (x + patch_size).min(w);
+
+                if y_end > y && x_end > x {
+                    let patch_pred = pred.clone().slice([0..n, 0..c, y..y_end, x..x_end]);
+                    let patch_target = target.clone().slice([0..n, 0..c, y..y_end, x..x_end]);
+
+                    let patch_loss = self.base_iou.iou_loss(patch_pred, patch_target);
+                    total_loss = total_loss + patch_loss;
+                    patch_count += 1;
+                }
+            }
+        }
+
+        // Average over patches
+        if patch_count > 0 {
+            total_loss / (patch_count as f32)
+        } else {
+            total_loss
+        }
+    }
+}
+
+/// Configuration for Threshold Regularization Loss.
+#[derive(Config, Debug)]
+pub struct ThrRegLossConfig {
+    #[config(default = 1.0)]
+    pub weight: f32,
+}
+
+/// Threshold regularization loss to push predictions towards 0 or 1.
+#[derive(Module, Debug)]
+pub struct ThrRegLoss<B: Backend> {
+    pub weight: f32,
+    _phantom: std::marker::PhantomData<B>,
+}
+
+impl ThrRegLossConfig {
+    /// Initialize a new threshold regularization loss with the given configuration.
+    pub const fn init<B: Backend>(&self) -> ThrRegLoss<B> {
+        ThrRegLoss {
+            weight: self.weight,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<B: Backend> Default for ThrRegLoss<B> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<B: Backend> ThrRegLoss<B> {
+    /// Create a new threshold regularization loss with default configuration.
+    pub fn new() -> Self {
+        ThrRegLossConfig::new().init()
+    }
+
+    /// Calculate threshold regularization loss.
+    ///
+    /// # Arguments
+    /// * `pred` - Predicted segmentation map with shape [N, C, H, W]
+    /// * `_target` - Unused, kept for API consistency
+    ///
+    /// # Returns
+    /// Threshold regularization loss tensor
+    pub fn forward(&self, pred: Tensor<B, 4>, _target: Tensor<B, 4>) -> Tensor<B, 1> {
+        // Loss = 1 - (pred^2 + (pred-1)^2)
+        let pred_sq = pred.clone().powf_scalar(2.0);
+        let pred_minus_one_sq = (pred - 1.0).powf_scalar(2.0);
+        let reg = (pred_sq + pred_minus_one_sq).mean();
+        (Tensor::ones_like(&reg) - reg) * self.weight
+    }
+}
+
+/// Configuration for Classification Loss.
+#[derive(Config, Debug)]
+pub struct ClsLossConfig {
+    #[config(default = 1.0)]
+    pub weight: f32,
+}
+
+/// Classification loss for auxiliary supervision.
+#[derive(Module, Debug)]
+pub struct ClsLoss<B: Backend> {
+    pub weight: f32,
+    pub ce_loss: CrossEntropyLoss<B>,
+}
+
+impl ClsLossConfig {
+    /// Initialize a new classification loss with the given configuration.
+    pub fn init<B: Backend>(&self, device: &B::Device) -> ClsLoss<B> {
+        ClsLoss {
+            weight: self.weight,
+            ce_loss: CrossEntropyLossConfig::new().init(device),
+        }
+    }
+}
+
+// Note: No Default implementation for ClsLoss since device parameter is required
+
+impl<B: Backend> ClsLoss<B> {
+    /// Create a new classification loss with default configuration.
+    pub fn new(device: &B::Device) -> Self {
+        ClsLossConfig::new().init(device)
+    }
+
+    /// Calculate classification loss.
+    ///
+    /// # Arguments
+    /// * `preds` - List of predicted class logits
+    /// * `targets` - Ground truth class labels
+    ///
+    /// # Returns
+    /// Classification loss tensor
+    pub fn forward(&self, preds: Vec<Tensor<B, 2>>, targets: Tensor<B, 1, Int>) -> Tensor<B, 1> {
+        let mut total_loss = Tensor::zeros([1], &targets.device());
+
+        for pred in preds.iter() {
+            let loss = self.ce_loss.forward(pred.clone(), targets.clone());
+            total_loss = total_loss + loss;
+        }
+
+        total_loss * self.weight / (preds.len() as f32)
+    }
+}
+
+/// Configuration for MAE/MSE Loss.
+#[derive(Config, Debug)]
+pub struct MaeLossConfig {
+    #[config(default = 1.0)]
+    pub weight: f32,
+}
+
+/// Mean Absolute Error (L1) loss.
+#[derive(Module, Debug)]
+pub struct MaeLoss<B: Backend> {
+    pub weight: f32,
+    _phantom: std::marker::PhantomData<B>,
+}
+
+impl MaeLossConfig {
+    /// Initialize a new MAE loss with the given configuration.
+    pub const fn init<B: Backend>(&self) -> MaeLoss<B> {
+        MaeLoss {
+            weight: self.weight,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<B: Backend> Default for MaeLoss<B> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<B: Backend> MaeLoss<B> {
+    /// Create a new MAE loss with default configuration.
+    pub fn new() -> Self {
+        MaeLossConfig::new().init()
+    }
+
+    /// Calculate MAE loss.
+    pub fn forward(&self, pred: Tensor<B, 4>, target: Tensor<B, 4>) -> Tensor<B, 1> {
+        (pred - target).abs().mean() * self.weight
+    }
+}
+
+/// Configuration for MSE Loss.
+#[derive(Config, Debug)]
+pub struct MseLossConfig {
+    #[config(default = 1.0)]
+    pub weight: f32,
+}
+
+/// Mean Squared Error (L2) loss.
+#[derive(Module, Debug)]
+pub struct MseLoss<B: Backend> {
+    pub weight: f32,
+    _phantom: std::marker::PhantomData<B>,
+}
+
+impl MseLossConfig {
+    /// Initialize a new MSE loss with the given configuration.
+    pub const fn init<B: Backend>(&self) -> MseLoss<B> {
+        MseLoss {
+            weight: self.weight,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<B: Backend> Default for MseLoss<B> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<B: Backend> MseLoss<B> {
+    /// Create a new MSE loss with default configuration.
+    pub fn new() -> Self {
+        MseLossConfig::new().init()
+    }
+
+    /// Calculate MSE loss.
+    pub fn forward(&self, pred: Tensor<B, 4>, target: Tensor<B, 4>) -> Tensor<B, 1> {
+        (pred - target).powf_scalar(2.0).mean() * self.weight
     }
 }
 
@@ -422,6 +964,204 @@ mod tests {
         let target = Tensor::random(
             [1, 1, 4, 4],
             burn::tensor::Distribution::Uniform(0.0, 1.0),
+            &Default::default(),
+        );
+
+        let loss = loss_fn.forward(pred, target);
+
+        // Check that loss is a scalar tensor
+        assert_eq!(loss.shape().dims, [1]);
+    }
+
+    #[test]
+    fn test_contour_loss_config() {
+        let config = ContourLossConfig::new()
+            .with_length_weight(20.0)
+            .with_epsilon(1e-7);
+        assert_eq!(config.length_weight, 20.0);
+        assert_eq!(config.epsilon, 1e-7);
+    }
+
+    #[test]
+    fn test_contour_loss() {
+        let loss_fn = ContourLoss::<TestBackend>::new();
+
+        let pred = Tensor::random(
+            [1, 1, 8, 8],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            &Default::default(),
+        );
+        let target = Tensor::random(
+            [1, 1, 8, 8],
+            burn::tensor::Distribution::Uniform(0.0, 1.0),
+            &Default::default(),
+        );
+
+        let loss = loss_fn.forward(pred, target);
+
+        // Check that loss is a scalar tensor
+        assert_eq!(loss.shape().dims, [1]);
+    }
+
+    #[test]
+    fn test_ssim_loss_config() {
+        let config = SSIMLossConfig::new()
+            .with_window_size(7)
+            .with_size_average(false);
+        assert_eq!(config.window_size, 7);
+        assert!(!config.size_average);
+    }
+
+    #[test]
+    fn test_ssim_loss() {
+        let loss_fn = SSIMLoss::<TestBackend>::new();
+
+        let img1 = Tensor::random(
+            [1, 1, 16, 16],
+            burn::tensor::Distribution::Normal(0.5, 0.1),
+            &Default::default(),
+        );
+        let img2 = Tensor::random(
+            [1, 1, 16, 16],
+            burn::tensor::Distribution::Normal(0.5, 0.1),
+            &Default::default(),
+        );
+
+        let loss = loss_fn.forward(img1, img2);
+
+        // Check that loss is a scalar tensor
+        assert_eq!(loss.shape().dims, [1]);
+    }
+
+    #[test]
+    fn test_patch_iou_loss_config() {
+        let config = PatchIoULossConfig::new()
+            .with_patch_size(32)
+            .with_epsilon(1e-5);
+        assert_eq!(config.patch_size, 32);
+        assert_eq!(config.epsilon, 1e-5);
+    }
+
+    #[test]
+    fn test_patch_iou_loss() {
+        let loss_fn = PatchIoULoss::<TestBackend>::new();
+
+        let pred = Tensor::random(
+            [1, 1, 128, 128],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            &Default::default(),
+        );
+        let target = Tensor::random(
+            [1, 1, 128, 128],
+            burn::tensor::Distribution::Uniform(0.0, 1.0),
+            &Default::default(),
+        );
+
+        let loss = loss_fn.forward(pred, target);
+
+        // Check that loss is a scalar tensor
+        assert_eq!(loss.shape().dims, [1]);
+    }
+
+    #[test]
+    fn test_thr_reg_loss_config() {
+        let config = ThrRegLossConfig::new().with_weight(0.5);
+        assert_eq!(config.weight, 0.5);
+    }
+
+    #[test]
+    fn test_thr_reg_loss() {
+        let loss_fn = ThrRegLoss::<TestBackend>::new();
+
+        let pred = Tensor::random(
+            [1, 1, 4, 4],
+            burn::tensor::Distribution::Uniform(0.0, 1.0),
+            &Default::default(),
+        );
+        let target = Tensor::zeros([1, 1, 4, 4], &Default::default());
+
+        let loss = loss_fn.forward(pred, target);
+
+        // Check that loss is a scalar tensor
+        assert_eq!(loss.shape().dims, [1]);
+    }
+
+    #[test]
+    fn test_cls_loss_config() {
+        let config = ClsLossConfig::new().with_weight(2.0);
+        assert_eq!(config.weight, 2.0);
+    }
+
+    #[test]
+    fn test_cls_loss() {
+        let device = Default::default();
+        let loss_fn = ClsLoss::<TestBackend>::new(&device);
+
+        let preds = vec![
+            Tensor::random(
+                [4, 2],
+                burn::tensor::Distribution::Normal(0.0, 1.0),
+                &Default::default(),
+            ),
+            Tensor::random(
+                [4, 2],
+                burn::tensor::Distribution::Normal(0.0, 1.0),
+                &Default::default(),
+            ),
+        ];
+        let targets = Tensor::from_data([0, 1, 0, 1], &Default::default());
+
+        let loss = loss_fn.forward(preds, targets);
+
+        // Check that loss is a scalar tensor
+        assert_eq!(loss.shape().dims, [1]);
+    }
+
+    #[test]
+    fn test_mae_loss_config() {
+        let config = MaeLossConfig::new().with_weight(1.5);
+        assert_eq!(config.weight, 1.5);
+    }
+
+    #[test]
+    fn test_mae_loss() {
+        let loss_fn = MaeLoss::<TestBackend>::new();
+
+        let pred = Tensor::random(
+            [1, 1, 4, 4],
+            burn::tensor::Distribution::Normal(0.5, 0.1),
+            &Default::default(),
+        );
+        let target = Tensor::random(
+            [1, 1, 4, 4],
+            burn::tensor::Distribution::Normal(0.5, 0.1),
+            &Default::default(),
+        );
+
+        let loss = loss_fn.forward(pred, target);
+
+        // Check that loss is a scalar tensor
+        assert_eq!(loss.shape().dims, [1]);
+    }
+
+    #[test]
+    fn test_mse_loss_config() {
+        let config = MseLossConfig::new().with_weight(0.8);
+        assert_eq!(config.weight, 0.8);
+    }
+
+    #[test]
+    fn test_mse_loss() {
+        let loss_fn = MseLoss::<TestBackend>::new();
+
+        let pred = Tensor::random(
+            [1, 1, 4, 4],
+            burn::tensor::Distribution::Normal(0.5, 0.1),
+            &Default::default(),
+        );
+        let target = Tensor::random(
+            [1, 1, 4, 4],
+            burn::tensor::Distribution::Normal(0.5, 0.1),
             &Default::default(),
         );
 

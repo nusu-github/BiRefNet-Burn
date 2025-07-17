@@ -194,6 +194,8 @@ impl<B: Backend> BiRefNet<B> {
     pub fn forward_enc(&self, x: Tensor<B, 4>) -> BiRefNetResult<[Tensor<B, 4>; 4]> {
         let [x1, x2, x3, x4] = match &self.bb {
             BackboneEnum::SwinTransformer(bb) => bb.forward(x.clone())?,
+            BackboneEnum::ResNet(bb) => bb.forward(x.clone()),
+            BackboneEnum::VGG(bb) => bb.forward(x.clone()),
         };
         let [x1, x2, x3, x4] = match self.mul_scl_ipt {
             MulSclIpt_::None(_) => [x1, x2, x3, x4],
@@ -205,6 +207,16 @@ impl<B: Backend> BiRefNet<B> {
                         [h / 2, w / 2],
                         InterpolateOptions::new(InterpolateMode::Bilinear),
                     ))?,
+                    BackboneEnum::ResNet(bb) => bb.forward(interpolate(
+                        x,
+                        [h / 2, w / 2],
+                        InterpolateOptions::new(InterpolateMode::Bilinear),
+                    )),
+                    BackboneEnum::VGG(bb) => bb.forward(interpolate(
+                        x,
+                        [h / 2, w / 2],
+                        InterpolateOptions::new(InterpolateMode::Bilinear),
+                    )),
                 };
 
                 let [_, _, h, w] = x1.dims();
@@ -246,6 +258,16 @@ impl<B: Backend> BiRefNet<B> {
                         [h / 2, w / 2],
                         InterpolateOptions::new(InterpolateMode::Bilinear),
                     ))?,
+                    BackboneEnum::ResNet(bb) => bb.forward(interpolate(
+                        x,
+                        [h / 2, w / 2],
+                        InterpolateOptions::new(InterpolateMode::Bilinear),
+                    )),
+                    BackboneEnum::VGG(bb) => bb.forward(interpolate(
+                        x,
+                        [h / 2, w / 2],
+                        InterpolateOptions::new(InterpolateMode::Bilinear),
+                    )),
                 };
 
                 let [_, _, h, w] = x1.dims();

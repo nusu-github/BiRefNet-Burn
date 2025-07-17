@@ -19,3 +19,6 @@ burn-import = "0.17.1"
 image = "0.25.6"
 libm = "0.2.15"
 walkdir = "2.5.0"
+
+[profile.dev.package.image]
+opt-level = 3

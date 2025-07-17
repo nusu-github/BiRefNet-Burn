@@ -5,7 +5,9 @@
 
 use burn::prelude::*;
 
-use super::{swin_v1_b, swin_v1_l, swin_v1_s, swin_v1_t, SwinTransformer};
+use super::{
+    swin_v1_b, swin_v1_l, swin_v1_s, swin_v1_t, ResNetBackbone, SwinTransformer, VGGBackbone,
+};
 use crate::config::{Backbone, ModelConfig};
 use crate::error::{BiRefNetError, BiRefNetResult};
 
@@ -17,6 +19,10 @@ use crate::error::{BiRefNetError, BiRefNetResult};
 pub enum BackboneEnum<B: Backend> {
     /// The Swin Transformer model.
     SwinTransformer(SwinTransformer<B>),
+    /// The ResNet model family.
+    ResNet(ResNetBackbone<B>),
+    /// The VGG model family.
+    VGG(VGGBackbone<B>),
 }
 
 /// Constructs a backbone model based on the provided configuration.
@@ -42,15 +48,9 @@ pub fn build_backbone<B: Backend>(
     device: &Device<B>,
 ) -> BiRefNetResult<BackboneEnum<B>> {
     match config.backbone.backbone {
-        Backbone::Vgg16 => Err(BiRefNetError::UnsupportedBackbone {
-            backbone: "VGG16".to_string(),
-        }),
-        Backbone::Vgg16bn => Err(BiRefNetError::UnsupportedBackbone {
-            backbone: "VGG16 with BatchNorm".to_string(),
-        }),
-        Backbone::Resnet50 => Err(BiRefNetError::UnsupportedBackbone {
-            backbone: "ResNet50".to_string(),
-        }),
+        Backbone::Vgg16 => Ok(BackboneEnum::VGG(VGGBackbone::vgg16(device))),
+        Backbone::Vgg16bn => Ok(BackboneEnum::VGG(VGGBackbone::vgg16_bn(device))),
+        Backbone::Resnet50 => Ok(BackboneEnum::ResNet(ResNetBackbone::resnet50(device))),
         Backbone::SwinV1T => Ok(BackboneEnum::SwinTransformer(swin_v1_t(device)?)),
         Backbone::SwinV1S => Ok(BackboneEnum::SwinTransformer(swin_v1_s(device)?)),
         Backbone::SwinV1B => Ok(BackboneEnum::SwinTransformer(swin_v1_b(device)?)),
