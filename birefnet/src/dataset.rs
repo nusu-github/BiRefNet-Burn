@@ -16,10 +16,13 @@
 
 use std::path::PathBuf;
 
-use burn::data::dataset::{
-    transform::{Mapper, MapperDataset},
-    vision::{Annotation, ImageDatasetItem, ImageFolderDataset, PixelDepth, SegmentationMask},
-    Dataset,
+use burn::data::{
+    dataloader::batcher::Batcher,
+    dataset::{
+        transform::{Mapper, MapperDataset},
+        vision::{Annotation, ImageDatasetItem, ImageFolderDataset, PixelDepth, SegmentationMask},
+        Dataset,
+    },
 };
 use burn::prelude::*;
 use burn::tensor::{backend::Backend, Tensor};
@@ -42,6 +45,52 @@ pub struct BiRefNetItem<B: Backend> {
     pub image: Tensor<B, 3>,
     /// Segmentation mask tensor with shape [C, H, W] where C=1 for binary masks
     pub mask: Tensor<B, 3>,
+}
+
+/// Represents a batch of preprocessed data items from the BiRefNet dataset.
+///
+/// This struct contains batched image and mask tensors suitable for training
+/// and validation with the Burn framework.
+#[derive(Debug, Clone)]
+pub struct BiRefNetBatch<B: Backend> {
+    /// Batched input image tensor with shape [B, C, H, W] where B=batch_size, C=3 for RGB
+    pub images: Tensor<B, 4>,
+    /// Batched segmentation mask tensor with shape [B, C, H, W] where B=batch_size, C=1 for binary masks
+    pub masks: Tensor<B, 4>,
+}
+
+/// Batcher implementation for converting vectors of BiRefNetItem into BiRefNetBatch.
+///
+/// This batcher handles the conversion from individual data items to batched tensors,
+/// following the same pattern as Burn's official examples.
+#[derive(Clone, Default)]
+pub struct BiRefNetBatcher<B: Backend> {
+    _phantom: std::marker::PhantomData<B>,
+}
+
+impl<B: Backend> BiRefNetBatcher<B> {
+    /// Create a new BiRefNet batcher.
+    pub const fn new() -> Self {
+        Self {
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<B: Backend> Batcher<B, BiRefNetItem<B>, BiRefNetBatch<B>> for BiRefNetBatcher<B> {
+    fn batch(&self, items: Vec<BiRefNetItem<B>>, _device: &B::Device) -> BiRefNetBatch<B> {
+        // Extract and collect image tensors
+        let images: Vec<Tensor<B, 3>> = items.iter().map(|item| item.image.clone()).collect();
+
+        // Extract and collect mask tensors
+        let masks: Vec<Tensor<B, 3>> = items.iter().map(|item| item.mask.clone()).collect();
+
+        // Stack tensors along the batch dimension (dim 0) to create [B, C, H, W] tensors
+        let images = Tensor::stack(images, 0);
+        let masks = Tensor::stack(masks, 0);
+
+        BiRefNetBatch { images, masks }
+    }
 }
 
 /// BiRefNet dataset for training and inference.
@@ -215,7 +264,7 @@ struct BiRefNetMapper<B: Backend> {
 
 impl<B: Backend> BiRefNetMapper<B> {
     /// Create a new mapper with the given configuration.
-    fn new(_config: &ModelConfig, device: B::Device) -> BiRefNetResult<Self> {
+    const fn new(_config: &ModelConfig, device: B::Device) -> BiRefNetResult<Self> {
         // Default target size (can be made configurable)
         let target_size = (1024, 1024);
 
@@ -414,8 +463,68 @@ mod tests {
     #[test]
     fn test_mapper_creation() {
         let config = ModelConfig::new();
-        let device = Default::default();
+        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
         let mapper = BiRefNetMapper::<TestBackend>::new(&config, device);
         assert!(mapper.is_ok());
+    }
+
+    #[test]
+    fn test_birefnet_batcher() {
+        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
+        let batcher = BiRefNetBatcher::<TestBackend>::new();
+
+        // Create test items
+        let item1 = BiRefNetItem {
+            image: Tensor::<TestBackend, 3>::random(
+                [3, 32, 32],
+                burn::tensor::Distribution::Normal(0.0, 1.0),
+                &device,
+            ),
+            mask: Tensor::<TestBackend, 3>::random(
+                [1, 32, 32],
+                burn::tensor::Distribution::Normal(0.0, 1.0),
+                &device,
+            ),
+        };
+        let item2 = BiRefNetItem {
+            image: Tensor::<TestBackend, 3>::random(
+                [3, 32, 32],
+                burn::tensor::Distribution::Normal(0.0, 1.0),
+                &device,
+            ),
+            mask: Tensor::<TestBackend, 3>::random(
+                [1, 32, 32],
+                burn::tensor::Distribution::Normal(0.0, 1.0),
+                &device,
+            ),
+        };
+
+        let items = vec![item1, item2];
+        let batch = batcher.batch(items, &device);
+
+        // Check batch dimensions
+        assert_eq!(batch.images.shape().dims, [2, 3, 32, 32]); // [B, C, H, W]
+        assert_eq!(batch.masks.shape().dims, [2, 1, 32, 32]); // [B, C, H, W]
+    }
+
+    #[test]
+    fn test_birefnet_batch_creation() {
+        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
+
+        let images = Tensor::<TestBackend, 4>::random(
+            [4, 3, 64, 64],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+        let masks = Tensor::<TestBackend, 4>::random(
+            [4, 1, 64, 64],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+
+        let batch = BiRefNetBatch { images, masks };
+
+        assert_eq!(batch.images.shape().dims, [4, 3, 64, 64]);
+        assert_eq!(batch.masks.shape().dims, [4, 1, 64, 64]);
     }
 }

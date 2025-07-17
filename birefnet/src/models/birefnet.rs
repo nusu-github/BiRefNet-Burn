@@ -38,6 +38,19 @@ use burn::{
     },
 };
 
+#[cfg(feature = "train")]
+use crate::{
+    dataset::BiRefNetBatch,
+    losses::{CombinedLoss, CombinedLossConfig},
+    training::BiRefNetOutput,
+};
+
+#[cfg(feature = "train")]
+use burn::{
+    tensor::backend::AutodiffBackend,
+    train::{TrainOutput, TrainStep, ValidStep},
+};
+
 /// An enum to wrap different types of squeeze blocks used in the decoder.
 #[derive(Module, Debug)]
 pub enum SqueezeBlockModule<B: Backend> {
@@ -52,6 +65,8 @@ pub enum SqueezeBlockModule<B: Backend> {
 pub struct BiRefNetConfig {
     /// The detailed model configuration.
     config: ModelConfig,
+    /// The loss function configuration.
+    loss: CombinedLossConfig,
 }
 
 impl BiRefNetConfig {
@@ -134,6 +149,8 @@ impl BiRefNetConfig {
             bb,
             squeeze_module,
             decoder: DecoderConfig::new(self.config.clone(), channels).init(device)?,
+            #[cfg(feature = "train")]
+            loss: self.loss.init(),
         })
     }
 }
@@ -159,6 +176,9 @@ pub struct BiRefNet<B: Backend> {
     squeeze_module: Vec<SqueezeBlockModule<B>>,
     /// The decoder module.
     decoder: Decoder<B>,
+    /// The loss function for training.
+    #[cfg(feature = "train")]
+    loss: CombinedLoss<B>,
 }
 
 impl<B: Backend> BiRefNet<B> {
@@ -358,6 +378,37 @@ impl<B: Backend> BiRefNet<B> {
     /// A result containing the final segmentation map.
     pub fn forward(&self, x: Tensor<B, 4>) -> BiRefNetResult<Tensor<B, 4>> {
         self.forward_ori(x)
+    }
+
+    /// Forward pass for training and validation.
+    #[cfg(feature = "train")]
+    pub fn forward_classification(
+        &self,
+        batch: BiRefNetBatch<B>,
+    ) -> BiRefNetResult<BiRefNetOutput<B>> {
+        let logits = self.forward(batch.images)?;
+        let loss = self.loss.forward(logits.clone(), batch.masks.clone());
+
+        Ok(BiRefNetOutput {
+            loss,
+            logits,
+            target: batch.masks,
+        })
+    }
+}
+
+#[cfg(feature = "train")]
+impl<B: AutodiffBackend> TrainStep<BiRefNetBatch<B>, BiRefNetOutput<B>> for BiRefNet<B> {
+    fn step(&self, batch: BiRefNetBatch<B>) -> TrainOutput<BiRefNetOutput<B>> {
+        let item = self.forward_classification(batch).unwrap();
+        TrainOutput::new(self, item.loss.backward(), item)
+    }
+}
+
+#[cfg(feature = "train")]
+impl<B: Backend> ValidStep<BiRefNetBatch<B>, BiRefNetOutput<B>> for BiRefNet<B> {
+    fn step(&self, batch: BiRefNetBatch<B>) -> BiRefNetOutput<B> {
+        self.forward_classification(batch).unwrap()
     }
 }
 

@@ -1,6 +1,6 @@
 use birefnet_burn::{BiRefNetDataset, ModelConfig};
 use burn::backend::ndarray::NdArray;
-use burn::data::Dataset;
+use burn::data::dataloader::Dataset;
 
 type TestBackend = NdArray;
 

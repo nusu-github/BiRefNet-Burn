@@ -28,6 +28,15 @@ mod special;
 #[cfg(feature = "train")]
 mod dataset;
 
+#[cfg(feature = "train")]
+mod losses;
+
+#[cfg(feature = "train")]
+mod metrics;
+
+#[cfg(feature = "train")]
+mod training;
+
 #[cfg(test)]
 mod tests;
 
@@ -36,4 +45,16 @@ pub use error::{BiRefNetError, BiRefNetResult};
 pub use models::{BiRefNet, BiRefNetConfig, BiRefNetRecord};
 
 #[cfg(feature = "train")]
-pub use dataset::{BiRefNetDataset, BiRefNetItem};
+pub use dataset::{BiRefNetBatch, BiRefNetBatcher, BiRefNetDataset, BiRefNetItem};
+
+#[cfg(feature = "train")]
+pub use losses::{
+    CombinedLoss, CombinedLossConfig, MultiScaleLoss, MultiScaleLossConfig, StructureLoss,
+    StructureLossConfig,
+};
+
+#[cfg(feature = "train")]
+pub use metrics::{FMeasureMetric, IoUMetric, LossMetric, MAEMetric};
+
+#[cfg(feature = "train")]
+pub use training::BiRefNetOutput;
