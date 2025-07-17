@@ -12,6 +12,8 @@ edition = "2021"
 version = "0.1.0"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/nusu-github/BiRefNet-Burn"
+homepage = "https://github.com/nusu-github/BiRefNet-Burn"
 
 [workspace.dependencies]
 burn = "0.17.1"

@@ -3,6 +3,7 @@ name = "birefnet-burn"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+description = "Rust implementation of BiRefNet for high-resolution dichotomous image segmentation using Burn"
 
 [features]
 default = []
@@ -17,7 +18,7 @@ image = { workspace = true, optional = true }
 libm = { workspace = true }
 thiserror = "2"
 walkdir = { workspace = true, optional = true }
-dirs = { version = "5.0", optional = true }
+dirs = { version = "6.0", optional = true }
 
 [dev-dependencies]
 burn = { workspace = true, features = ["ndarray"] }

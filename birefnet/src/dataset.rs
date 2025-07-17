@@ -1,34 +1,16 @@
 //! Dataset implementation for BiRefNet training and inference.
 //!
-//! This module provides a Rust implementation of the dataset loader that's equivalent
-//! to the original PyTorch BiRefNet dataset functionality using the burn-dataset crate.
-//!
-//! The implementation follows the pattern:
-//! 1. Collect image/mask path pairs from the dataset directories
-//! 2. Use `ImageFolderDataset` to create a base dataset
-//! 3. Wrap with `MapperDataset` to apply preprocessing transformations
-//!
-//! ## Key Components
-//!
-//! - `BiRefNetItem`: Represents a single preprocessed data item (image + mask)
-//! - `BiRefNetDataset`: Main dataset struct that manages the entire dataset
-//! - `BiRefNetMapper`: Handles preprocessing pipeline (resize, normalize, etc.)
+//! This module provides an efficient dataset implementation for BiRefNet,
+//! handling data loading, preprocessing, and augmentation directly.
+//! This approach avoids the inefficiencies of reading files multiple times and
+//! provides a clear framework for adding data augmentation.
 
 use std::path::PathBuf;
 
-use burn::data::{
-    dataloader::batcher::Batcher,
-    dataset::{
-        transform::{Mapper, MapperDataset},
-        vision::{Annotation, ImageDatasetItem, ImageFolderDataset, PixelDepth, SegmentationMask},
-        Dataset,
-    },
-};
-use burn::prelude::*;
-use burn::tensor::{backend::Backend, Tensor};
+use burn::data::{dataloader::batcher::Batcher, dataset::Dataset};
+use burn::tensor::{backend::Backend, Tensor, TensorData};
 
-#[cfg(feature = "train")]
-use image::{self, GenericImageView};
+use image::{self, imageops::FilterType, DynamicImage};
 
 use crate::{
     config::{ModelConfig, Task},
@@ -96,9 +78,14 @@ impl<B: Backend> Batcher<B, BiRefNetItem<B>, BiRefNetBatch<B>> for BiRefNetBatch
 /// BiRefNet dataset for training and inference.
 ///
 /// This dataset loads image/mask pairs from the DIS5K dataset structure and applies
-/// preprocessing transformations similar to the original PyTorch implementation.
+/// preprocessing and augmentation.
 pub struct BiRefNetDataset<B: Backend> {
-    dataset: MapperDataset<ImageFolderDataset, BiRefNetMapper<B>, ImageDatasetItem>,
+    items: Vec<(PathBuf, PathBuf)>,
+    device: B::Device,
+    is_train: bool,
+    target_size: (u32, u32),
+    norm_mean: [f32; 3],
+    norm_std: [f32; 3],
 }
 
 impl<B: Backend> BiRefNetDataset<B> {
@@ -114,22 +101,24 @@ impl<B: Backend> BiRefNetDataset<B> {
     ///
     /// A new dataset instance or an error if the dataset cannot be loaded.
     pub fn new(config: &ModelConfig, split: &str, device: &B::Device) -> BiRefNetResult<Self> {
-        // Collect image/mask path pairs
         let items = Self::collect_dataset_items(config, split)?;
+        let is_train = split == "train";
 
-        // Create base ImageFolderDataset for segmentation
-        let base_dataset = ImageFolderDataset::new_segmentation_with_items(items, &["mask"])
-            .map_err(|e| BiRefNetError::DatasetError {
-                message: format!("Failed to create ImageFolderDataset: {}", e),
-            })?;
+        // TODO: Make target_size configurable
+        let target_size = (1024, 1024);
 
-        // Create mapper for preprocessing
-        let mapper = BiRefNetMapper::new(config, device.clone())?;
+        // ImageNet normalization parameters (same as PyTorch implementation)
+        let norm_mean = [0.485, 0.456, 0.406];
+        let norm_std = [0.229, 0.224, 0.225];
 
-        // Wrap with MapperDataset
-        let dataset = MapperDataset::new(base_dataset, mapper);
-
-        Ok(Self { dataset })
+        Ok(Self {
+            items,
+            device: device.clone(),
+            is_train,
+            target_size,
+            norm_mean,
+            norm_std,
+        })
     }
 
     /// Collect image/mask path pairs from the dataset directory.
@@ -237,156 +226,28 @@ impl<B: Backend> BiRefNetDataset<B> {
         );
         Ok(items)
     }
-}
 
-impl<B: Backend> Dataset<BiRefNetItem<B>> for BiRefNetDataset<B> {
-    fn get(&self, index: usize) -> Option<BiRefNetItem<B>> {
-        self.dataset.get(index)
-    }
-
-    fn len(&self) -> usize {
-        self.dataset.len()
-    }
-}
-
-/// Mapper for preprocessing BiRefNet dataset items.
-///
-/// This struct handles the preprocessing pipeline that converts raw image data
-/// into tensors suitable for training/inference, similar to the transforms
-/// applied in the original PyTorch implementation.
-struct BiRefNetMapper<B: Backend> {
-    device: B::Device,
-    target_size: (usize, usize), // (height, width)
-    // Image normalization parameters (ImageNet defaults)
-    norm_mean: [f32; 3],
-    norm_std: [f32; 3],
-}
-
-impl<B: Backend> BiRefNetMapper<B> {
-    /// Create a new mapper with the given configuration.
-    const fn new(_config: &ModelConfig, device: B::Device) -> BiRefNetResult<Self> {
-        // Default target size (can be made configurable)
-        let target_size = (1024, 1024);
-
-        // ImageNet normalization parameters (same as PyTorch implementation)
-        let norm_mean = [0.485, 0.456, 0.406];
-        let norm_std = [0.229, 0.224, 0.225];
-
-        Ok(Self {
-            device,
-            target_size,
-            norm_mean,
-            norm_std,
-        })
-    }
-
-    /// Convert image pixels to tensor and apply preprocessing.
-    fn preprocess_image(
-        &self,
-        pixels: &[u8],
-        channels: usize,
-        width: usize,
-        height: usize,
-    ) -> Tensor<B, 3> {
-        // Convert pixels to tensor based on channels
-        let tensor = if channels == 3 {
-            // RGB image: [H, W, C]
-            let tensor = Tensor::<B, 3>::from_data(
-                TensorData::new(pixels.to_vec(), [height, width, channels]),
-                &self.device,
-            );
-            tensor.int().float() / 255.0
-        } else if channels == 1 {
-            // Grayscale image: [H, W] -> [H, W, 1]
-            let tensor = Tensor::<B, 2>::from_data(
-                TensorData::new(pixels.to_vec(), [height, width]),
-                &self.device,
-            );
-            let tensor = tensor.int().float() / 255.0;
-            tensor.unsqueeze_dim(2)
-        } else {
-            panic!("Unsupported number of channels: {}", channels);
-        };
-
-        // Convert from [H, W, C] to [C, H, W]
-        let tensor = tensor.permute([2, 0, 1]);
-
-        // TODO: Resize image tensor to target_size before normalization
-        // This is critical for batching - all tensors must have the same dimensions
-        // Use image crate for resizing since burn doesn't have data augmentation yet
-        // Expected shape after resize: [C, target_height, target_width]
-        // let tensor = self.resize_tensor(tensor, self.target_size);
-
-        // Apply normalization (only for RGB images)
-        if channels == 3 {
-            self.normalize_tensor(tensor)
-        } else {
-            tensor
-        }
-    }
-
-    /// Convert mask pixels to tensor.
-    fn preprocess_mask(
-        &self,
-        mask: &SegmentationMask,
-        width: usize,
-        height: usize,
-    ) -> Tensor<B, 3> {
-        // Convert mask to tensor [H, W]
-        let mask_data: Vec<f32> = mask.mask.iter().map(|&x| x as f32 / 255.0).collect();
-        let tensor =
-            Tensor::<B, 2>::from_data(TensorData::new(mask_data, [height, width]), &self.device);
-
-        // Add channel dimension to make it [C, H, W] where C=1
-
-        // TODO: Resize mask tensor to target_size for consistent batching
-        // This is critical - masks must have the same dimensions as images
-        // Use image crate for resizing since burn doesn't have data augmentation yet
-        // Expected shape after resize: [1, target_height, target_width]
-        // let tensor = self.resize_tensor(tensor, self.target_size);
-
-        tensor.unsqueeze_dim(0)
-    }
-
-    /// Get mask dimensions from the mask file.
-    fn get_mask_dimensions(&self, mask_path: &str) -> (usize, usize) {
-        let img = image::open(mask_path).expect("Failed to open mask image");
+    /// Convert an image to a tensor.
+    fn image_to_tensor(&self, img: DynamicImage) -> Tensor<B, 3> {
+        let img = img.to_rgb8();
         let (width, height) = img.dimensions();
-        (width as usize, height as usize)
+        let data = TensorData::new(img.into_raw(), [height as usize, width as usize, 3]);
+        let tensor = Tensor::<B, 3, burn::tensor::Int>::from_data(data, &self.device);
+        // HWC to CHW
+        tensor.permute([2, 0, 1]).float() / 255.0
     }
 
-    /// Get mask file path from image path.
-    fn get_mask_path_from_image_path(&self, image_path: &str) -> String {
-        // Convert image path to mask path by replacing the image directory component
-        let mask_path_str = image_path.replace("/im/", "/gt/");
-
-        // Extract stem and parent directory to reconstruct path with different extensions
-        let path = std::path::Path::new(&mask_path_str);
-        let stem = path
-            .file_stem()
-            .expect("Could not get file stem")
-            .to_str()
-            .expect("Invalid UTF-8 in stem");
-        let parent = path.parent().expect("Could not get parent directory");
-
-        // Search for a mask file with valid extensions
-        let valid_extensions = [".png", ".jpg", ".PNG", ".JPG", ".JPEG"];
-        for ext in valid_extensions {
-            let mask_path = parent.join(format!("{}{}", stem, ext));
-            if mask_path.exists() {
-                return mask_path
-                    .to_str()
-                    .expect("Invalid UTF-8 in path")
-                    .to_string();
-            }
-        }
-
-        // If no mask is found after checking all extensions, panic.
-        // This indicates a problem with the dataset structure or the path logic.
-        panic!("No corresponding mask found for image: {}", image_path);
+    /// Convert a mask to a tensor.
+    fn mask_to_tensor(&self, mask: DynamicImage) -> Tensor<B, 3> {
+        let mask = mask.to_luma8();
+        let (width, height) = mask.dimensions();
+        let data = TensorData::new(mask.into_raw(), [height as usize, width as usize]);
+        let tensor = Tensor::<B, 2, burn::tensor::Int>::from_data(data, &self.device);
+        // Add channel dimension and normalize
+        tensor.unsqueeze_dim(0).float() / 255.0
     }
 
-    /// Apply normalization to image tensor.
+    /// Apply normalization to an image tensor.
     fn normalize_tensor(&self, tensor: Tensor<B, 3>) -> Tensor<B, 3> {
         let mean =
             Tensor::<B, 1>::from_data(TensorData::new(self.norm_mean.to_vec(), [3]), &self.device);
@@ -400,78 +261,50 @@ impl<B: Backend> BiRefNetMapper<B> {
         (tensor - mean) / std
     }
 
-    // TODO: Implement resize_tensor helper function for image and mask resizing
-    // This function should resize a tensor to the target size using the image crate
-    // Example signature:
-    // fn resize_tensor(&self, tensor: Tensor<B, 3>, target_size: (usize, usize)) -> Tensor<B, 3>
-    //
-    // Implementation approach:
-    // 1. Convert tensor back to image using tensor.to_data()
-    // 2. Use image crate's resize() method with appropriate filter (e.g., Lanczos3)
-    // 3. Convert resized image back to tensor
-    // 4. Ensure proper channel ordering is maintained
-    //
-    // This is needed because burn doesn't have built-in data augmentation/resizing yet
+    /// Apply augmentations to an image and its mask.
+    /// This is the place to add more complex data augmentation logic.
+    fn augment(&self, image: DynamicImage, mask: DynamicImage) -> (DynamicImage, DynamicImage) {
+        // TODO: Implement random augmentations like flip, rotate, crop, color jitter.
+        // For now, we just resize to the target size.
+        let image =
+            image.resize_exact(self.target_size.0, self.target_size.1, FilterType::Lanczos3);
+        let mask = mask.resize_exact(self.target_size.0, self.target_size.1, FilterType::Nearest);
 
-    /// Get actual image dimensions from the image file.
-    fn get_actual_image_info(&self, image_path: &str) -> (usize, usize, usize) {
-        // Load image to get actual dimensions
-        let img = image::open(image_path).expect("Failed to open image");
-        let (width, height) = img.dimensions();
-
-        // Determine the number of channels based on color type
-        let channels = match img.color() {
-            image::ColorType::L8 | image::ColorType::L16 => 1,
-            image::ColorType::La8 | image::ColorType::La16 => 2,
-            image::ColorType::Rgb8 | image::ColorType::Rgb16 | image::ColorType::Rgb32F => 3,
-            image::ColorType::Rgba8 | image::ColorType::Rgba16 | image::ColorType::Rgba32F => 4,
-            _ => 3, // Default to RGB
-        };
-
-        (channels, width as usize, height as usize)
+        (image, mask)
     }
 }
 
-impl<B: Backend> Mapper<ImageDatasetItem, BiRefNetItem<B>> for BiRefNetMapper<B> {
-    fn map(&self, item: &ImageDatasetItem) -> BiRefNetItem<B> {
-        // Get actual image dimensions from the image file
-        let (channels, width, height) = self.get_actual_image_info(&item.image_path);
+impl<B: Backend> Dataset<BiRefNetItem<B>> for BiRefNetDataset<B> {
+    fn get(&self, index: usize) -> Option<BiRefNetItem<B>> {
+        let (image_path, mask_path) = self.items.get(index)?.clone();
 
-        // Convert image pixels to bytes
-        let image_bytes = Self::convert_pixels_to_rgb(&item.image);
+        let image = image::open(image_path).ok()?;
+        let mask = image::open(mask_path).ok()?;
 
-        // Preprocess image
-        let image = self.preprocess_image(&image_bytes, channels, width, height);
-
-        // Preprocess mask
-        let mask = match &item.annotation {
-            Annotation::SegmentationMask(mask) => {
-                // Get mask file path from image path
-                let mask_path = self.get_mask_path_from_image_path(&item.image_path);
-                let (mask_width, mask_height) = self.get_mask_dimensions(&mask_path);
-                self.preprocess_mask(mask, mask_width, mask_height)
-            }
-            _ => {
-                // If not a segmentation mask, create a dummy mask
-                Tensor::zeros([1, self.target_size.0, self.target_size.1], &self.device)
-            }
+        let (image, mask) = if self.is_train {
+            self.augment(image, mask)
+        } else {
+            // For validation/testing, just resize without other augmentations
+            let image =
+                image.resize_exact(self.target_size.0, self.target_size.1, FilterType::Lanczos3);
+            let mask =
+                mask.resize_exact(self.target_size.0, self.target_size.1, FilterType::Nearest);
+            (image, mask)
         };
 
-        BiRefNetItem { image, mask }
-    }
-}
+        let image_tensor = self.image_to_tensor(image);
+        let mask_tensor = self.mask_to_tensor(mask);
 
-impl<B: Backend> BiRefNetMapper<B> {
-    /// Convert pixel data to RGB bytes.
-    fn convert_pixels_to_rgb(pixels: &[PixelDepth]) -> Vec<u8> {
-        pixels
-            .iter()
-            .map(|pixel| match pixel {
-                PixelDepth::U8(v) => *v,
-                PixelDepth::U16(v) => (*v / 256) as u8,
-                PixelDepth::F32(v) => (v * 255.0) as u8,
-            })
-            .collect()
+        let image_tensor = self.normalize_tensor(image_tensor);
+
+        Some(BiRefNetItem {
+            image: image_tensor,
+            mask: mask_tensor,
+        })
+    }
+
+    fn len(&self) -> usize {
+        self.items.len()
     }
 }
 
@@ -490,14 +323,6 @@ mod tests {
         // This would fail without actual dataset files, but shows the structure
         // let items = BiRefNetDataset::<TestBackend>::collect_dataset_items(&config, "train");
         // assert!(items.is_ok());
-    }
-
-    #[test]
-    fn test_mapper_creation() {
-        let config = ModelConfig::new();
-        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
-        let mapper = BiRefNetMapper::<TestBackend>::new(&config, device);
-        assert!(mapper.is_ok());
     }
 
     #[test]

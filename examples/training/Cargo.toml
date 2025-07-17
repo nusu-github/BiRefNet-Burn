@@ -1,7 +1,10 @@
 [package]
 name = "training"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "BiRefNet training example with dataset loading and loss functions"
+publish = false
 
 [features]
 default = ["ndarray"]

@@ -3,6 +3,7 @@ name = "inference"
 license.workspace = true
 version.workspace = true
 edition.workspace = true
+description = "BiRefNet inference example with image preprocessing and postprocessing"
 publish = false
 
 [features]

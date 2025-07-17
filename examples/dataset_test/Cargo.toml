@@ -1,7 +1,10 @@
 [package]
 name = "dataset_test"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "BiRefNet dataset loading and validation test"
+publish = false
 
 [dependencies]
 birefnet-burn = { path = "../../birefnet", features = ["train"] }

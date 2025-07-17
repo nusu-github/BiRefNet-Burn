@@ -5,12 +5,17 @@
 //!
 //! The implementation follows the original PyTorch BiRefNet loss.py structure.
 
-use burn::nn::conv::Conv2dConfig;
-use burn::nn::loss::{CrossEntropyLoss, CrossEntropyLossConfig};
-use burn::nn::pool::AvgPool2dConfig;
-use burn::nn::PaddingConfig2d;
-use burn::prelude::*;
-use burn::tensor::{backend::Backend, Tensor};
+use burn::{
+    module::Param,
+    nn::{
+        conv::Conv2dConfig,
+        loss::{CrossEntropyLoss, CrossEntropyLossConfig},
+        pool::AvgPool2dConfig,
+        PaddingConfig2d, Unfold4d, Unfold4dConfig,
+    },
+    prelude::*,
+    tensor::{backend::Backend, Tensor},
+};
 
 /// Configuration for Combined Loss function.
 #[derive(Config, Debug)]
@@ -198,25 +203,31 @@ impl<B: Backend> MultiScaleLoss<B> {
     /// # Returns
     /// Combined multi-scale loss tensor
     pub fn forward(&self, preds: Vec<Tensor<B, 4>>, targets: Vec<Tensor<B, 4>>) -> Tensor<B, 1> {
-        assert_eq!(preds.len(), targets.len());
-        assert_eq!(preds.len(), self.scale_weights.len());
+        assert_eq!(
+            preds.len(),
+            targets.len(),
+            "Number of predictions and targets must be equal."
+        );
+        assert_eq!(
+            preds.len(),
+            self.scale_weights.len(),
+            "Number of predictions and scale_weights must be equal."
+        );
 
-        let mut total_loss = None;
-
-        for ((pred, target), &weight) in preds
+        let total_loss = preds
             .iter()
             .zip(targets.iter())
             .zip(self.scale_weights.iter())
-        {
-            let scale_loss = self.base_loss.forward(pred.clone(), target.clone());
-            let weighted_loss = scale_loss * weight;
-            total_loss = match total_loss {
-                Some(acc) => Some(acc + weighted_loss),
-                None => Some(weighted_loss),
-            };
-        }
+            .fold(None, |acc, ((pred, target), &weight)| {
+                let scale_loss = self.base_loss.forward(pred.clone(), target.clone());
+                let weighted_loss = scale_loss * weight;
+                match acc {
+                    Some(total) => Some(total + weighted_loss),
+                    None => Some(weighted_loss),
+                }
+            });
 
-        total_loss.unwrap_or_else(|| panic!("No predictions provided"))
+        total_loss.unwrap_or_else(|| Tensor::zeros([1], &preds[0].device()))
     }
 }
 
@@ -292,8 +303,8 @@ impl<B: Backend> StructureLoss<B> {
             .add_scalar(1.0);
 
         // Weighted BCE loss
-        let max_val = pred.clone().clamp_max(0.0);
-        let bce_term1 = max_val - pred.clone() * target.clone();
+        // Using the numerically stable formulation: `max(x, 0) - x*y + log(1 + exp(-abs(x)))`
+        let bce_term1 = pred.clone().clamp_min(0.0) - pred.clone() * target.clone();
         let bce_term2 = (-pred.clone().abs()).exp().add_scalar(1.0).log();
         let wbce = (bce_term1 + bce_term2) * weit.clone();
         let wbce_loss = wbce.sum_dim(2).sum_dim(2) / weit.clone().sum_dim(2).sum_dim(2);
@@ -369,44 +380,46 @@ impl<B: Backend> ContourLoss<B> {
     /// # Returns
     /// Contour loss tensor
     pub fn forward(&self, pred: Tensor<B, 4>, target: Tensor<B, 4>) -> Tensor<B, 1> {
-        let [n, c, h, w] = pred.dims();
+        // The original PyTorch implementation computes loss on probabilities
+        let pred_prob = burn::tensor::activation::sigmoid(pred);
 
-        // Calculate horizontal and vertical gradients
+        let [n, c, h, w] = pred_prob.dims();
+
+        // length term - replicating the specific slicing from the original PyTorch code
         // delta_r = pred[:,:,1:,:] - pred[:,:,:-1,:]
-        let delta_r = pred.clone().slice([0..n, 0..c, 1..h, 0..w])
-            - pred.clone().slice([0..n, 0..c, 0..h - 1, 0..w]);
+        let delta_r = pred_prob.clone().slice([0..n, 0..c, 1..h, 0..w])
+            - pred_prob.clone().slice([0..n, 0..c, 0..h - 1, 0..w]);
 
         // delta_c = pred[:,:,:,1:] - pred[:,:,:,:-1]
-        let delta_c = pred.clone().slice([0..n, 0..c, 0..h, 1..w])
-            - pred.clone().slice([0..n, 0..c, 0..h, 0..w - 1]);
+        let delta_c = pred_prob.clone().slice([0..n, 0..c, 0..h, 1..w])
+            - pred_prob.clone().slice([0..n, 0..c, 0..h, 0..w - 1]);
 
-        // Ensure overlapping regions have the same dimensions
-        // delta_r has shape [n, c, h-1, w] and delta_c has shape [n, c, h, w-1]
-        // Take the common area [n, c, h-1, w-1]
-        let min_h = h - 1;
-        let min_w = w - 1;
-
+        // These specific slices require the input to be at least 3x3.
+        // Panics will occur on smaller inputs, which matches the original PyTorch behavior.
+        // delta_r    = delta_r[:,:,1:,:-2]**2
         let delta_r_sq = delta_r
-            .slice([0..n, 0..c, 0..min_h, 0..min_w])
-            .powf_scalar(2.0);
-        let delta_c_sq = delta_c
-            .slice([0..n, 0..c, 0..min_h, 0..min_w])
+            .slice([0..n, 0..c, 1..(h - 1), 0..(w - 2)])
             .powf_scalar(2.0);
 
-        // Length term: mean(sqrt(delta_r^2 + delta_c^2 + epsilon))
+        // delta_c    = delta_c[:,:,:-2,1:]**2
+        let delta_c_sq = delta_c
+            .slice([0..n, 0..c, 0..(h - 2), 1..(w - 1)])
+            .powf_scalar(2.0);
+
         let delta_pred = (delta_r_sq + delta_c_sq).abs();
         let length = (delta_pred + self.epsilon).sqrt().mean();
 
         // Region terms
-        let c_in = Tensor::ones_like(&pred);
-        let c_out = Tensor::zeros_like(&pred);
+        let c_in = Tensor::ones_like(&pred_prob);
+        let c_out = Tensor::zeros_like(&pred_prob);
 
         // region_in = mean(pred * (target - c_in)^2)
-        let region_in = (pred.clone() * (target.clone() - c_in).powf_scalar(2.0)).mean();
+        let region_in = (pred_prob.clone() * (target.clone() - c_in).powf_scalar(2.0)).mean();
 
         // region_out = mean((1-pred) * (target - c_out)^2)
-        let region_out =
-            ((Tensor::ones_like(&pred) - pred) * (target - c_out).powf_scalar(2.0)).mean();
+        let region_out = ((Tensor::ones_like(&pred_prob) - pred_prob)
+            * (target - c_out).powf_scalar(2.0))
+        .mean();
 
         let region = region_in + region_out;
 
@@ -509,27 +522,23 @@ impl<B: Backend> SSIMLoss<B> {
         let padding = self.window_size / 2;
 
         // Calculate local means using convolution with Gaussian window
-        let conv_config = Conv2dConfig::new([channels, 1], [self.window_size, self.window_size])
+        let mut conv = Conv2dConfig::new([channels, 1], [self.window_size, self.window_size])
             .with_padding(PaddingConfig2d::Explicit(padding, padding))
-            .with_groups(channels);
+            .with_groups(channels)
+            .with_bias(false)
+            .init(&device);
+        conv.weight = Param::from_tensor(window);
 
-        // This is a simplified version - in practice, you'd use the window as conv weights
-        // For now, using average pooling as approximation
-        let pool_layer = AvgPool2dConfig::new([self.window_size, self.window_size])
-            .with_strides([1, 1])
-            .with_padding(PaddingConfig2d::Explicit(padding, padding))
-            .init();
-
-        let mu1 = pool_layer.forward(img1.clone());
-        let mu2 = pool_layer.forward(img2.clone());
+        let mu1 = conv.forward(img1.clone());
+        let mu2 = conv.forward(img2.clone());
 
         let mu1_sq = mu1.clone().powf_scalar(2.0);
         let mu2_sq = mu2.clone().powf_scalar(2.0);
         let mu1_mu2 = mu1 * mu2;
 
-        let sigma1_sq = pool_layer.forward(img1.clone().powf_scalar(2.0)) - mu1_sq.clone();
-        let sigma2_sq = pool_layer.forward(img2.clone().powf_scalar(2.0)) - mu2_sq.clone();
-        let sigma12 = pool_layer.forward(img1 * img2) - mu1_mu2.clone();
+        let sigma1_sq = conv.forward(img1.clone().powf_scalar(2.0)) - mu1_sq.clone();
+        let sigma2_sq = conv.forward(img2.clone().powf_scalar(2.0)) - mu2_sq.clone();
+        let sigma12 = conv.forward(img1 * img2) - mu1_mu2.clone();
 
         // SSIM calculation
         let ssim_n = (mu1_mu2 * 2.0 + c1) * (sigma12 * 2.0 + c2);
@@ -563,15 +572,20 @@ pub struct PatchIoULoss<B: Backend> {
     pub patch_size: usize,
     pub epsilon: f32,
     pub base_iou: CombinedLoss<B>,
+    unfolder: Unfold4d,
 }
 
 impl PatchIoULossConfig {
     /// Initialize a new patch IoU loss function with the given configuration.
     pub fn init<B: Backend>(&self) -> PatchIoULoss<B> {
+        let unfolder = Unfold4dConfig::new([self.patch_size, self.patch_size])
+            .with_stride([self.patch_size, self.patch_size])
+            .init();
         PatchIoULoss {
             patch_size: self.patch_size,
             epsilon: self.epsilon,
             base_iou: CombinedLoss::with_weights(0.0, 1.0),
+            unfolder,
         }
     }
 }
@@ -597,35 +611,22 @@ impl<B: Backend> PatchIoULoss<B> {
     /// # Returns
     /// Patch IoU loss tensor
     pub fn forward(&self, pred: Tensor<B, 4>, target: Tensor<B, 4>) -> Tensor<B, 1> {
-        let [n, c, h, w] = pred.dims();
+        let [n, c, _, _] = pred.dims();
         let patch_size = self.patch_size;
 
-        let mut total_loss = Tensor::zeros([1], &pred.device());
-        let mut patch_count = 0;
+        // Unfold predictions and targets into patches
+        // The output shape is [N, C * patch_size * patch_size, num_patches]
+        let pred_patches = self.unfolder.forward(pred);
+        let target_patches = self.unfolder.forward(target);
 
-        // Iterate over patches
-        for y in (0..h).step_by(patch_size) {
-            for x in (0..w).step_by(patch_size) {
-                let y_end = (y + patch_size).min(h);
-                let x_end = (x + patch_size).min(w);
+        let num_patches = pred_patches.dims()[2];
 
-                if y_end > y && x_end > x {
-                    let patch_pred = pred.clone().slice([0..n, 0..c, y..y_end, x..x_end]);
-                    let patch_target = target.clone().slice([0..n, 0..c, y..y_end, x..x_end]);
+        // Reshape to [N * num_patches, C, patch_size, patch_size] to compute IoU per patch
+        let pred_reshaped = pred_patches.reshape([n * num_patches, c, patch_size, patch_size]);
+        let target_reshaped = target_patches.reshape([n * num_patches, c, patch_size, patch_size]);
 
-                    let patch_loss = self.base_iou.iou_loss(patch_pred, patch_target);
-                    total_loss = total_loss + patch_loss;
-                    patch_count += 1;
-                }
-            }
-        }
-
-        // Average over patches
-        if patch_count > 0 {
-            total_loss / (patch_count as f32)
-        } else {
-            total_loss
-        }
+        // The IoU loss will be calculated on all patches, and the mean is returned.
+        self.base_iou.iou_loss(pred_reshaped, target_reshaped)
     }
 }
 
@@ -675,6 +676,10 @@ impl<B: Backend> ThrRegLoss<B> {
     /// Threshold regularization loss tensor
     pub fn forward(&self, pred: Tensor<B, 4>, _target: Tensor<B, 4>) -> Tensor<B, 1> {
         // Loss = 1 - (pred^2 + (pred-1)^2)
+        // Simplified: 1 - (pred^2 + pred^2 - 2*pred + 1) = 1 - (2*pred^2 - 2*pred + 1) = 2*pred - 2*pred^2 = 2*pred*(1-pred)
+        // The original implementation is `torch.mean(1 - ((pred - 0) ** 2 + (pred - 1) ** 2))`
+        // which simplifies to `torch.mean(2*pred - 2*pred**2)`
+        // Let's stick to the original formula for clarity, but simplified.
         let pred_sq = pred.clone().powf_scalar(2.0);
         let pred_minus_one_sq = (pred - 1.0).powf_scalar(2.0);
         let reg = (pred_sq + pred_minus_one_sq).mean();
@@ -723,6 +728,10 @@ impl<B: Backend> ClsLoss<B> {
     /// # Returns
     /// Classification loss tensor
     pub fn forward(&self, preds: Vec<Tensor<B, 2>>, targets: Tensor<B, 1, Int>) -> Tensor<B, 1> {
+        if preds.is_empty() {
+            return Tensor::zeros([1], &targets.device());
+        }
+
         let mut total_loss = Tensor::zeros([1], &targets.device());
 
         for pred in preds.iter() {

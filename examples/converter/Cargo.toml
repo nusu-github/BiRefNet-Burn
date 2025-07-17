@@ -3,6 +3,7 @@ name = "converter"
 license.workspace = true
 version.workspace = true
 edition.workspace = true
+description = "PyTorch to Burn model converter for BiRefNet"
 publish = false
 
 [dependencies]
