@@ -310,7 +310,6 @@ impl<B: Backend> Dataset<BiRefNetItem<B>> for BiRefNetDataset<B> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use burn::backend::ndarray::NdArray;
 
     type TestBackend = NdArray;

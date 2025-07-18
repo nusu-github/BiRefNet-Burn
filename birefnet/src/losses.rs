@@ -829,7 +829,6 @@ impl<B: Backend> MseLoss<B> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use burn::backend::ndarray::NdArray;
 
     type TestBackend = NdArray;

@@ -66,6 +66,7 @@ pub struct BiRefNetConfig {
     /// The detailed model configuration.
     config: ModelConfig,
     /// The loss function configuration.
+    #[cfg(feature = "train")]
     loss: CombinedLossConfig,
 }
 
@@ -223,28 +224,28 @@ impl<B: Backend> BiRefNet<B> {
                 let x1 = x1
                     + interpolate(
                         x1_,
-                        [h / 2, w / 2],
+                        [h, w],
                         InterpolateOptions::new(InterpolateMode::Bilinear),
                     );
                 let [_, _, h, w] = x2.dims();
                 let x2 = x2
                     + interpolate(
                         x2_,
-                        [h / 2, w / 2],
+                        [h, w],
                         InterpolateOptions::new(InterpolateMode::Bilinear),
                     );
                 let [_, _, h, w] = x3.dims();
                 let x3 = x3
                     + interpolate(
                         x3_,
-                        [h / 2, w / 2],
+                        [h, w],
                         InterpolateOptions::new(InterpolateMode::Bilinear),
                     );
                 let [_, _, h, w] = x4.dims();
                 let x4 = x4
                     + interpolate(
                         x4_,
-                        [h / 2, w / 2],
+                        [h, w],
                         InterpolateOptions::new(InterpolateMode::Bilinear),
                     );
 

@@ -119,7 +119,7 @@ fn load_model<B: Backend>(model_path: &Path, device: &Device<B>) -> Result<BiRef
         .and_then(|s| s.to_str())
         .with_context(|| format!("Invalid model file name: {:?}", model_path))?;
 
-    let dir = model_path.parent().unwrap_or_else(|| Path::new("."));
+    let dir = model_path.parent().unwrap_or(Path::new("."));
 
     let config_path = dir.join(format!("{model_name}.json"));
     if !config_path.exists() {
@@ -129,12 +129,9 @@ fn load_model<B: Backend>(model_path: &Path, device: &Device<B>) -> Result<BiRef
         ));
     }
 
-    let model = BiRefNetConfig::new(
-        ModelConfig::load(config_path)?,
-        birefnet_burn::CombinedLossConfig::new(),
-    )
-    .init::<B>(device)?
-    .load_record(record);
+    let model = BiRefNetConfig::new(ModelConfig::load(config_path)?)
+        .init::<B>(device)?
+        .load_record(record);
 
     Ok(model)
 }
@@ -322,6 +319,7 @@ fn process_image<B: Backend>(
 fn main() -> Result<()> {
     type Backend = burn::backend::NdArray;
     // type Backend = burn::backend::wgpu::Wgpu;
+    // type Backend = burn::backend::cuda::Cuda;
 
     let device = Default::default();
     let args = Args::parse();

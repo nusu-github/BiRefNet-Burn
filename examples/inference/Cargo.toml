@@ -24,7 +24,7 @@ openblas-system = ["burn/openblas-system"]
 fusion = ["burn/fusion"]
 
 [dependencies]
-birefnet-burn = { path = "../../birefnet" }
+birefnet-burn = { path = "../../birefnet", default-features = false }
 burn = { workspace = true }
 
 anyhow = "1"

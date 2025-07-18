@@ -4,7 +4,9 @@
 ![Rust](https://img.shields.io/badge/rust-1.85.1%2B-orange.svg)
 ![Burn](https://img.shields.io/badge/burn-0.17.1-red.svg)
 
-A comprehensive Rust implementation of the BiRefNet (Bilateral Reference Network) for high-resolution dichotomous image segmentation, built using the Burn deep learning framework. This project provides a complete ecosystem for training, inference, and deployment of BiRefNet models with cross-platform compatibility.
+A comprehensive Rust implementation of the BiRefNet (Bilateral Reference Network) for high-resolution dichotomous image
+segmentation, built using the Burn deep learning framework. This project provides a complete ecosystem for training,
+inference, and deployment of BiRefNet models with cross-platform compatibility.
 
 ## Table of Contents
 
@@ -12,9 +14,9 @@ A comprehensive Rust implementation of the BiRefNet (Bilateral Reference Network
 - [Features](#features)
 - [Installation](#installation)
 - [Usage](#usage)
-  - [Inference](#inference)
-  - [Training](#training)
-  - [Model Conversion](#model-conversion)
+    - [Inference](#inference)
+    - [Training](#training)
+    - [Model Conversion](#model-conversion)
 - [Architecture](#architecture)
 - [Current Limitations](#current-limitations)
 - [Roadmap](#roadmap)
@@ -23,7 +25,9 @@ A comprehensive Rust implementation of the BiRefNet (Bilateral Reference Network
 
 ## Overview
 
-BiRefNet is a state-of-the-art model for high-resolution dichotomous image segmentation, as detailed in the paper "Bilateral Reference for High-Resolution Dichotomous Image Segmentation" [1]. This Rust implementation leverages the Burn framework to provide enhanced performance, memory safety, and cross-platform deployment capabilities.
+BiRefNet is a state-of-the-art model for high-resolution dichotomous image segmentation, as detailed in the paper "
+Bilateral Reference for High-Resolution Dichotomous Image Segmentation" [1]. This Rust implementation leverages the Burn
+framework to provide enhanced performance, memory safety, and cross-platform deployment capabilities.
 
 - **Original PyTorch Implementation**: [ZhengPeng7/BiRefNet](https://github.com/ZhengPeng7/BiRefNet)
 - **Burn Framework**: [tracel-ai/burn](https://github.com/tracel-ai/burn)
@@ -162,7 +166,7 @@ cargo doc --all-features --no-deps --open
 
 ### Supported Configurations
 
-- **Backbones**: SwinV1-T/S/B/L, ResNet variants, VGG architectures  
+- **Backbones**: SwinV1-T/S/B/L, ResNet variants, VGG architectures
 - **Input Resolutions**: 224×224 to 2048×2048 (configurable)
 - **Multi-Scale Supervision**: Training with multiple output scales
 - **Context Channels**: 0-3 context levels for enhanced feature extraction
@@ -188,21 +192,22 @@ Compared to the original PyTorch implementation, the following features are not 
 
 ## License
 
-This project is dual-licensed under both the MIT and Apache-2.0 licenses. You may choose either license when using this project.
+This project is dual-licensed under both the MIT and Apache-2.0 licenses. You may choose either license when using this
+project.
 
 - [MIT License](LICENSE-MIT)
 - [Apache-2.0 License](LICENSE-APACHE)
 
 ## Project Status
 
-| Component | Status | Notes |
-|-----------|--------|--------|
-| Core Model | ✅ Complete | Full BiRefNet architecture implemented |
-| Inference | ✅ Complete | Single/batch image processing |
-| Training | ✅ Complete | Full training pipeline with metrics |
-| Conversion | ✅ Complete | PyTorch to Burn model conversion |
-| Datasets | 🔄 Partial | DIS5K supported, others need implementation |
-| Backbones | 🔄 Partial | Swin v1 complete, PVT v2 missing |
+| Component  | Status     | Notes                                       |
+|------------|------------|---------------------------------------------|
+| Core Model | ✅ Complete | Full BiRefNet architecture implemented      |
+| Inference  | ✅ Complete | Single/batch image processing               |
+| Training   | ✅ Complete | Full training pipeline with metrics         |
+| Conversion | ✅ Complete | PyTorch to Burn model conversion            |
+| Datasets   | 🔄 Partial | DIS5K supported, others need implementation |
+| Backbones  | 🔄 Partial | Swin v1 complete, PVT v2 missing            |
 | Evaluation | 🔄 Partial | Basic metrics, advanced benchmarking needed |
 
 ## Contributing
@@ -239,10 +244,14 @@ cargo test --all-features
 ## Acknowledgements
 
 ### Core Contributors
-- **Original BiRefNet**: [ZhengPeng7/BiRefNet](https://github.com/ZhengPeng7/BiRefNet) - The groundbreaking research and PyTorch implementation
-- **Burn Framework**: [Tracel.ai Team](https://github.com/tracel-ai/burn) - The modern deep learning framework that makes this project possible
+
+- **Original BiRefNet**: [ZhengPeng7/BiRefNet](https://github.com/ZhengPeng7/BiRefNet) - The groundbreaking research and
+  PyTorch implementation
+- **Burn Framework**: [Tracel.ai Team](https://github.com/tracel-ai/burn) - The modern deep learning framework that
+  makes this project possible
 
 ### Research Foundation
+
 This implementation is based on extensive research in computer vision and deep learning:
 
 - **Swin Transformer**: Liu et al., for the hierarchical vision transformer architecture
@@ -250,6 +259,7 @@ This implementation is based on extensive research in computer vision and deep l
 - **Rust ML Ecosystem**: Contributors to candle, tch, ort, and other Rust ML libraries
 
 ### Special Thanks
+
 - The Rust community for feedback and contributions
 - Beta testers who helped identify and resolve issues
 - Documentation reviewers and technical writers
@@ -257,10 +267,13 @@ This implementation is based on extensive research in computer vision and deep l
 ## References
 
 **Primary Paper:**
-[1] Zheng, P., Gao, D., Fan, D., Liu, L., Laaksonen, J., Ouyang, W., & Sebe, N. (2024). "Bilateral Reference for High-Resolution Dichotomous Image Segmentation". *CAAI Artificial Intelligence Research*, 3, 9150038. [arXiv:2401.03407](https://arxiv.org/abs/2401.03407)
+[1] Zheng, P., Gao, D., Fan, D., Liu, L., Laaksonen, J., Ouyang, W., & Sebe, N. (2024). "Bilateral Reference for
+High-Resolution Dichotomous Image Segmentation". *CAAI Artificial Intelligence Research*, 3,
+9150038. [arXiv:2401.03407](https://arxiv.org/abs/2401.03407)
 
 **Key Dependencies:**
-[2] Liu, Z., Lin, Y., Cao, Y., et al. (2021). "Swin Transformer: Hierarchical Vision Transformer using Shifted Windows". *ICCV 2021*. [arXiv:2103.14030](https://arxiv.org/abs/2103.14030)
+[2] Liu, Z., Lin, Y., Cao, Y., et al. (2021). "Swin Transformer: Hierarchical Vision Transformer using Shifted Windows".
+*ICCV 2021*. [arXiv:2103.14030](https://arxiv.org/abs/2103.14030)
 
 [3] Burn Framework Documentation: [https://burn.dev](https://burn.dev)
 

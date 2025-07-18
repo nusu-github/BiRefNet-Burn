@@ -53,7 +53,7 @@ fn main() -> Result<()> {
         BiRefNetModels::BiRefNetLite2k => "BiRefNetLite2k",
         BiRefNetModels::BiRefNetMatting => "BiRefNetMatting",
     };
-    let dir = path.parent().or_else(|| Some(Path::new("."))).unwrap();
+    let dir = path.parent().unwrap_or(Path::new("."));
 
     let load_args = LoadArgs::new(path.to_path_buf())
         //

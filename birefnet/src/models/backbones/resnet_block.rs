@@ -9,8 +9,7 @@ use burn::nn::{
 use burn::prelude::*;
 use core::f64::consts::SQRT_2;
 
-extern crate alloc;
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 #[derive(Module, Debug)]
 pub enum ResidualBlock<B: Backend> {

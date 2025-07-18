@@ -2,9 +2,9 @@ name: Rust CI
 
 on:
   push:
-    branches: ["main"]
+    branches: [ "main" ]
   pull_request:
-    branches: ["main"]
+    branches: [ "main" ]
 
 env:
   CARGO_TERM_COLOR: always
@@ -36,8 +36,8 @@ jobs:
     name: Test Suite
     strategy:
       matrix:
-        rust: [stable, beta, nightly]
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        rust: [ stable, beta, nightly ]
+        os: [ ubuntu-latest, windows-latest, macos-latest ]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
