@@ -9,7 +9,7 @@ repository = "https://github.com/nusu-github/BiRefNet-Burn"
 [dependencies]
 burn = { workspace = true }
 burn-extra-ops = { path = "../../burn-extra-ops" }
-thiserror = "1.0"
+thiserror = "2.0"
 
 [dev-dependencies]
 burn = { workspace = true, features = ["ndarray"] }
