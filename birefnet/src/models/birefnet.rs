@@ -8,35 +8,33 @@
 //! - `BiRefNetConfig`: A configuration struct to initialize the `BiRefNet` model.
 //! - `BiRefNet`: The main model struct, which orchestrates the forward pass through
 //!   the encoder and decoder.
-//! - `Decoder`: The decoder module that takes features from the encoder and progressively
-//!   upsamples them to produce the final segmentation map.
-//! - `DecoderConfig`: Configuration for the `Decoder` module.
 //!
 //! The implementation closely follows the original PyTorch version, including support for
 //! multi-scale inputs, context aggregation, and various decoder block configurations.
 
 use super::{
-    build_backbone, ASPPConfig, ASPPDeformable, ASPPDeformableConfig, BackboneEnum, BasicDecBlk,
-    BasicDecBlkConfig, BasicLatBlk, BasicLatBlkConfig, ResBlk, ResBlkConfig, ASPP,
+    decoder::{Decoder, DecoderConfig},
+    modules::{
+        ASPPConfig, ASPPDeformable, ASPPDeformableConfig, BasicDecBlk, BasicDecBlkConfig, ResBlk,
+        ResBlkConfig, ASPP,
+    },
 };
-use crate::config::{DecBlk, LatBlk, MulSclIpt};
 use crate::{
-    config::{ModelConfig, SqueezeBlock},
+    config::{ModelConfig, MulSclIpt, SqueezeBlock},
     error::{BiRefNetError, BiRefNetResult},
-    special::Identity,
+};
+use backbones::{
+    create_backbone, Backbone, BackboneType, BackboneWrapper, PVTv2Variant, ResNetVariant,
+    SwinVariant, VGGVariant,
 };
 use burn::{
-    nn::{
-        conv::{Conv2d, Conv2dConfig},
-        BatchNorm, BatchNormConfig, PaddingConfig2d, Relu,
-    },
     prelude::*,
     tensor::{
-        activation::sigmoid,
         module::interpolate,
         ops::{InterpolateMode, InterpolateOptions},
     },
 };
+use burn_extra_ops::Identity;
 
 #[cfg(feature = "train")]
 use crate::{
@@ -71,6 +69,61 @@ pub struct BiRefNetConfig {
 }
 
 impl BiRefNetConfig {
+    /// Creates a default configuration for BiRefNet with ResNet50 backbone
+    pub fn default_resnet50() -> Self {
+        use crate::config::*;
+
+        let config = ModelConfig {
+            path: PathConfig::new(),
+            task: TaskConfig::new(),
+            backbone: BackboneConfig {
+                backbone: crate::config::Backbone::Resnet50,
+            },
+            decoder: crate::config::DecoderConfig {
+                ms_supervision: false,
+                out_ref: false,
+                dec_ipt: false,
+                dec_ipt_split: false,
+                cxt_num: 3,
+                mul_scl_ipt: MulSclIpt::None,
+                dec_att: DecAtt::ASPPDeformable,
+                squeeze_block: SqueezeBlock::ASPPDeformable(1),
+                dec_blk: DecBlk::BasicDecBlk,
+                lat_blk: LatBlk::BasicLatBlk,
+                dec_channels_inter: DecChannelsInter::Fixed,
+            },
+            refine: RefineConfig {
+                refine: Refine::None,
+            },
+        };
+
+        Self {
+            config,
+            #[cfg(feature = "train")]
+            loss: CombinedLossConfig::new(),
+        }
+    }
+
+    /// Creates a default configuration for BiRefNet with VGG16 backbone
+    pub fn default_vgg16() -> Self {
+        let mut config = Self::default_resnet50();
+        config.config.backbone.backbone = crate::config::Backbone::Vgg16;
+        config
+    }
+
+    /// Creates a default configuration for BiRefNet with Swin Transformer backbone
+    pub fn default_swin_t() -> Self {
+        let mut config = Self::default_resnet50();
+        config.config.backbone.backbone = crate::config::Backbone::SwinV1T;
+        config
+    }
+
+    /// Creates a default configuration for BiRefNet with PVTv2 backbone
+    pub fn default_pvt_v2_b2() -> Self {
+        let mut config = Self::default_resnet50();
+        config.config.backbone.backbone = crate::config::Backbone::PvtV2B2;
+        config
+    }
     /// Initializes a `BiRefNet` model with the given configuration.
     ///
     /// # Arguments
@@ -81,7 +134,8 @@ impl BiRefNetConfig {
     ///
     /// Returns an error if the configuration is invalid or model initialization fails.
     pub fn init<B: Backend>(&self, device: &Device<B>) -> BiRefNetResult<BiRefNet<B>> {
-        let bb = build_backbone(&self.config, device)?;
+        let backbone_type = self.convert_backbone_config()?;
+        let bb = create_backbone(backbone_type, device);
         let channels = self.config.lateral_channels_in_collection();
         let cxt = self.config.cxt()?;
 
@@ -139,9 +193,9 @@ impl BiRefNetConfig {
         // TODO: refine
 
         let mul_scl_ipt = match self.config.decoder.mul_scl_ipt {
-            MulSclIpt::None => MulSclIpt_::None(Identity::new()),
-            MulSclIpt::Add => MulSclIpt_::Add(Identity::new()),
-            MulSclIpt::Cat => MulSclIpt_::Cat(Identity::new()),
+            MulSclIpt::None => MulSclIpt_::None(Identity::<B>::new()),
+            MulSclIpt::Add => MulSclIpt_::Add(Identity::<B>::new()),
+            MulSclIpt::Cat => MulSclIpt_::Cat(Identity::<B>::new()),
         };
 
         Ok(BiRefNet {
@@ -154,25 +208,44 @@ impl BiRefNetConfig {
             loss: self.loss.init(),
         })
     }
+
+    /// Converts the old Backbone enum in config to the new BackboneType enum.
+    const fn convert_backbone_config(&self) -> BiRefNetResult<BackboneType> {
+        use crate::config::Backbone as OldBackbone;
+
+        match self.config.backbone.backbone {
+            OldBackbone::Vgg16 => Ok(BackboneType::VGG(VGGVariant::VGG16)),
+            OldBackbone::Vgg16bn => Ok(BackboneType::VGG(VGGVariant::VGG16BN)),
+            OldBackbone::Resnet50 => Ok(BackboneType::ResNet(ResNetVariant::ResNet50)),
+            OldBackbone::SwinV1T => Ok(BackboneType::SwinTransformer(SwinVariant::SwinT)),
+            OldBackbone::SwinV1S => Ok(BackboneType::SwinTransformer(SwinVariant::SwinS)),
+            OldBackbone::SwinV1B => Ok(BackboneType::SwinTransformer(SwinVariant::SwinB)),
+            OldBackbone::SwinV1L => Ok(BackboneType::SwinTransformer(SwinVariant::SwinL)),
+            OldBackbone::PvtV2B0 => Ok(BackboneType::PVTv2(PVTv2Variant::B0)),
+            OldBackbone::PvtV2B1 => Ok(BackboneType::PVTv2(PVTv2Variant::B1)),
+            OldBackbone::PvtV2B2 => Ok(BackboneType::PVTv2(PVTv2Variant::B2)),
+            OldBackbone::PvtV2B5 => Ok(BackboneType::PVTv2(PVTv2Variant::B5)),
+        }
+    }
 }
 
 /// An enum to handle different multi-scale input strategies.
-#[derive(Module, Debug, Clone)]
-enum MulSclIpt_ {
-    None(Identity),
-    Add(Identity),
-    Cat(Identity),
+#[derive(Module, Debug)]
+enum MulSclIpt_<B: Backend> {
+    None(Identity<B>),
+    Add(Identity<B>),
+    Cat(Identity<B>),
 }
 
 /// The main BiRefNet model.
 #[derive(Module, Debug)]
 pub struct BiRefNet<B: Backend> {
     /// The multi-scale input handling module.
-    mul_scl_ipt: MulSclIpt_,
+    mul_scl_ipt: MulSclIpt_<B>,
     /// Context channel sizes.
     cxt: [usize; 3],
     /// The backbone encoder.
-    bb: BackboneEnum<B>,
+    bb: BackboneWrapper<B>,
     /// The squeeze module applied to the deepest encoder feature.
     squeeze_module: Vec<SqueezeBlockModule<B>>,
     /// The decoder module.
@@ -193,32 +266,16 @@ impl<B: Backend> BiRefNet<B> {
     ///
     /// A result containing a 4-element array of feature maps from the encoder stages.
     pub fn forward_enc(&self, x: Tensor<B, 4>) -> BiRefNetResult<[Tensor<B, 4>; 4]> {
-        let [x1, x2, x3, x4] = match &self.bb {
-            BackboneEnum::SwinTransformer(bb) => bb.forward(x.clone())?,
-            BackboneEnum::ResNet(bb) => bb.forward(x.clone()),
-            BackboneEnum::VGG(bb) => bb.forward(x.clone()),
-        };
+        let [x1, x2, x3, x4] = self.bb.forward(x.clone());
         let [x1, x2, x3, x4] = match self.mul_scl_ipt {
             MulSclIpt_::None(_) => [x1, x2, x3, x4],
             MulSclIpt_::Add(_) => {
                 let [_, _, h, w] = x.dims();
-                let [x1_, x2_, x3_, x4_] = match &self.bb {
-                    BackboneEnum::SwinTransformer(bb) => bb.forward(interpolate(
-                        x,
-                        [h / 2, w / 2],
-                        InterpolateOptions::new(InterpolateMode::Bilinear),
-                    ))?,
-                    BackboneEnum::ResNet(bb) => bb.forward(interpolate(
-                        x,
-                        [h / 2, w / 2],
-                        InterpolateOptions::new(InterpolateMode::Bilinear),
-                    )),
-                    BackboneEnum::VGG(bb) => bb.forward(interpolate(
-                        x,
-                        [h / 2, w / 2],
-                        InterpolateOptions::new(InterpolateMode::Bilinear),
-                    )),
-                };
+                let [x1_, x2_, x3_, x4_] = self.bb.forward(interpolate(
+                    x,
+                    [h / 2, w / 2],
+                    InterpolateOptions::new(InterpolateMode::Bilinear),
+                ));
 
                 let [_, _, h, w] = x1.dims();
                 let x1 = x1
@@ -253,23 +310,11 @@ impl<B: Backend> BiRefNet<B> {
             }
             MulSclIpt_::Cat(_) => {
                 let [_, _, h, w] = x.dims();
-                let [x1_, x2_, x3_, x4_] = match &self.bb {
-                    BackboneEnum::SwinTransformer(bb) => bb.forward(interpolate(
-                        x,
-                        [h / 2, w / 2],
-                        InterpolateOptions::new(InterpolateMode::Bilinear),
-                    ))?,
-                    BackboneEnum::ResNet(bb) => bb.forward(interpolate(
-                        x,
-                        [h / 2, w / 2],
-                        InterpolateOptions::new(InterpolateMode::Bilinear),
-                    )),
-                    BackboneEnum::VGG(bb) => bb.forward(interpolate(
-                        x,
-                        [h / 2, w / 2],
-                        InterpolateOptions::new(InterpolateMode::Bilinear),
-                    )),
-                };
+                let [x1_, x2_, x3_, x4_] = self.bb.forward(interpolate(
+                    x,
+                    [h / 2, w / 2],
+                    InterpolateOptions::new(InterpolateMode::Bilinear),
+                ));
 
                 let [_, _, h, w] = x1.dims();
                 let x1 = Tensor::cat(
@@ -435,656 +480,109 @@ impl<B: Backend> ValidStep<BiRefNetBatch<B>, BiRefNetOutput<B>> for BiRefNet<B> 
     }
 }
 
-/// An enum to wrap different types of decoder blocks.
-#[derive(Module, Debug)]
-pub enum DecoderBlockModuleEnum<B: Backend> {
-    BasicDecBlk(BasicDecBlk<B>),
-    ResBlk(ResBlk<B>),
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use burn::backend::NdArray;
 
-/// An enum to wrap different types of lateral blocks.
-#[derive(Module, Debug)]
-pub enum LateralBlockModuleEnum<B: Backend> {
-    BasicLatBlk(BasicLatBlk<B>),
-}
+    type TestBackend = NdArray<f32>;
 
-/// Configuration for the `Decoder` module.
-#[derive(Config, Debug)]
-pub struct DecoderConfig {
-    /// The main model configuration.
-    config: ModelConfig,
-    /// The channel sizes of the encoder features.
-    channels: [usize; 4],
-}
+    #[test]
+    fn test_birefnet_config_creation() {
+        // Test config creation without model initialization
+        let resnet_config = BiRefNetConfig::default_resnet50();
+        assert_eq!(
+            resnet_config.config.backbone.backbone,
+            crate::config::Backbone::Resnet50
+        );
 
-/// A small convolutional module used for gradient guidance.
-#[derive(Module, Debug)]
-struct GdtConvs<B: Backend> {
-    conv: Conv2d<B>,
-    bn: BatchNorm<B, 2>,
-    relu: Relu,
-}
+        let vgg_config = BiRefNetConfig::default_vgg16();
+        assert_eq!(
+            vgg_config.config.backbone.backbone,
+            crate::config::Backbone::Vgg16
+        );
 
-impl<B: Backend> GdtConvs<B> {
-    fn init(
-        conv2d_config: Conv2dConfig,
-        batch_norm_config: BatchNormConfig,
-        device: &Device<B>,
-    ) -> Self {
-        let conv = conv2d_config.init(device);
-        let bn = batch_norm_config.init(device);
-        let relu = Relu::new();
-        Self { conv, bn, relu }
+        let swin_config = BiRefNetConfig::default_swin_t();
+        assert_eq!(
+            swin_config.config.backbone.backbone,
+            crate::config::Backbone::SwinV1T
+        );
+
+        let pvt_config = BiRefNetConfig::default_pvt_v2_b2();
+        assert_eq!(
+            pvt_config.config.backbone.backbone,
+            crate::config::Backbone::PvtV2B2
+        );
     }
 
-    fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
-        let x = self.conv.forward(x);
-        let x = self.bn.forward(x);
-        self.relu.forward(x)
-    }
-}
+    #[test]
+    fn test_birefnet_model_creation() {
+        let config = BiRefNetConfig::default_resnet50();
+        let device = Default::default();
 
-impl DecoderConfig {
-    const N_DEC_IPT: usize = 64;
-    const IC: usize = 64;
-    const IPT_CHA_OPT: usize = 1;
-    const _N: usize = 16;
+        // Test model creation with ResNet50 backbone
+        let model = config.init::<TestBackend>(&device);
+        assert!(model.is_ok());
 
-    /// Initializes a `Decoder` module.
-    ///
-    /// # Arguments
-    ///
-    /// * `device` - The device to create the module on.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if initialization fails.
-    pub fn init<B: Backend>(&self, device: &B::Device) -> BiRefNetResult<Decoder<B>> {
-        let split = {
-            if self.config.decoder.dec_ipt {
-                self.config.decoder.dec_ipt_split
-            } else {
-                false
-            }
-        };
-
-        let mut ipt_blk5 = None;
-        let mut ipt_blk4 = None;
-        let mut ipt_blk3 = None;
-        let mut ipt_blk2 = None;
-        let mut ipt_blk1 = None;
-
-        if self.config.decoder.dec_ipt {
-            let out_channels = |x: usize| {
-                if Self::IPT_CHA_OPT == 0 {
-                    Self::N_DEC_IPT
-                } else {
-                    self.channels[x] / 8
-                }
-            };
-            ipt_blk5 = Some(
-                SimpleConvsConfig::new(
-                    if split { 2_usize.pow(10) * 3 } else { 3 },
-                    out_channels(0),
-                )
-                .with_inter_channels(Self::IC)
-                .init(device),
-            );
-            ipt_blk4 = Some(
-                SimpleConvsConfig::new(if split { 2_usize.pow(8) * 3 } else { 3 }, out_channels(0))
-                    .with_inter_channels(Self::IC)
-                    .init(device),
-            );
-            ipt_blk3 = Some(
-                SimpleConvsConfig::new(if split { 2_usize.pow(6) * 3 } else { 3 }, out_channels(1))
-                    .with_inter_channels(Self::IC)
-                    .init(device),
-            );
-            ipt_blk2 = Some(
-                SimpleConvsConfig::new(if split { 2_usize.pow(4) * 3 } else { 3 }, out_channels(2))
-                    .with_inter_channels(Self::IC)
-                    .init(device),
-            );
-            ipt_blk1 = Some(
-                SimpleConvsConfig::new(if split { 2_usize.pow(0) * 3 } else { 3 }, out_channels(3))
-                    .with_inter_channels(Self::IC)
-                    .init(device),
-            );
-        }
-
-        let in_channels = |x: usize, y: usize| {
-            self.channels[x] + {
-                if self.config.decoder.dec_ipt {
-                    if Self::IPT_CHA_OPT == 0 {
-                        Self::N_DEC_IPT
-                    } else {
-                        self.channels[y] / 8
-                    }
-                } else {
-                    0
-                }
-            }
-        };
-        let decoder_block4 =
-            self.create_decoder_block(in_channels(0, 0), self.channels[1], device)?;
-        let decoder_block3 =
-            self.create_decoder_block(in_channels(1, 0), self.channels[2], device)?;
-        let decoder_block2 =
-            self.create_decoder_block(in_channels(2, 1), self.channels[3], device)?;
-        let decoder_block1 =
-            self.create_decoder_block(in_channels(3, 2), self.channels[3] / 2, device)?;
-
-        let in_channels = (self.channels[3] / 2) + {
-            if self.config.decoder.dec_ipt {
-                if Self::IPT_CHA_OPT == 0 {
-                    Self::N_DEC_IPT
-                } else {
-                    self.channels[3] / 8
-                }
-            } else {
-                0
-            }
-        };
-        let conv_out1 = Conv2dConfig::new([in_channels, 1], [1, 1])
-            .with_padding(PaddingConfig2d::Valid)
-            .init(device);
-
-        let lateral_block4 = self.create_lateral_block(self.channels[1], self.channels[1], device);
-        let lateral_block3 = self.create_lateral_block(self.channels[2], self.channels[2], device);
-        let lateral_block2 = self.create_lateral_block(self.channels[3], self.channels[3], device);
-
-        let mut conv_ms_spvn_4 = None;
-        let mut conv_ms_spvn_3 = None;
-        let mut conv_ms_spvn_2 = None;
-
-        let mut gdt_convs_4 = None;
-        let mut gdt_convs_3 = None;
-        let mut gdt_convs_2 = None;
-
-        let mut gdt_convs_pred_4 = None;
-        let mut gdt_convs_pred_3 = None;
-        let mut gdt_convs_pred_2 = None;
-
-        let mut gdt_convs_attn_4 = None;
-        let mut gdt_convs_attn_3 = None;
-        let mut gdt_convs_attn_2 = None;
-
-        if self.config.decoder.ms_supervision {
-            conv_ms_spvn_4 = Some(
-                Conv2dConfig::new([self.channels[1], 1], [1, 1])
-                    .with_padding(PaddingConfig2d::Valid)
-                    .init(device),
-            );
-            conv_ms_spvn_3 = Some(
-                Conv2dConfig::new([self.channels[2], 1], [1, 1])
-                    .with_padding(PaddingConfig2d::Valid)
-                    .init(device),
-            );
-            conv_ms_spvn_2 = Some(
-                Conv2dConfig::new([self.channels[3], 1], [1, 1])
-                    .with_padding(PaddingConfig2d::Valid)
-                    .init(device),
-            );
-
-            if self.config.decoder.out_ref {
-                gdt_convs_4 = Some(GdtConvs::init(
-                    Conv2dConfig::new([self.channels[1], Self::_N], [3, 3])
-                        .with_padding(PaddingConfig2d::Explicit(1, 1)),
-                    BatchNormConfig::new(Self::_N),
-                    device,
-                ));
-                gdt_convs_3 = Some(GdtConvs::init(
-                    Conv2dConfig::new([self.channels[2], Self::_N], [3, 3])
-                        .with_padding(PaddingConfig2d::Explicit(1, 1)),
-                    BatchNormConfig::new(Self::_N),
-                    device,
-                ));
-                gdt_convs_2 = Some(GdtConvs::init(
-                    Conv2dConfig::new([self.channels[3], Self::_N], [3, 3])
-                        .with_padding(PaddingConfig2d::Explicit(1, 1)),
-                    BatchNormConfig::new(Self::_N),
-                    device,
-                ));
-
-                gdt_convs_pred_4 = Some(
-                    Conv2dConfig::new([Self::_N, 1], [1, 1])
-                        .with_padding(PaddingConfig2d::Valid)
-                        .init(device),
-                );
-                gdt_convs_pred_3 = Some(
-                    Conv2dConfig::new([Self::_N, 1], [1, 1])
-                        .with_padding(PaddingConfig2d::Valid)
-                        .init(device),
-                );
-                gdt_convs_pred_2 = Some(
-                    Conv2dConfig::new([Self::_N, 1], [1, 1])
-                        .with_padding(PaddingConfig2d::Valid)
-                        .init(device),
-                );
-
-                gdt_convs_attn_4 = Some(
-                    Conv2dConfig::new([Self::_N, 1], [1, 1])
-                        .with_padding(PaddingConfig2d::Valid)
-                        .init(device),
-                );
-                gdt_convs_attn_3 = Some(
-                    Conv2dConfig::new([Self::_N, 1], [1, 1])
-                        .with_padding(PaddingConfig2d::Valid)
-                        .init(device),
-                );
-                gdt_convs_attn_2 = Some(
-                    Conv2dConfig::new([Self::_N, 1], [1, 1])
-                        .with_padding(PaddingConfig2d::Valid)
-                        .init(device),
-                );
-            }
-        };
-
-        Ok(Decoder {
-            split,
-            ipt_blk5,
-            ipt_blk4,
-            ipt_blk3,
-            ipt_blk2,
-            ipt_blk1,
-            decoder_block4,
-            decoder_block3,
-            decoder_block2,
-            decoder_block1,
-            lateral_block4,
-            lateral_block3,
-            lateral_block2,
-            conv_out1,
-            conv_ms_spvn_4,
-            conv_ms_spvn_3,
-            conv_ms_spvn_2,
-            gdt_convs_4,
-            gdt_convs_3,
-            gdt_convs_2,
-            gdt_convs_pred_4,
-            gdt_convs_pred_3,
-            gdt_convs_pred_2,
-            gdt_convs_attn_4,
-            gdt_convs_attn_3,
-            gdt_convs_attn_2,
-        })
+        // Don't test forward pass as it requires heavy computation
+        // and complex tensor shape handling
+        let _model = model.unwrap();
     }
 
-    fn create_decoder_block<B: Backend>(
-        &self,
-        in_channels: usize,
-        out_channels: usize,
-        device: &Device<B>,
-    ) -> BiRefNetResult<DecoderBlockModuleEnum<B>> {
-        match self.config.decoder.dec_blk {
-            DecBlk::BasicDecBlk => Ok(DecoderBlockModuleEnum::BasicDecBlk(
-                BasicDecBlkConfig::new(SqueezeBlock::ASPPDeformable(0))
-                    .with_in_channels(in_channels)
-                    .with_out_channels(out_channels)
-                    .init(device)?,
-            )),
-            DecBlk::ResBlk => Ok(DecoderBlockModuleEnum::ResBlk(
-                ResBlkConfig::new()
-                    .with_in_channels(in_channels)
-                    .with_out_channels(Some(out_channels))
-                    .init(device)?,
-            )),
+    #[test]
+    fn test_backbone_conversion_system() {
+        let config = BiRefNetConfig::default_resnet50();
+
+        // Test conversion of ResNet50
+        let backbone_type = config.convert_backbone_config();
+        assert!(backbone_type.is_ok());
+
+        match backbone_type.unwrap() {
+            BackboneType::ResNet(ResNetVariant::ResNet50) => {
+                // Expected
+            }
+            _ => panic!("Expected ResNet50 backbone type"),
         }
     }
 
-    fn create_lateral_block<B: Backend>(
-        &self,
-        in_channels: usize,
-        out_channels: usize,
-        device: &Device<B>,
-    ) -> LateralBlockModuleEnum<B> {
-        match self.config.decoder.lat_blk {
-            LatBlk::BasicLatBlk => LateralBlockModuleEnum::BasicLatBlk(
-                BasicLatBlkConfig::new()
-                    .with_in_channels(in_channels)
-                    .with_out_channels(out_channels)
-                    .init(device),
-            ),
+    #[test]
+    fn test_different_backbone_configs() {
+        // Light test of different backbone configuration types
+        let resnet_config = BiRefNetConfig::default_resnet50();
+        let vgg_config = BiRefNetConfig::default_vgg16();
+        let swin_config = BiRefNetConfig::default_swin_t();
+        let pvt_config = BiRefNetConfig::default_pvt_v2_b2();
+
+        // Test backbone conversion system
+        let resnet_backbone = resnet_config.convert_backbone_config();
+        let vgg_backbone = vgg_config.convert_backbone_config();
+        let swin_backbone = swin_config.convert_backbone_config();
+        let pvt_backbone = pvt_config.convert_backbone_config();
+
+        assert!(resnet_backbone.is_ok());
+        assert!(vgg_backbone.is_ok());
+        assert!(swin_backbone.is_ok());
+        assert!(pvt_backbone.is_ok());
+
+        // Test conversion correctness
+        match resnet_backbone.unwrap() {
+            BackboneType::ResNet(ResNetVariant::ResNet50) => { /* Expected */ }
+            _ => panic!("Expected ResNet50"),
         }
-    }
-}
 
-/// The decoder module of BiRefNet.
-#[derive(Module, Debug)]
-pub struct Decoder<B: Backend> {
-    split: bool,
-    ipt_blk5: Option<SimpleConvs<B>>,
-    ipt_blk4: Option<SimpleConvs<B>>,
-    ipt_blk3: Option<SimpleConvs<B>>,
-    ipt_blk2: Option<SimpleConvs<B>>,
-    ipt_blk1: Option<SimpleConvs<B>>,
-    decoder_block4: DecoderBlockModuleEnum<B>,
-    decoder_block3: DecoderBlockModuleEnum<B>,
-    decoder_block2: DecoderBlockModuleEnum<B>,
-    decoder_block1: DecoderBlockModuleEnum<B>,
-    lateral_block4: LateralBlockModuleEnum<B>,
-    lateral_block3: LateralBlockModuleEnum<B>,
-    lateral_block2: LateralBlockModuleEnum<B>,
-    conv_out1: Conv2d<B>,
-    conv_ms_spvn_4: Option<Conv2d<B>>,
-    conv_ms_spvn_3: Option<Conv2d<B>>,
-    conv_ms_spvn_2: Option<Conv2d<B>>,
-    gdt_convs_4: Option<GdtConvs<B>>,
-    gdt_convs_3: Option<GdtConvs<B>>,
-    gdt_convs_2: Option<GdtConvs<B>>,
-    gdt_convs_pred_4: Option<Conv2d<B>>,
-    gdt_convs_pred_3: Option<Conv2d<B>>,
-    gdt_convs_pred_2: Option<Conv2d<B>>,
-    gdt_convs_attn_4: Option<Conv2d<B>>,
-    gdt_convs_attn_3: Option<Conv2d<B>>,
-    gdt_convs_attn_2: Option<Conv2d<B>>,
-}
-
-impl<B: Backend> Decoder<B> {
-    /// Forward pass for the decoder.
-    ///
-    /// # Arguments
-    ///
-    /// * `features` - A 5-element array containing the input image and the four
-    ///   feature maps from the encoder `[x, x1, x2, x3, x4]`.
-    ///
-    /// # Returns
-    ///
-    /// The final segmentation map.
-    pub fn forward(&self, features: [Tensor<B, 4>; 5]) -> Tensor<B, 4> {
-        let [x, x1, x2, x3, x4] = features;
-
-        let x4 = {
-            match &self.ipt_blk5 {
-                Some(ipt_blk5) => {
-                    let [_, _, h, w] = x4.dims();
-                    let patches_batch = {
-                        if self.split {
-                            self.get_patches_batch(x.clone(), x4.clone())
-                        } else {
-                            x.clone()
-                        }
-                    };
-                    Tensor::cat(
-                        Vec::from([
-                            x4,
-                            ipt_blk5.forward(interpolate(
-                                patches_batch,
-                                [h, w],
-                                InterpolateOptions::new(InterpolateMode::Bilinear),
-                            )),
-                        ]),
-                        1,
-                    )
-                }
-                None => x4,
-            }
-        };
-
-        // Decoder block 4
-        let p4 = {
-            match &self.decoder_block4 {
-                DecoderBlockModuleEnum::BasicDecBlk(decoder_block4) => decoder_block4.forward(x4),
-                DecoderBlockModuleEnum::ResBlk(decoder_block4) => decoder_block4.forward(x4),
-            }
-        };
-        // let m4 = None;
-        let p4 = {
-            match (&self.gdt_convs_4, &self.gdt_convs_attn_4) {
-                (Some(gdt_convs_4), Some(gdt_convs_attn_4)) => {
-                    let p4_gdt = gdt_convs_4.forward(p4.clone());
-                    let gdt_attn_4 = sigmoid(gdt_convs_attn_4.forward(p4_gdt));
-                    p4 * gdt_attn_4
-                }
-                _ => p4,
-            }
-        };
-        let [_, _, h, w] = x3.dims();
-        let _p4 = interpolate(
-            p4,
-            [h, w],
-            InterpolateOptions::new(InterpolateMode::Bilinear),
-        );
-        let _p3 = _p4 + {
-            match &self.lateral_block4 {
-                LateralBlockModuleEnum::BasicLatBlk(lateral_block4) => {
-                    lateral_block4.forward(x3.clone())
-                }
-            }
-        };
-
-        let _p3 = {
-            match &self.ipt_blk4 {
-                Some(ipt_blk4) => {
-                    let [_, _, h, w] = x3.dims();
-                    let patches_batch = {
-                        if self.split {
-                            self.get_patches_batch(x.clone(), _p3.clone())
-                        } else {
-                            x.clone()
-                        }
-                    };
-                    Tensor::cat(
-                        Vec::from([
-                            _p3,
-                            ipt_blk4.forward(interpolate(
-                                patches_batch,
-                                [h, w],
-                                InterpolateOptions::new(InterpolateMode::Bilinear),
-                            )),
-                        ]),
-                        1,
-                    )
-                }
-                None => _p3,
-            }
-        };
-        let p3 = {
-            match &self.decoder_block3 {
-                DecoderBlockModuleEnum::BasicDecBlk(decoder_block3) => decoder_block3.forward(_p3),
-                DecoderBlockModuleEnum::ResBlk(decoder_block3) => decoder_block3.forward(_p3),
-            }
-        };
-        // let m3 = None;
-        let p3 = {
-            match (&self.gdt_convs_3, &self.gdt_convs_attn_3) {
-                (Some(gdt_convs_3), Some(gdt_convs_attn_3)) => {
-                    let p3_gdt = gdt_convs_3.forward(p3.clone());
-                    let gdt_attn_3 = sigmoid(gdt_convs_attn_3.forward(p3_gdt));
-                    p3 * gdt_attn_3
-                }
-                _ => p3,
-            }
-        };
-        let [_, _, h, w] = x2.dims();
-        let _p3 = interpolate(
-            p3,
-            [h, w],
-            InterpolateOptions::new(InterpolateMode::Bilinear),
-        );
-        let _p2 = _p3 + {
-            match &self.lateral_block3 {
-                LateralBlockModuleEnum::BasicLatBlk(lateral_block3) => {
-                    lateral_block3.forward(x2.clone())
-                }
-            }
-        };
-
-        let _p2 = {
-            match &self.ipt_blk3 {
-                Some(ipt_blk3) => {
-                    let [_, _, h, w] = x2.dims();
-                    let patches_batch = {
-                        if self.split {
-                            self.get_patches_batch(x.clone(), _p2.clone())
-                        } else {
-                            x.clone()
-                        }
-                    };
-                    Tensor::cat(
-                        Vec::from([
-                            _p2,
-                            ipt_blk3.forward(interpolate(
-                                patches_batch,
-                                [h, w],
-                                InterpolateOptions::new(InterpolateMode::Bilinear),
-                            )),
-                        ]),
-                        1,
-                    )
-                }
-                None => _p2,
-            }
-        };
-        let p2 = {
-            match &self.decoder_block2 {
-                DecoderBlockModuleEnum::BasicDecBlk(decoder_block2) => decoder_block2.forward(_p2),
-                DecoderBlockModuleEnum::ResBlk(decoder_block2) => decoder_block2.forward(_p2),
-            }
-        };
-        // let m2 = None;
-        let p2 = {
-            match (&self.gdt_convs_2, &self.gdt_convs_attn_2) {
-                (Some(gdt_convs_2), Some(gdt_convs_attn_2)) => {
-                    let p2_gdt = gdt_convs_2.forward(p2.clone());
-                    let gdt_attn_2 = sigmoid(gdt_convs_attn_2.forward(p2_gdt));
-                    p2 * gdt_attn_2
-                }
-                _ => p2,
-            }
-        };
-        let [_, _, h, w] = x1.dims();
-        let _p2 = interpolate(
-            p2,
-            [h, w],
-            InterpolateOptions::new(InterpolateMode::Bilinear),
-        );
-        let _p1 = _p2 + {
-            match &self.lateral_block2 {
-                LateralBlockModuleEnum::BasicLatBlk(lateral_block2) => {
-                    lateral_block2.forward(x1.clone())
-                }
-            }
-        };
-
-        let _p1 = {
-            match &self.ipt_blk2 {
-                Some(ipt_blk2) => {
-                    let [_, _, h, w] = x1.dims();
-                    let patches_batch = {
-                        if self.split {
-                            self.get_patches_batch(x.clone(), _p1.clone())
-                        } else {
-                            x.clone()
-                        }
-                    };
-                    Tensor::cat(
-                        Vec::from([
-                            _p1,
-                            ipt_blk2.forward(interpolate(
-                                patches_batch,
-                                [h, w],
-                                InterpolateOptions::new(InterpolateMode::Bilinear),
-                            )),
-                        ]),
-                        1,
-                    )
-                }
-                None => _p1,
-            }
-        };
-        let _p1 = {
-            match &self.decoder_block1 {
-                DecoderBlockModuleEnum::BasicDecBlk(decoder_block1) => decoder_block1.forward(_p1),
-                DecoderBlockModuleEnum::ResBlk(decoder_block1) => decoder_block1.forward(_p1),
-            }
-        };
-        let [_, _, h, w] = x.dims();
-        let _p1 = interpolate(
-            _p1,
-            [h, w],
-            InterpolateOptions::new(InterpolateMode::Bilinear),
-        );
-
-        // let m1 = None;
-        let _p1 = {
-            match &self.ipt_blk1 {
-                Some(ipt_blk1) => {
-                    let [_, _, h, w] = x.dims();
-                    let patches_batch = {
-                        if self.split {
-                            self.get_patches_batch(x, _p1.clone())
-                        } else {
-                            x
-                        }
-                    };
-                    Tensor::cat(
-                        Vec::from([
-                            _p1,
-                            ipt_blk1.forward(interpolate(
-                                patches_batch,
-                                [h, w],
-                                InterpolateOptions::new(InterpolateMode::Bilinear),
-                            )),
-                        ]),
-                        1,
-                    )
-                }
-                None => _p1,
-            }
-        };
-        self.conv_out1.forward(_p1)
-    }
-
-    fn get_patches_batch(&self, x: Tensor<B, 4>, p: Tensor<B, 4>) -> Tensor<B, 4> {
-        let [b, c, h, w] = p.dims();
-        let [_, _, h_, w_] = x.dims();
-        let patch_count = (h_ / h) * (w_ / w);
-        let mut patches = Vec::with_capacity(patch_count);
-        for i in (0..w_).step_by(w) {
-            let column_x = x.clone().slice([0..b, 0..c, 0..h_, i..i + w]);
-            for j in (0..h_).step_by(h) {
-                let patch = column_x.clone().slice([0..b, 0..c, j..j + h, 0..w]);
-                patches.push(patch);
-            }
+        match vgg_backbone.unwrap() {
+            BackboneType::VGG(VGGVariant::VGG16) => { /* Expected */ }
+            _ => panic!("Expected VGG16"),
         }
-        Tensor::cat(patches, 1)
-    }
-}
 
-/// A simple two-layer convolutional block.
-#[derive(Config, Debug)]
-pub struct SimpleConvsConfig {
-    in_channels: usize,
-    out_channels: usize,
-    #[config(default = "64")]
-    inter_channels: usize,
-}
+        match swin_backbone.unwrap() {
+            BackboneType::SwinTransformer(SwinVariant::SwinT) => { /* Expected */ }
+            _ => panic!("Expected SwinT"),
+        }
 
-impl SimpleConvsConfig {
-    /// Initializes a `SimpleConvs` module.
-    pub fn init<B: Backend>(&self, device: &Device<B>) -> SimpleConvs<B> {
-        let conv1 = Conv2dConfig::new([self.in_channels, self.inter_channels], [3, 3])
-            .with_padding(PaddingConfig2d::Explicit(1, 1))
-            .init(device);
-
-        let conv_out = Conv2dConfig::new([self.inter_channels, self.out_channels], [3, 3])
-            .with_padding(PaddingConfig2d::Explicit(1, 1))
-            .init(device);
-
-        SimpleConvs { conv1, conv_out }
-    }
-}
-
-/// A simple two-layer convolutional block used for decoder input processing.
-#[derive(Module, Debug)]
-pub struct SimpleConvs<B: Backend> {
-    conv1: Conv2d<B>,
-    conv_out: Conv2d<B>,
-}
-
-impl<B: Backend> SimpleConvs<B> {
-    pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
-        self.conv_out.forward(self.conv1.forward(x))
+        match pvt_backbone.unwrap() {
+            BackboneType::PVTv2(PVTv2Variant::B2) => { /* Expected */ }
+            _ => panic!("Expected PVTv2B2"),
+        }
     }
 }

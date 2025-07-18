@@ -269,6 +269,7 @@ This implementation is based on extensive research in computer vision and deep l
 **Primary Paper:**
 [1] Zheng, P., Gao, D., Fan, D., Liu, L., Laaksonen, J., Ouyang, W., & Sebe, N. (2024). "Bilateral Reference for
 High-Resolution Dichotomous Image Segmentation". *CAAI Artificial Intelligence Research*, 3,
+
 9150038. [arXiv:2401.03407](https://arxiv.org/abs/2401.03407)
 
 **Key Dependencies:**

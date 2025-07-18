@@ -5,6 +5,7 @@
 //!
 //! The implementation follows the original PyTorch BiRefNet evaluation metrics.
 
+use burn::tensor::cast::ToElement;
 use burn::{
     prelude::*,
     tensor::{backend::Backend, ElementConversion, Tensor},
@@ -14,7 +15,6 @@ use burn::{
     },
 };
 use std::marker::PhantomData;
-
 // --- Input Structs for Metrics ---
 
 pub struct FMeasureInput<B: Backend> {
@@ -364,5 +364,174 @@ impl<B: Backend> Metric for LossMetric<B> {
 impl<B: Backend> Numeric for LossMetric<B> {
     fn value(&self) -> f64 {
         self.state.value()
+    }
+}
+
+// --- Convenience Functions for Examples ---
+
+/// Calculate IoU metric using a simple function interface.
+pub fn calculate_iou<B: Backend>(
+    predictions: Tensor<B, 4>,
+    targets: Tensor<B, 4>,
+    threshold: f32,
+) -> f32
+where
+    B::FloatElem: From<f32> + Into<f32>,
+{
+    let preds_sigmoid = burn::tensor::activation::sigmoid(predictions);
+    let preds_binary = preds_sigmoid.greater_elem(threshold).float();
+    let targets_binary = targets.greater_elem(0.5).float();
+
+    let intersection: f32 = (preds_binary.clone() * targets_binary.clone())
+        .sum()
+        .into_scalar()
+        .into();
+    let union: f32 = (preds_binary.sum() + targets_binary.sum())
+        .into_scalar()
+        .into()
+        - intersection;
+
+    if union > 0.0 {
+        intersection / union
+    } else {
+        1.0
+    }
+}
+
+/// Calculate F-measure metric using a simple function interface.
+pub fn calculate_f_measure<B: Backend>(
+    predictions: Tensor<B, 4>,
+    targets: Tensor<B, 4>,
+    threshold: f32,
+) -> f32
+where
+    B::FloatElem: From<f32> + Into<f32>,
+{
+    let preds_sigmoid = burn::tensor::activation::sigmoid(predictions);
+    let preds_binary = preds_sigmoid.greater_elem(threshold).float();
+    let targets_binary = targets.greater_elem(0.5).float();
+
+    let tp: f32 = (preds_binary.clone() * targets_binary.clone())
+        .sum()
+        .into_scalar()
+        .to_f32();
+    let pred_positives: f32 = preds_binary.sum().into_scalar().to_f32();
+    let actual_positives: f32 = targets_binary.sum().into_scalar().to_f32();
+
+    let fp = pred_positives - tp;
+    let fn_val = actual_positives - tp;
+
+    let precision = if tp + fp > 0.0 { tp / (tp + fp) } else { 0.0 };
+    let recall = if tp + fn_val > 0.0 {
+        tp / (tp + fn_val)
+    } else {
+        0.0
+    };
+
+    if precision + recall > 0.0 {
+        2.0 * precision * recall / (precision + recall)
+    } else {
+        0.0
+    }
+}
+
+/// Calculate MAE metric using a simple function interface.
+pub fn calculate_mae<B: Backend>(
+    predictions: Tensor<B, 4>,
+    targets: Tensor<B, 4>,
+    apply_sigmoid: bool,
+) -> f32
+where
+    B::FloatElem: From<f32> + Into<f32>,
+{
+    let preds_processed = if apply_sigmoid {
+        burn::tensor::activation::sigmoid(predictions)
+    } else {
+        predictions
+    };
+
+    let mae = (preds_processed - targets).abs().mean();
+    mae.into_scalar().into()
+}
+
+/// Calculate all metrics at once.
+pub fn calculate_all_metrics<B: Backend>(
+    predictions: Tensor<B, 4>,
+    targets: Tensor<B, 4>,
+    threshold: f32,
+) -> (f32, f32, f32)
+where
+    B::FloatElem: From<f32> + Into<f32>,
+{
+    let iou = calculate_iou(predictions.clone(), targets.clone(), threshold);
+    let f_measure = calculate_f_measure(predictions.clone(), targets.clone(), threshold);
+    let mae = calculate_mae(predictions, targets, true);
+
+    (iou, f_measure, mae)
+}
+
+/// Metrics aggregator for batch processing.
+#[derive(Debug, Clone)]
+pub struct MetricsAggregator {
+    iou_sum: f32,
+    f_measure_sum: f32,
+    mae_sum: f32,
+    count: usize,
+}
+
+impl MetricsAggregator {
+    /// Create a new metrics aggregator.
+    pub fn new() -> Self {
+        Self {
+            iou_sum: 0.0,
+            f_measure_sum: 0.0,
+            mae_sum: 0.0,
+            count: 0,
+        }
+    }
+
+    /// Add a batch of metrics.
+    pub fn add_batch<B: Backend>(
+        &mut self,
+        predictions: Tensor<B, 4>,
+        targets: Tensor<B, 4>,
+        threshold: f32,
+    ) where
+        B::FloatElem: From<f32> + Into<f32>,
+    {
+        let (iou, f_measure, mae) = calculate_all_metrics(predictions, targets, threshold);
+
+        self.iou_sum += iou;
+        self.f_measure_sum += f_measure;
+        self.mae_sum += mae;
+        self.count += 1;
+    }
+
+    /// Get the average metrics.
+    pub fn get_averages(&self) -> (f32, f32, f32) {
+        if self.count == 0 {
+            return (0.0, 0.0, 0.0);
+        }
+
+        let count = self.count as f32;
+        (
+            self.iou_sum / count,
+            self.f_measure_sum / count,
+            self.mae_sum / count,
+        )
+    }
+
+    /// Reset the aggregator.
+    pub fn reset(&mut self) {
+        self.iou_sum = 0.0;
+        self.f_measure_sum = 0.0;
+        self.mae_sum = 0.0;
+        self.count = 0;
+    }
+}
+
+impl Default for MetricsAggregator {
+    fn default() -> Self {
+        Self::new()
     }
 }

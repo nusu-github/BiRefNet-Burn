@@ -1,0 +1,14 @@
+[package]
+name = "vgg"
+version = "0.1.0"
+edition = "2021"
+description = "VGG backbone implementation for BiRefNet using Burn"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/nusu-github/BiRefNet-Burn"
+
+[dependencies]
+burn = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+burn = { workspace = true, features = ["ndarray"] }

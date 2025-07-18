@@ -10,7 +10,7 @@ use super::{
     decoder_blocks::{BasicDecBlk, ResBlk},
 };
 use crate::error::{BiRefNetError, BiRefNetResult};
-use crate::special::Identity;
+use burn_extra_ops::Identity;
 
 pub enum OptimizerEnum {
     Adam(Adam),
@@ -19,7 +19,7 @@ pub enum OptimizerEnum {
 
 #[derive(Module, Debug)]
 pub enum DecAttEnum<B: Backend> {
-    None(Identity),
+    None(Identity<B>),
     ASPP(ASPP<B>),
     ASPPDeformable(ASPPDeformable<B>),
 }

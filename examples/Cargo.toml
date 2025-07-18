@@ -1,0 +1,54 @@
+[package]
+name = "birefnet-examples"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "BiRefNet examples including training, inference, and dataset utilities"
+publish = false
+
+[features]
+default = ["ndarray"]
+
+# Backend features
+ndarray = ["burn/ndarray"]
+wgpu = ["burn/wgpu"]
+cuda = ["burn/cuda"]
+candle = ["burn/candle"]
+tch = ["burn/tch"]
+
+# Backend specifications
+accelerate = ["burn/accelerate"]
+blas-netlib = ["burn/blas-netlib"]
+openblas = ["burn/openblas"]
+openblas-system = ["burn/openblas-system"]
+
+# Performance features
+fusion = ["burn/fusion"]
+
+# Training features
+metrics = ["burn/metrics"]
+
+[dependencies]
+anyhow = "1"
+birefnet-burn = { path = "../birefnet", features = ["train"] }
+burn = { workspace = true, features = ["train", "tui"] }
+clap = { version = "4.5.41", features = ["derive"] }
+image = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1.0"
+
+[[bin]]
+name = "train"
+path = "src/bin/train.rs"
+
+[[bin]]
+name = "inference"
+path = "src/bin/inference.rs"
+
+[[bin]]
+name = "dataset_test"
+path = "src/bin/dataset_test.rs"
+
+[[bin]]
+name = "converter"
+path = "src/bin/converter.rs"

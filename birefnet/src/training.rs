@@ -19,7 +19,7 @@ pub struct BiRefNetOutput<B: Backend> {
 }
 
 impl<B: Backend> ItemLazy for BiRefNetOutput<B> {
-    type ItemSync = BiRefNetOutput<burn::backend::ndarray::NdArray>;
+    type ItemSync = Self;
 
     fn sync(self) -> Self::ItemSync {
         let [logits, target, loss] = Transaction::default()
@@ -32,7 +32,7 @@ impl<B: Backend> ItemLazy for BiRefNetOutput<B> {
 
         let device = &Default::default();
 
-        BiRefNetOutput {
+        Self {
             logits: Tensor::from_data(logits, device),
             target: Tensor::from_data(target, device),
             loss: Tensor::from_data(loss, device),

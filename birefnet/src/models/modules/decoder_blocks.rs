@@ -14,13 +14,13 @@ use burn::{
 use super::{ASPPConfig, ASPPDeformable, ASPPDeformableConfig, ASPP};
 use crate::config::{DecAtt, DecChannelsInter, SqueezeBlock};
 use crate::error::BiRefNetResult;
-use crate::special::Identity;
+use burn_extra_ops::Identity;
 
 /// An enum to wrap different normalization layers (BatchNorm or Identity).
 #[derive(Module, Debug)]
 enum NormLayer<B: Backend> {
     BatchNorm(BatchNorm<B, 2>),
-    Identity(Identity),
+    Identity(Identity<B>),
 }
 
 impl<B: Backend> NormLayer<B> {
@@ -30,7 +30,7 @@ impl<B: Backend> NormLayer<B> {
         if batch_size > 1 {
             Self::BatchNorm(BatchNormConfig::new(channels).init(device))
         } else {
-            Self::Identity(Identity::new())
+            Self::Identity(Identity::<B>::new())
         }
     }
 

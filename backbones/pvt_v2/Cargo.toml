@@ -1,0 +1,15 @@
+[package]
+name = "pvt_v2"
+version = "0.1.0"
+edition = "2021"
+description = "Pyramid Vision Transformer v2 backbone implementation for BiRefNet using Burn"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/nusu-github/BiRefNet-Burn"
+
+[dependencies]
+burn = { workspace = true }
+burn-extra-ops = { path = "../../burn-extra-ops" }
+thiserror = "1.0"
+
+[dev-dependencies]
+burn = { workspace = true, features = ["ndarray"] }

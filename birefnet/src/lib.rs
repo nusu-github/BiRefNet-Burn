@@ -20,10 +20,10 @@
 //! - `ModelConfig`: The primary configuration struct that drives the model's construction.
 //! - `BiRefNetError`: The enum for all possible errors.
 
-mod config;
+mod config; // Now organized as a module with core.rs and enums.rs
 mod error;
 mod models;
-mod special;
+// mod special; // Moved to burn-extra-ops crate
 
 #[cfg(feature = "train")]
 mod dataset;
@@ -42,19 +42,24 @@ mod tests;
 
 pub use config::*;
 pub use error::{BiRefNetError, BiRefNetResult};
-pub use models::{BiRefNet, BiRefNetConfig, BiRefNetRecord};
+pub use models::birefnet::{BiRefNet, BiRefNetConfig};
 
 #[cfg(feature = "train")]
 pub use dataset::{BiRefNetBatch, BiRefNetBatcher, BiRefNetDataset, BiRefNetItem};
 
 #[cfg(feature = "train")]
 pub use losses::{
-    CombinedLoss, CombinedLossConfig, MultiScaleLoss, MultiScaleLossConfig, StructureLoss,
-    StructureLossConfig,
+    ClsLoss, ClsLossConfig, CombinedLoss, CombinedLossConfig, ContourLoss, ContourLossConfig,
+    MaeLoss, MaeLossConfig, MseLoss, MseLossConfig, MultiScaleLoss, MultiScaleLossConfig,
+    PatchIoULoss, PatchIoULossConfig, SSIMLoss, SSIMLossConfig, StructureLoss, StructureLossConfig,
+    ThrRegLoss, ThrRegLossConfig,
 };
 
 #[cfg(feature = "train")]
-pub use metrics::{FMeasureMetric, IoUMetric, LossMetric, MAEMetric};
+pub use metrics::{
+    calculate_all_metrics, calculate_f_measure, calculate_iou, calculate_mae, FMeasureMetric,
+    IoUMetric, LossMetric, MAEMetric, MetricsAggregator,
+};
 
 #[cfg(feature = "train")]
 pub use training::BiRefNetOutput;

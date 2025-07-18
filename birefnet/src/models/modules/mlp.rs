@@ -7,7 +7,7 @@ use burn::{
     prelude::*,
 };
 
-use crate::special::{DropPath, DropPathConfig};
+use burn_extra_ops::{DropPath, DropPathConfig};
 
 #[derive(Config, Debug)]
 pub struct MLPLayerConfig {
@@ -177,7 +177,11 @@ impl BlockConfig {
             .init(device);
         let drop_path = {
             if self.drop_path > 0.0 {
-                Some(DropPathConfig::new().with_drop_prob(self.drop_path).init())
+                Some(
+                    DropPathConfig::new()
+                        .with_drop_prob(self.drop_path)
+                        .init(device),
+                )
             } else {
                 None
             }
@@ -199,7 +203,7 @@ pub struct Block<B: Backend> {
     attn: Attention<B>,
     norm2: LayerNorm<B>,
     mlp: MLPLayer<B>,
-    drop_path: Option<DropPath>,
+    drop_path: Option<DropPath<B>>,
 }
 
 impl<B: Backend> Block<B> {

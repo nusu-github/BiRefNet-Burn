@@ -18,7 +18,7 @@ use burn::{
 
 use super::DeformableConv2d;
 use crate::error::BiRefNetResult;
-use crate::models::DeformableConv2dConfig;
+use crate::models::modules::deform_conv::DeformableConv2dConfig;
 
 /// Configuration for the `_ASPPModule`.
 #[derive(Debug)]
