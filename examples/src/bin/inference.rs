@@ -21,7 +21,10 @@
 
 use anyhow::{Context, Result};
 use birefnet_burn::{BiRefNet, BiRefNetConfig, CombinedLossConfig, ModelConfig};
-use birefnet_examples::{postprocess_mask, tensor_to_image_data, InferenceConfig};
+use birefnet_examples::{
+    common::{create_device, get_backend_name, SelectedBackend, SelectedDevice},
+    postprocess_mask, tensor_to_image_data, InferenceConfig,
+};
 use burn::{
     nn::Sigmoid,
     prelude::*,
@@ -33,28 +36,6 @@ use std::{
     path::{Path, PathBuf},
     time::Instant,
 };
-
-// Backend selection based on feature flags
-#[cfg(feature = "ndarray")]
-use burn::backend::ndarray::{NdArray, NdArrayDevice};
-#[cfg(feature = "ndarray")]
-type SelectedBackend = NdArray;
-#[cfg(feature = "ndarray")]
-type SelectedDevice = NdArrayDevice;
-
-#[cfg(feature = "wgpu")]
-use burn::backend::wgpu::{Wgpu, WgpuDevice};
-#[cfg(feature = "wgpu")]
-type SelectedBackend = Wgpu;
-#[cfg(feature = "wgpu")]
-type SelectedDevice = WgpuDevice;
-
-#[cfg(feature = "cuda")]
-use burn::backend::cuda::{Cuda, CudaDevice};
-#[cfg(feature = "cuda")]
-type SelectedBackend = Cuda;
-#[cfg(feature = "cuda")]
-type SelectedDevice = CudaDevice;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -90,48 +71,12 @@ struct Args {
     config: Option<PathBuf>,
 }
 
-/// Creates the appropriate device based on the selected backend
-const fn create_device() -> SelectedDevice {
-    #[cfg(feature = "ndarray")]
-    {
-        NdArrayDevice::Cpu
-    }
-
-    #[cfg(feature = "wgpu")]
-    {
-        WgpuDevice::default()
-    }
-
-    #[cfg(feature = "cuda")]
-    {
-        CudaDevice::default()
-    }
-}
-
-/// Gets the backend name for logging purposes
-const fn get_backend_name() -> &'static str {
-    #[cfg(feature = "ndarray")]
-    {
-        "NdArray (CPU)"
-    }
-
-    #[cfg(feature = "wgpu")]
-    {
-        "WGPU (GPU)"
-    }
-
-    #[cfg(feature = "cuda")]
-    {
-        "CUDA (NVIDIA GPU)"
-    }
-}
-
 fn main() -> Result<()> {
     let args = Args::parse();
 
     // Load configuration
     let mut config = if let Some(config_path) = &args.config {
-        let config_str = std::fs::read_to_string(config_path)
+        let config_str = fs::read_to_string(config_path)
             .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
         serde_json::from_str::<InferenceConfig>(&config_str)
             .with_context(|| format!("Failed to parse config file: {}", config_path.display()))?
@@ -156,7 +101,7 @@ fn main() -> Result<()> {
     }
 
     // Create output directory
-    std::fs::create_dir_all(&config.output_path).with_context(|| {
+    fs::create_dir_all(&config.output_path).with_context(|| {
         format!(
             "Failed to create output directory: {}",
             config.output_path.display()
@@ -313,7 +258,7 @@ fn process_directory(
 
 /// Load and preprocess an image
 fn load_and_preprocess_image(
-    image_path: &Path,
+    _image_path: &Path,
     target_size: u32,
     device: &SelectedDevice,
 ) -> Result<Tensor<SelectedBackend, 4>> {
@@ -337,7 +282,7 @@ fn save_mask_as_image(mask: &Tensor<SelectedBackend, 4>, output_path: &Path) -> 
 
     // In practice, you would use image-rs or similar library to save the image
     // For now, we'll just create a placeholder file
-    std::fs::write(output_path, &image_data)
+    fs::write(output_path, &image_data)
         .with_context(|| format!("Failed to save image: {}", output_path.display()))?;
 
     Ok(())

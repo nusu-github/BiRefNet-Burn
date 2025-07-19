@@ -63,7 +63,7 @@ impl<B: Backend> StructureLoss<B> {
     /// Structure loss tensor
     pub fn forward(&self, pred: Tensor<B, 4>, target: Tensor<B, 4>) -> Tensor<B, 1> {
         // Calculate edge-aware weight using average pooling
-        let [n, c, h, w] = target.dims();
+        let [_n, c, h, w] = target.dims();
 
         // Create average pooling layer with kernel size 31
         let avg_pool = AvgPool2dConfig::new([31, 31])

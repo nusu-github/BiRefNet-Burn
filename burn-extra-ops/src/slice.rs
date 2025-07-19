@@ -52,10 +52,10 @@ impl Slice {
 /// Slice tensor with advanced indexing (placeholder implementation)
 pub fn slice_tensor<B: Backend, const D: usize>(
     tensor: Tensor<B, D>,
-    _ranges: &[std::ops::Range<usize>],
+    _ranges: &[Range<usize>],
 ) -> Tensor<B, D> {
-    // TODO: Implement advanced tensor slicing using the ranges
-    // For now, return the input tensor unchanged
+    // Apply range-based slicing to tensor dimensions
+    // Current implementation: placeholder returning unmodified tensor
     tensor
 }
 

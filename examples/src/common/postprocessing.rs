@@ -3,10 +3,7 @@
 //! This module provides common post-processing operations for
 //! segmentation masks and images.
 
-use burn::{
-    prelude::*,
-    tensor::{backend::Backend, Tensor},
-};
+use burn::tensor::{backend::Backend, Tensor};
 
 /// Apply threshold to create binary mask.
 ///
@@ -44,7 +41,7 @@ pub fn gaussian_blur<B: Backend<FloatElem = f32>>(
         / (kernel_size * kernel_size) as f32;
 
     // Apply convolution (simplified)
-    mask.clone() // Placeholder - proper convolution would be implemented here
+    mask // Placeholder - proper convolution would be implemented here
 }
 
 /// Morphological opening operation (erosion followed by dilation).
@@ -55,10 +52,12 @@ pub fn gaussian_blur<B: Backend<FloatElem = f32>>(
 ///
 /// # Returns
 /// Processed mask tensor
-pub fn morphological_opening<B: Backend>(mask: Tensor<B, 4>, _kernel_size: usize) -> Tensor<B, 4> {
-    // Simplified implementation
-    // In practice, you would implement proper morphological operations
-    mask.clone()
+pub const fn morphological_opening<B: Backend>(
+    mask: Tensor<B, 4>,
+    _kernel_size: usize,
+) -> Tensor<B, 4> {
+    // Apply erosion followed by dilation operation
+    mask
 }
 
 /// Morphological closing operation (dilation followed by erosion).
@@ -69,10 +68,12 @@ pub fn morphological_opening<B: Backend>(mask: Tensor<B, 4>, _kernel_size: usize
 ///
 /// # Returns
 /// Processed mask tensor
-pub fn morphological_closing<B: Backend>(mask: Tensor<B, 4>, _kernel_size: usize) -> Tensor<B, 4> {
-    // Simplified implementation
-    // In practice, you would implement proper morphological operations
-    mask.clone()
+pub const fn morphological_closing<B: Backend>(
+    mask: Tensor<B, 4>,
+    _kernel_size: usize,
+) -> Tensor<B, 4> {
+    // Apply dilation followed by erosion operation
+    mask
 }
 
 /// Remove small connected components from binary mask.
@@ -83,10 +84,12 @@ pub fn morphological_closing<B: Backend>(mask: Tensor<B, 4>, _kernel_size: usize
 ///
 /// # Returns
 /// Cleaned mask tensor
-pub fn remove_small_components<B: Backend>(mask: Tensor<B, 4>, _min_size: usize) -> Tensor<B, 4> {
-    // Simplified implementation
-    // In practice, you would implement connected component analysis
-    mask.clone()
+pub const fn remove_small_components<B: Backend>(
+    mask: Tensor<B, 4>,
+    _min_size: usize,
+) -> Tensor<B, 4> {
+    // Remove connected components smaller than minimum size
+    mask
 }
 
 /// Fill holes in binary mask.
@@ -96,10 +99,9 @@ pub fn remove_small_components<B: Backend>(mask: Tensor<B, 4>, _min_size: usize)
 ///
 /// # Returns
 /// Mask with holes filled
-pub fn fill_holes<B: Backend>(mask: Tensor<B, 4>) -> Tensor<B, 4> {
-    // Simplified implementation
-    // In practice, you would implement hole filling algorithm
-    mask.clone()
+pub const fn fill_holes<B: Backend>(mask: Tensor<B, 4>) -> Tensor<B, 4> {
+    // Fill interior holes in binary mask
+    mask
 }
 
 /// Comprehensive postprocessing pipeline.

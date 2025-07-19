@@ -19,7 +19,6 @@ inference, and deployment of BiRefNet models with cross-platform compatibility.
     - [Model Conversion](#model-conversion)
 - [Architecture](#architecture)
 - [Current Limitations](#current-limitations)
-- [Roadmap](#roadmap)
 - [License](#license)
 - [Acknowledgements](#acknowledgements)
 
@@ -270,7 +269,7 @@ This implementation is based on extensive research in computer vision and deep l
 [1] Zheng, P., Gao, D., Fan, D., Liu, L., Laaksonen, J., Ouyang, W., & Sebe, N. (2024). "Bilateral Reference for
 High-Resolution Dichotomous Image Segmentation". *CAAI Artificial Intelligence Research*, 3,
 
-9150038. [arXiv:2401.03407](https://arxiv.org/abs/2401.03407)
+1. [arXiv:2401.03407](https://arxiv.org/abs/2401.03407)
 
 **Key Dependencies:**
 [2] Liu, Z., Lin, Y., Cao, Y., et al. (2021). "Swin Transformer: Hierarchical Vision Transformer using Shifted Windows".

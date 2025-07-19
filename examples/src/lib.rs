@@ -31,8 +31,9 @@ pub mod config;
 
 // Re-export commonly used items
 pub use common::{
-    apply_threshold, fill_holes, gaussian_blur, morphological_closing, morphological_opening,
-    postprocess_mask, remove_small_components, resize_tensor, tensor_to_image_data,
+    apply_threshold, create_device, fill_holes, gaussian_blur, get_backend_name,
+    morphological_closing, morphological_opening, postprocess_mask, remove_small_components,
+    resize_tensor, tensor_to_image_data, SelectedBackend, SelectedDevice,
 };
 
 // Re-export metrics from birefnet

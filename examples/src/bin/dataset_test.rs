@@ -18,35 +18,17 @@
 
 use anyhow::{Context, Result};
 use birefnet_burn::{BiRefNetBatcher, BiRefNetDataset, ModelConfig};
-use birefnet_examples::DatasetTestConfig;
+use birefnet_examples::{
+    common::{create_device, get_backend_name, SelectedBackend, SelectedDevice},
+    DatasetTestConfig,
+};
+use burn::tensor::cast::ToElement;
 use burn::{
     data::dataloader::{DataLoaderBuilder, Dataset},
     prelude::*,
 };
 use clap::Parser;
 use std::path::PathBuf;
-
-// Backend selection based on feature flags
-#[cfg(feature = "ndarray")]
-use burn::backend::ndarray::{NdArray, NdArrayDevice};
-#[cfg(feature = "ndarray")]
-type SelectedBackend = NdArray;
-#[cfg(feature = "ndarray")]
-type SelectedDevice = NdArrayDevice;
-
-#[cfg(feature = "wgpu")]
-use burn::backend::wgpu::{Wgpu, WgpuDevice};
-#[cfg(feature = "wgpu")]
-type SelectedBackend = Wgpu;
-#[cfg(feature = "wgpu")]
-type SelectedDevice = WgpuDevice;
-
-#[cfg(feature = "cuda")]
-use burn::backend::cuda::{Cuda, CudaDevice};
-#[cfg(feature = "cuda")]
-type SelectedBackend = Cuda;
-#[cfg(feature = "cuda")]
-type SelectedDevice = CudaDevice;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -78,42 +60,6 @@ struct Args {
     /// Test data split (train/val/test)
     #[arg(long, default_value = "test")]
     split: String,
-}
-
-/// Creates the appropriate device based on the selected backend
-const fn create_device() -> SelectedDevice {
-    #[cfg(feature = "ndarray")]
-    {
-        NdArrayDevice::Cpu
-    }
-
-    #[cfg(feature = "wgpu")]
-    {
-        WgpuDevice::default()
-    }
-
-    #[cfg(feature = "cuda")]
-    {
-        CudaDevice::default()
-    }
-}
-
-/// Gets the backend name for logging purposes
-const fn get_backend_name() -> &'static str {
-    #[cfg(feature = "ndarray")]
-    {
-        "NdArray (CPU)"
-    }
-
-    #[cfg(feature = "wgpu")]
-    {
-        "WGPU (GPU)"
-    }
-
-    #[cfg(feature = "cuda")]
-    {
-        "CUDA (NVIDIA GPU)"
-    }
 }
 
 fn main() -> Result<()> {
@@ -157,11 +103,11 @@ fn main() -> Result<()> {
     // Test individual samples
     test_individual_samples(&dataset, &config)?;
 
-    // Test batch loading
-    test_batch_loading(&dataset, args.batch_size, args.num_workers)?;
-
     // Test data statistics
     test_data_statistics(&dataset, &config)?;
+
+    // Test batch loading
+    test_batch_loading(dataset, args.batch_size, args.num_workers)?;
 
     println!("Dataset testing completed successfully!");
     Ok(())
@@ -230,7 +176,7 @@ fn test_individual_samples(
 
 /// Test batch loading
 fn test_batch_loading(
-    dataset: &BiRefNetDataset<SelectedBackend>,
+    dataset: BiRefNetDataset<SelectedBackend>,
     batch_size: usize,
     num_workers: usize,
 ) -> Result<()> {
@@ -240,7 +186,7 @@ fn test_batch_loading(
         .batch_size(batch_size)
         .shuffle(42)
         .num_workers(num_workers)
-        .build(dataset.clone());
+        .build(dataset);
 
     let mut batch_count = 0;
     let max_batches = 3; // Test first 3 batches
@@ -254,7 +200,7 @@ fn test_batch_loading(
 
         // Validate batch dimensions
         let [batch_images, channels, height, width] = batch.images.dims();
-        let [batch_masks, mask_channels, mask_height, mask_width] = batch.masks.dims();
+        let [batch_masks, mask_channels, _mask_height, _mask_width] = batch.masks.dims();
 
         if batch_images != batch_masks {
             println!("  ERROR: Batch size mismatch between images and masks");
@@ -343,9 +289,9 @@ fn test_data_statistics(
 
 /// Calculate tensor statistics
 fn calculate_tensor_stats<B: Backend, const D: usize>(tensor: &Tensor<B, D>) -> (f32, f32, f32) {
-    let min_val = tensor.min().into_scalar();
-    let max_val = tensor.max().into_scalar();
-    let mean_val = tensor.mean().into_scalar();
+    let min_val = tensor.clone().min().into_scalar().to_f32();
+    let max_val = tensor.clone().max().into_scalar().to_f32();
+    let mean_val = tensor.clone().mean().into_scalar().to_f32();
 
     (min_val, max_val, mean_val)
 }
@@ -361,7 +307,7 @@ struct StatisticsAccumulator {
 }
 
 impl StatisticsAccumulator {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             min_val: f32::INFINITY,
             max_val: f32::NEG_INFINITY,

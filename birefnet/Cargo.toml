@@ -15,7 +15,6 @@ pretrained = ["burn-import", "dirs"]
 burn = { workspace = true }
 burn-import = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
-libm = { workspace = true }
 thiserror = "2"
 walkdir = { workspace = true, optional = true }
 backbones = { path = "../backbones" }

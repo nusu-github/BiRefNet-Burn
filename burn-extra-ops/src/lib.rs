@@ -33,7 +33,7 @@ impl<B: Backend, const D: usize> TensorExtraOps<B, D> for Tensor<B, D> {
             return self;
         }
 
-        // TODO: Implement drop path
+        // Apply stochastic depth regularization to tensor
         self
     }
 

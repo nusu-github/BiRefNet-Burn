@@ -194,10 +194,6 @@ impl<B: Backend> Metric for MAEMetric<B> {
         "MAE".to_string()
     }
 
-    fn clear(&mut self) {
-        self.state.reset();
-    }
-
     fn update(&mut self, item: &Self::Input, _metadata: &MetricMetadata) -> MetricEntry {
         let batch_size = item.predictions.dims()[0];
         let preds_processed = if self.apply_sigmoid {
@@ -212,6 +208,10 @@ impl<B: Backend> Metric for MAEMetric<B> {
             batch_size,
             FormatOptions::new(self.name()).precision(5),
         )
+    }
+
+    fn clear(&mut self) {
+        self.state.reset();
     }
 }
 
@@ -305,10 +305,6 @@ impl<B: Backend> Metric for IoUMetric<B> {
         "IoU".to_string()
     }
 
-    fn clear(&mut self) {
-        self.state = IoUState::default();
-    }
-
     fn update(&mut self, item: &Self::Input, _metadata: &MetricMetadata) -> MetricEntry {
         self.update_stats(&item.predictions, &item.targets);
         let value = self.iou_value();
@@ -317,6 +313,10 @@ impl<B: Backend> Metric for IoUMetric<B> {
             format!("{:.5}", value),
             format!("{:.5}", value),
         )
+    }
+
+    fn clear(&mut self) {
+        self.state = IoUState::default();
     }
 }
 
@@ -347,10 +347,6 @@ impl<B: Backend> Metric for LossMetric<B> {
         "Loss".to_string()
     }
 
-    fn clear(&mut self) {
-        self.state.reset();
-    }
-
     fn update(&mut self, item: &Self::Input, _metadata: &MetricMetadata) -> MetricEntry {
         let loss = item.loss.clone().into_scalar().elem::<f64>();
         self.state.update(
@@ -358,6 +354,10 @@ impl<B: Backend> Metric for LossMetric<B> {
             item.batch_size,
             FormatOptions::new(self.name()).precision(5),
         )
+    }
+
+    fn clear(&mut self) {
+        self.state.reset();
     }
 }
 
@@ -481,7 +481,7 @@ pub struct MetricsAggregator {
 
 impl MetricsAggregator {
     /// Create a new metrics aggregator.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             iou_sum: 0.0,
             f_measure_sum: 0.0,
@@ -522,7 +522,7 @@ impl MetricsAggregator {
     }
 
     /// Reset the aggregator.
-    pub fn reset(&mut self) {
+    pub const fn reset(&mut self) {
         self.iou_sum = 0.0;
         self.f_measure_sum = 0.0;
         self.mae_sum = 0.0;

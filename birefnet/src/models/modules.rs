@@ -22,7 +22,7 @@ mod deform_conv;
 mod lateral_blocks;
 mod mlp;
 mod simple_convs;
-mod utils;
+pub mod utils;
 
 pub use aspp::*;
 pub use decoder_blocks::*;

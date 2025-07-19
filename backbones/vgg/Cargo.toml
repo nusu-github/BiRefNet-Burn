@@ -8,7 +8,6 @@ repository = "https://github.com/nusu-github/BiRefNet-Burn"
 
 [dependencies]
 burn = { workspace = true }
-serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]
 burn = { workspace = true, features = ["ndarray"] }

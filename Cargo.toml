@@ -9,7 +9,6 @@ members = [
     "burn-extra-ops",
     "birefnet",
     "examples",
-    # "tests/*",
 ]
 
 [workspace.package]
@@ -21,12 +20,10 @@ repository = "https://github.com/nusu-github/BiRefNet-Burn"
 homepage = "https://github.com/nusu-github/BiRefNet-Burn"
 
 [workspace.dependencies]
-burn = "0.18.0"
-burn-import = "0.18.0"
+burn = { version = "0.18.0", default-features = false }
+burn-import = { version = "0.18.0", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
-rand = "0.9"
-rand_distr = "0.5"
-image = "0.25.6"
+image = { version = "0.25.6", default-features = false }
 libm = "0.2.15"
 walkdir = "2.5.0"
 

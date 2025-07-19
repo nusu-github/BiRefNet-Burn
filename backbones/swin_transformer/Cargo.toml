@@ -9,7 +9,6 @@ repository = "https://github.com/nusu-github/BiRefNet-Burn"
 [dependencies]
 burn = { workspace = true }
 burn-extra-ops = { path = "../../burn-extra-ops" }
-libm = "0.2"
 thiserror = "2"
 
 [dev-dependencies]

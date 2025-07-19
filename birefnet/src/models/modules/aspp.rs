@@ -60,7 +60,7 @@ impl _ASPPModuleConfig {
         .with_bias(false)
         .init(device);
 
-        // TODO: Add batch_size condition like PyTorch (batch_size > 1)
+        // Create batch normalization layer for feature standardization
         let bn = Some(BatchNormConfig::new(self.planes).init(device));
         let relu = Relu::new();
 

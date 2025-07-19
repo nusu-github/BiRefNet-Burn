@@ -18,35 +18,16 @@
 
 use anyhow::{Context, Result};
 use birefnet_burn::{BiRefNet, BiRefNetConfig, CombinedLossConfig};
-use birefnet_examples::ConverterConfig;
+use birefnet_examples::{
+    common::{create_device, get_backend_name, SelectedBackend, SelectedDevice},
+    ConverterConfig,
+};
 use burn::{
     prelude::*,
     record::{FullPrecisionSettings, NamedMpkFileRecorder, Recorder},
 };
 use clap::Parser;
 use std::path::PathBuf;
-
-// Backend selection based on feature flags
-#[cfg(feature = "ndarray")]
-use burn::backend::ndarray::{NdArray, NdArrayDevice};
-#[cfg(feature = "ndarray")]
-type SelectedBackend = NdArray;
-#[cfg(feature = "ndarray")]
-type SelectedDevice = NdArrayDevice;
-
-#[cfg(feature = "wgpu")]
-use burn::backend::wgpu::{Wgpu, WgpuDevice};
-#[cfg(feature = "wgpu")]
-type SelectedBackend = Wgpu;
-#[cfg(feature = "wgpu")]
-type SelectedDevice = WgpuDevice;
-
-#[cfg(feature = "cuda")]
-use burn::backend::cuda::{Cuda, CudaDevice};
-#[cfg(feature = "cuda")]
-type SelectedBackend = Cuda;
-#[cfg(feature = "cuda")]
-type SelectedDevice = CudaDevice;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -72,42 +53,6 @@ struct Args {
     /// Force overwrite output file
     #[arg(long)]
     force: bool,
-}
-
-/// Creates the appropriate device based on the selected backend
-const fn create_device() -> SelectedDevice {
-    #[cfg(feature = "ndarray")]
-    {
-        NdArrayDevice::Cpu
-    }
-
-    #[cfg(feature = "wgpu")]
-    {
-        WgpuDevice::default()
-    }
-
-    #[cfg(feature = "cuda")]
-    {
-        CudaDevice::default()
-    }
-}
-
-/// Gets the backend name for logging purposes
-const fn get_backend_name() -> &'static str {
-    #[cfg(feature = "ndarray")]
-    {
-        "NdArray (CPU)"
-    }
-
-    #[cfg(feature = "wgpu")]
-    {
-        "WGPU (GPU)"
-    }
-
-    #[cfg(feature = "cuda")]
-    {
-        "CUDA (NVIDIA GPU)"
-    }
 }
 
 fn main() -> Result<()> {

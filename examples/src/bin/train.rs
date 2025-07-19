@@ -30,7 +30,10 @@ use birefnet_burn::{
     BiRefNetBatch, BiRefNetBatcher, BiRefNetConfig, BiRefNetDataset, CombinedLossConfig,
     FMeasureMetric, IoUMetric, LossMetric, MAEMetric, ModelConfig,
 };
-use birefnet_examples::TrainingConfig;
+use birefnet_examples::{
+    common::{create_device, get_backend_name, SelectedBackend, SelectedDevice},
+    TrainingConfig,
+};
 use burn::{
     backend::Autodiff,
     data::dataloader::{DataLoader, DataLoaderBuilder, Dataset},
@@ -42,42 +45,6 @@ use burn::{
 };
 use clap::Parser;
 use std::{path::PathBuf, sync::Arc};
-
-// Backend selection based on feature flags
-#[cfg(feature = "ndarray")]
-use burn::backend::ndarray::{NdArray, NdArrayDevice};
-#[cfg(feature = "ndarray")]
-type SelectedBackend = NdArray;
-#[cfg(feature = "ndarray")]
-type SelectedDevice = NdArrayDevice;
-
-#[cfg(feature = "wgpu")]
-use burn::backend::wgpu::{Wgpu, WgpuDevice};
-#[cfg(feature = "wgpu")]
-type SelectedBackend = Wgpu;
-#[cfg(feature = "wgpu")]
-type SelectedDevice = WgpuDevice;
-
-#[cfg(feature = "cuda")]
-use burn::backend::cuda::{Cuda, CudaDevice};
-#[cfg(feature = "cuda")]
-type SelectedBackend = Cuda;
-#[cfg(feature = "cuda")]
-type SelectedDevice = CudaDevice;
-
-#[cfg(feature = "candle")]
-use burn::backend::candle::{Candle, CandleDevice};
-#[cfg(feature = "candle")]
-type SelectedBackend = Candle;
-#[cfg(feature = "candle")]
-type SelectedDevice = CandleDevice;
-
-#[cfg(feature = "tch")]
-use burn::backend::libtorch::{LibTorch, LibTorchDevice};
-#[cfg(feature = "tch")]
-type SelectedBackend = LibTorch;
-#[cfg(feature = "tch")]
-type SelectedDevice = LibTorchDevice;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -105,62 +72,6 @@ struct Args {
     /// Override checkpoint path
     #[arg(long)]
     checkpoint_path: Option<PathBuf>,
-}
-
-/// Creates the appropriate device based on the selected backend
-const fn create_device() -> SelectedDevice {
-    #[cfg(feature = "ndarray")]
-    {
-        NdArrayDevice::Cpu
-    }
-
-    #[cfg(feature = "wgpu")]
-    {
-        WgpuDevice::default()
-    }
-
-    #[cfg(feature = "cuda")]
-    {
-        CudaDevice::default()
-    }
-
-    #[cfg(feature = "candle")]
-    {
-        CandleDevice::default()
-    }
-
-    #[cfg(feature = "tch")]
-    {
-        LibTorchDevice::default()
-    }
-}
-
-/// Gets the backend name for logging purposes
-const fn get_backend_name() -> &'static str {
-    #[cfg(feature = "ndarray")]
-    {
-        "NdArray (CPU)"
-    }
-
-    #[cfg(feature = "wgpu")]
-    {
-        "WGPU (GPU)"
-    }
-
-    #[cfg(feature = "cuda")]
-    {
-        "CUDA (NVIDIA GPU)"
-    }
-
-    #[cfg(feature = "candle")]
-    {
-        "Candle"
-    }
-
-    #[cfg(feature = "tch")]
-    {
-        "LibTorch"
-    }
 }
 
 fn main() -> Result<()> {

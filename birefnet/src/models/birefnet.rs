@@ -77,9 +77,9 @@ impl BiRefNetConfig {
             path: PathConfig::new(),
             task: TaskConfig::new(),
             backbone: BackboneConfig {
-                backbone: crate::config::Backbone::Resnet50,
+                backbone: Backbone::Resnet50,
             },
-            decoder: crate::config::DecoderConfig {
+            decoder: DecoderConfig {
                 ms_supervision: false,
                 out_ref: false,
                 dec_ipt: false,
@@ -189,8 +189,6 @@ impl BiRefNetConfig {
 
             squeeze_module
         };
-
-        // TODO: refine
 
         let mul_scl_ipt = match self.config.decoder.mul_scl_ipt {
             MulSclIpt::None => MulSclIpt_::None(Identity::<B>::new()),
@@ -445,7 +443,9 @@ impl<B: Backend> BiRefNet<B> {
     ///
     /// A result containing the final segmentation map.
     pub fn forward(&self, x: Tensor<B, 4>) -> BiRefNetResult<Tensor<B, 4>> {
-        self.forward_ori(x)
+        let scaled_preds = self.forward_ori(x)?;
+
+        Ok(scaled_preds)
     }
 
     /// Forward pass for training and validation.

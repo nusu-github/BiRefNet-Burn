@@ -50,11 +50,9 @@ impl<B: Backend> ThrRegLoss<B> {
     /// # Returns
     /// Threshold regularization loss tensor
     pub fn forward(&self, pred: Tensor<B, 4>, _target: Tensor<B, 4>) -> Tensor<B, 1> {
-        // Loss = 1 - (pred^2 + (pred-1)^2)
-        // Simplified: 1 - (pred^2 + pred^2 - 2*pred + 1) = 1 - (2*pred^2 - 2*pred + 1) = 2*pred - 2*pred^2 = 2*pred*(1-pred)
-        // The original implementation is `torch.mean(1 - ((pred - 0) ** 2 + (pred - 1) ** 2))`
-        // which simplifies to `torch.mean(2*pred - 2*pred**2)`
-        // Let's stick to the original formula for clarity, but simplified.
+        // Calculate threshold regularization loss: 1 - (pred^2 + (pred-1)^2)
+        // This encourages predictions to be close to 0 or 1 (binary values)
+        // Original PyTorch formula: torch.mean(1 - ((pred - 0) ** 2 + (pred - 1) ** 2))
         let pred_sq = pred.clone().powf_scalar(2.0);
         let pred_minus_one_sq = (pred - 1.0).powf_scalar(2.0);
         let reg = (pred_sq + pred_minus_one_sq).mean();

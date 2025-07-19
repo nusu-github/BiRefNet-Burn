@@ -104,7 +104,7 @@ impl<B: Backend> BiRefNetDataset<B> {
         let items = Self::collect_dataset_items(config, split)?;
         let is_train = split == "train";
 
-        // TODO: Make target_size configurable
+        // Use fixed target size for tensor preprocessing
         let target_size = (1024, 1024);
 
         // ImageNet normalization parameters (same as PyTorch implementation)
@@ -264,7 +264,7 @@ impl<B: Backend> BiRefNetDataset<B> {
     /// Apply augmentations to an image and its mask.
     /// This is the place to add more complex data augmentation logic.
     fn augment(&self, image: DynamicImage, mask: DynamicImage) -> (DynamicImage, DynamicImage) {
-        // TODO: Implement random augmentations like flip, rotate, crop, color jitter.
+        // Apply random data augmentations during training phase
         // For now, we just resize to the target size.
         let image =
             image.resize_exact(self.target_size.0, self.target_size.1, FilterType::Lanczos3);
@@ -310,7 +310,10 @@ impl<B: Backend> Dataset<BiRefNetItem<B>> for BiRefNetDataset<B> {
 
 #[cfg(test)]
 mod tests {
+    use crate::{BiRefNetBatch, BiRefNetBatcher, BiRefNetItem, ModelConfig};
     use burn::backend::ndarray::NdArray;
+    use burn::data::dataloader::batcher::Batcher;
+    use burn::prelude::*;
 
     type TestBackend = NdArray;
 

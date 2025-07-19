@@ -311,7 +311,7 @@ pub struct VggConfig {
 }
 
 /// VGG variant enumeration
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Config, Debug)]
 pub enum VggVariant {
     /// VGG16
     Vgg16,

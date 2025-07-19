@@ -103,6 +103,7 @@ pub fn build_norm_layer<B: Backend>(
     }
 }
 
+#[derive(Module, Debug, Clone)]
 pub enum ActLayerEnum {
     ReLU(Relu),
     SiLU(Silu),

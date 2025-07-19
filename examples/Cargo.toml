@@ -13,11 +13,8 @@ default = ["ndarray"]
 ndarray = ["burn/ndarray"]
 wgpu = ["burn/wgpu"]
 cuda = ["burn/cuda"]
-candle = ["burn/candle"]
-tch = ["burn/tch"]
 
 # Backend specifications
-accelerate = ["burn/accelerate"]
 blas-netlib = ["burn/blas-netlib"]
 openblas = ["burn/openblas"]
 openblas-system = ["burn/openblas-system"]
@@ -33,9 +30,9 @@ anyhow = "1"
 birefnet-burn = { path = "../birefnet", features = ["train"] }
 burn = { workspace = true, features = ["train", "tui"] }
 clap = { version = "4.5.41", features = ["derive"] }
-image = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = "1.0"
+cfg-if = "1.0.1"
 
 [[bin]]
 name = "train"

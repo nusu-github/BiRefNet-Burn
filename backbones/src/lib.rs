@@ -125,7 +125,7 @@ pub enum SwinVariant {
 }
 
 /// PVTv2 variants
-#[derive(Debug, Clone)]
+#[derive(Config, Debug)]
 pub enum PVTv2Variant {
     /// PVTv2-B0
     B0,

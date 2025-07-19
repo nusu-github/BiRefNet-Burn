@@ -126,26 +126,14 @@ impl ModelConfig {
     /// Returns `Err(BiRefNetError::InvalidConfiguration)` if any validation rule is violated.
     /// Returns `Err(BiRefNetError::UnsupportedBackbone)` if the backbone is not implemented.
     pub fn validate(&self) -> BiRefNetResult<()> {
-        // 1. Check if backbone is supported (only Swin Transformer variants currently implemented)
-        match self.backbone.backbone {
-            Backbone::SwinV1T | Backbone::SwinV1S | Backbone::SwinV1B | Backbone::SwinV1L => {
-                // These are supported
-            }
-            _ => {
-                return Err(BiRefNetError::UnsupportedBackbone {
-                    backbone: format!("{:?}", self.backbone.backbone),
-                })
-            }
-        }
-
-        // 2. Check context number is valid (本家では [0, 3] のみ)
+        // 1. Check context number is valid (本家では [0, 3] のみ)
         if self.decoder.cxt_num > 3 {
             return Err(BiRefNetError::InvalidConfiguration {
                 reason: format!("Context number must be <= 3, got {}", self.decoder.cxt_num),
             });
         }
 
-        // 3. Check squeeze block count is reasonable
+        // 2. Check squeeze block count is reasonable
         if self.decoder.squeeze_block.count() > 10 {
             return Err(BiRefNetError::InvalidConfiguration {
                 reason: format!(
@@ -155,7 +143,7 @@ impl ModelConfig {
             });
         }
 
-        // 4. Check logical dependencies (similar to original implementation)
+        // 3. Check logical dependencies (similar to original implementation)
         // out_ref depends on ms_supervision (本家: self.out_ref = self.ms_supervision and True)
         if self.decoder.out_ref && !self.decoder.ms_supervision {
             return Err(BiRefNetError::InvalidConfiguration {
@@ -163,14 +151,14 @@ impl ModelConfig {
             });
         }
 
-        // 5. Check dec_ipt_split depends on dec_ipt
+        // 4. Check dec_ipt_split depends on dec_ipt
         if self.decoder.dec_ipt_split && !self.decoder.dec_ipt {
             return Err(BiRefNetError::InvalidConfiguration {
                 reason: "dec_ipt_split can only be enabled when dec_ipt is true".to_string(),
             });
         }
 
-        // 6. Check squeeze_block compatibility with dec_att
+        // 5. Check squeeze_block compatibility with dec_att
         if self.decoder.squeeze_block != SqueezeBlock::None {
             match self.decoder.dec_att {
                 DecAtt::None => {
@@ -198,13 +186,6 @@ impl ModelConfig {
                     }
                 }
             }
-        }
-
-        // 7. Check refine configuration
-        if self.refine.refine != Refine::None {
-            return Err(BiRefNetError::InvalidConfiguration {
-                reason: "Refine is not yet implemented".to_string(),
-            });
         }
 
         Ok(())
@@ -241,7 +222,6 @@ impl ModelConfig {
     /// # Errors
     ///
     /// Returns `Err(BiRefNetError::InvalidConfiguration)` if `cxt_num` is invalid.
-    #[must_use]
     pub fn cxt(&self) -> BiRefNetResult<[usize; 3]> {
         if self.decoder.cxt_num > 0 {
             let reversed: Vec<usize> = self.lateral_channels_in_collection()[1..]
@@ -278,7 +258,6 @@ impl BackboneConfig {
 
 impl DecoderConfig {
     /// Get context channels for skip connections.
-    #[must_use]
     pub fn cxt(&self, lateral_channels: &[usize; 4]) -> BiRefNetResult<[usize; 3]> {
         if self.cxt_num > 0 {
             let reversed: Vec<usize> = lateral_channels[1..].iter().rev().copied().collect();
