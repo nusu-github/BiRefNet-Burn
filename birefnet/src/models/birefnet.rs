@@ -24,7 +24,7 @@ use crate::{
     error::{BiRefNetError, BiRefNetResult},
 };
 use backbones::{
-    create_backbone, Backbone, BackboneType, BackboneWrapper, PVTv2Variant, ResNetVariant,
+    create_backbone, Backbone, BackboneType, BackboneWrapper, PvtV2Variant, ResNetVariant,
     SwinVariant, VGGVariant,
 };
 use burn::{
@@ -118,7 +118,7 @@ impl BiRefNetConfig {
         config
     }
 
-    /// Creates a default configuration for BiRefNet with PVTv2 backbone
+    /// Creates a default configuration for BiRefNet with PvtV2 backbone
     pub fn default_pvt_v2_b2() -> Self {
         let mut config = Self::default_resnet50();
         config.config.backbone.backbone = crate::config::Backbone::PvtV2B2;
@@ -219,10 +219,10 @@ impl BiRefNetConfig {
             OldBackbone::SwinV1S => Ok(BackboneType::SwinTransformer(SwinVariant::SwinS)),
             OldBackbone::SwinV1B => Ok(BackboneType::SwinTransformer(SwinVariant::SwinB)),
             OldBackbone::SwinV1L => Ok(BackboneType::SwinTransformer(SwinVariant::SwinL)),
-            OldBackbone::PvtV2B0 => Ok(BackboneType::PVTv2(PVTv2Variant::B0)),
-            OldBackbone::PvtV2B1 => Ok(BackboneType::PVTv2(PVTv2Variant::B1)),
-            OldBackbone::PvtV2B2 => Ok(BackboneType::PVTv2(PVTv2Variant::B2)),
-            OldBackbone::PvtV2B5 => Ok(BackboneType::PVTv2(PVTv2Variant::B5)),
+            OldBackbone::PvtV2B0 => Ok(BackboneType::PvtV2(PvtV2Variant::B0)),
+            OldBackbone::PvtV2B1 => Ok(BackboneType::PvtV2(PvtV2Variant::B1)),
+            OldBackbone::PvtV2B2 => Ok(BackboneType::PvtV2(PvtV2Variant::B2)),
+            OldBackbone::PvtV2B5 => Ok(BackboneType::PvtV2(PvtV2Variant::B5)),
         }
     }
 }
@@ -581,8 +581,8 @@ mod tests {
         }
 
         match pvt_backbone.unwrap() {
-            BackboneType::PVTv2(PVTv2Variant::B2) => { /* Expected */ }
-            _ => panic!("Expected PVTv2B2"),
+            BackboneType::PvtV2(PvtV2Variant::B2) => { /* Expected */ }
+            _ => panic!("Expected PvtV2B2"),
         }
     }
 }

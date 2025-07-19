@@ -3,8 +3,6 @@
 //! This module contains the primary configuration structures that define
 //! the BiRefNet model architecture and behavior.
 
-use std::path::PathBuf;
-
 use crate::error::{BiRefNetError, BiRefNetResult};
 use burn::prelude::*;
 
@@ -38,10 +36,10 @@ pub struct ModelConfig {
 pub struct PathConfig {
     /// System home directory.
     #[config(default = "None")]
-    pub sys_home_dir: Option<PathBuf>,
+    pub sys_home_dir: Option<String>,
     /// Root directory for the datasets.
-    #[config(default = "PathBuf::from(\"datasets/dis\")")]
-    pub data_root_dir: PathBuf,
+    #[config(default = "\"datasets/dis\".to_string()")]
+    pub data_root_dir: String,
 }
 
 /// Task-related configuration.

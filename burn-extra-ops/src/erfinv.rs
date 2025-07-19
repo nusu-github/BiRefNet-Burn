@@ -58,13 +58,18 @@ fn erfinv_<B: Backend, const D: usize>(y: Tensor<B, D>) -> Tensor<B, D> {
 /// Computes the inverse error function for the central range `|y| <= 0.7`.
 fn compute_central_range<B: Backend, const D: usize>(y: Tensor<B, D>) -> Tensor<B, D> {
     let z = y.clone().powf_scalar(2.0);
-    let num = z.clone() * A[3] + A[2];
-    let num = (num * z.clone()) + A[1];
-    let num = (num * z.clone()) + A[0];
-    let dem = z.clone() * B[3] + B[2];
-    let dem = (dem * z.clone()) + B[1];
-    let dem = (dem * z.clone()) + B[0];
-    let dem = (dem * z) + 1.0;
+
+    // Horner's method with minimized clones: calculate both numerator and denominator
+    // First, we need z for both calculations, so we'll reuse it strategically
+    let z_a3 = z.clone() * A[3];
+    let z_b3 = z.clone() * B[3];
+
+    // Calculate numerator: A[3]*z^3 + A[2]*z^2 + A[1]*z + A[0]
+    let num = ((z_a3 + A[2]) * z.clone() + A[1]) * z.clone() + A[0];
+
+    // Calculate denominator: B[3]*z^4 + B[2]*z^3 + B[1]*z^2 + B[0]*z + 1
+    let dem = (((z_b3 + B[2]) * z.clone() + B[1]) * z.clone() + B[0]) * z + 1.0;
+
     y * num / dem
 }
 

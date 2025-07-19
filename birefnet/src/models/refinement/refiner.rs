@@ -21,7 +21,7 @@ use crate::{
     DecAtt, ModelConfig,
 };
 
-use backbones::{create_backbone, Backbone, BackboneType, BackboneWrapper, PVTv2Variant};
+use backbones::{create_backbone, Backbone, BackboneType, BackboneWrapper, PvtV2Variant};
 
 /// Configuration for the RefinerDecoder
 #[derive(Config, Debug)]
@@ -298,8 +298,8 @@ pub struct RefinerPVTInChannels4Config {
     config: ModelConfig,
     #[config(default = 4)]
     in_channels: usize,
-    #[config(default = "PVTv2Variant::B2")]
-    backbone_variant: PVTv2Variant,
+    #[config(default = "PvtV2Variant::B2")]
+    backbone_variant: PvtV2Variant,
 }
 
 /// RefinerPVTInChannels4 module
@@ -313,7 +313,7 @@ pub struct RefinerPVTInChannels4<B: Backend> {
 impl RefinerPVTInChannels4Config {
     pub fn init<B: Backend>(&self, device: &B::Device) -> BiRefNetResult<RefinerPVTInChannels4<B>> {
         // Create PVTv2 backbone with specified variant
-        let backbone = create_backbone(BackboneType::PVTv2(self.backbone_variant.clone()), device);
+        let backbone = create_backbone(BackboneType::PvtV2(self.backbone_variant.clone()), device);
 
         let channels = backbone.output_channels();
 
@@ -378,9 +378,9 @@ pub struct RefinerConfig {
     inter_channels: usize,
     #[config(default = 3)]
     out_channels: usize,
-    /// PVTv2 variant to use as backbone
-    #[config(default = "PVTv2Variant::B2")]
-    pvt_variant: PVTv2Variant,
+    /// PvtV2 variant to use as backbone
+    #[config(default = "PvtV2Variant::B2")]
+    pvt_variant: PvtV2Variant,
 }
 
 /// Refiner module
@@ -406,7 +406,7 @@ impl RefinerConfig {
         )?;
 
         // Create backbone with specified type
-        let backbone = create_backbone(BackboneType::PVTv2(self.pvt_variant.clone()), device);
+        let backbone = create_backbone(BackboneType::PvtV2(self.pvt_variant.clone()), device);
 
         let channels = backbone.output_channels();
 

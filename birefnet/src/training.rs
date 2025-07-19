@@ -22,13 +22,19 @@ impl<B: Backend> ItemLazy for BiRefNetOutput<B> {
     type ItemSync = Self;
 
     fn sync(self) -> Self::ItemSync {
-        let [logits, target, loss] = Transaction::default()
+        let transaction_result = Transaction::default()
             .register(self.logits)
             .register(self.target)
             .register(self.loss)
-            .execute()
-            .try_into()
-            .expect("Correct amount of tensor data");
+            .execute();
+
+        let [logits, target, loss] = transaction_result.try_into().unwrap_or_else(|_| {
+            panic!(
+                "Failed to extract exactly 3 tensors from transaction. \
+                     Expected: [logits, target, loss]. This indicates a programming error \
+                     in BiRefNetOutput::sync implementation."
+            )
+        });
 
         let device = &Default::default();
 
