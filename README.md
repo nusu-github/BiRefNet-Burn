@@ -14,9 +14,9 @@ inference, and deployment of BiRefNet models with cross-platform compatibility.
 - [Features](#features)
 - [Installation](#installation)
 - [Usage](#usage)
-    - [Inference](#inference)
-    - [Training](#training)
-    - [Model Conversion](#model-conversion)
+  - [Inference](#inference)
+  - [Training](#training)
+  - [Model Conversion](#model-conversion)
 - [Architecture](#architecture)
 - [Current Limitations](#current-limitations)
 - [License](#license)
@@ -65,22 +65,25 @@ framework to provide enhanced performance, memory safety, and cross-platform dep
 ### Steps
 
 1. **Install Rust**:
+
    ```bash
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    source $HOME/.cargo/env
    ```
 
 2. **Clone the repository**:
+
    ```bash
    git clone https://github.com/nusu-github/BiRefNet-Burn.git
    cd BiRefNet-Burn
    ```
 
 3. **Build the project**:
+
    ```bash
    # Build with all features
    cargo build --all-features --release
-   
+
    # Build with specific backend
    cargo build --release --features wgpu --no-default-features
    ```
@@ -172,22 +175,28 @@ cargo doc --all-features --no-deps --open
 
 ## Current Limitations
 
-Compared to the original PyTorch implementation, the following features are not yet implemented:
+While this project aims to provide a comprehensive Rust implementation of BiRefNet, it's important to note that full feature parity with the original PyTorch version is not always feasible due to the evolving maturity of the Burn deep learning framework and its ecosystem. The following features are not yet fully implemented or integrated:
 
 ### 🚧 Missing Features
 
-- **PVT v2 Backbone**: Only Swin Transformer v1 fully supported
-- **Multi-GPU Training**: Distributed training across multiple GPUs
-- **Dynamic Resolution**: Variable input resolution training
-- **Advanced Evaluation**: Comprehensive benchmarking tools
-- **Box-Guided Segmentation**: Bounding box guidance for segmentation
-- **Specialized Variants**: Some task-specific optimizations
+- **`BiRefNetC2F` Model**: The coarse-to-fine model (`BiRefNetC2F`) from the Python implementation is not yet available.
+- **Full Data Augmentation**: While basic resizing is implemented, advanced data augmentation techniques (e.g., random flip, crop, rotate, color enhance, pepper noise) are not fully integrated into the dataset pipeline.
+- **Complete Loss Calculation**: The full training loss system, including auxiliary classification and gradient distillation (GDT) losses, is not yet fully integrated into the training step.
+- **Advanced Evaluation Metrics**: Metrics such as Human Correction Efforts (HCE), Mean Boundary Accuracy (MBA), and Boundary IoU (BIoU) are not yet implemented. The Weighted F-measure (WFM) also requires a more robust Euclidean distance transform.
+- **Numerical Stability for BCE Loss**: The `BCELoss` implementation needs further refinement for full numerical stability, matching PyTorch's behavior.
+- **Refinement Functions**: Advanced foreground refinement functions like `refine_foreground` from the Python `image_proc.py` are not yet implemented.
+- **Multi-GPU Training**: Distributed training across multiple GPUs is not yet supported.
+- **Dynamic Resolution Training**: Training with variable input resolutions is not yet implemented.
+- **Box-Guided Segmentation**: Bounding box guidance for segmentation is not yet available.
+- **Specialized Variants**: Some task-specific optimizations and model variants found in the original implementation are not yet ported.
 
 ### 📊 Performance Gaps
 
-- **Optimization**: Further performance tuning needed for production deployment
-- **Memory Usage**: Additional memory optimizations for large-scale inference
-- **Batch Processing**: Enhanced batch processing
+- **Optimization**: Further performance tuning is necessary for production deployment.
+- **Memory Usage**: Additional memory optimizations are required for very large-scale inference or training.
+- **Batch Processing**: Further enhancements for highly optimized batch processing are needed.
+
+_Note: While these performance aspects are important for production-grade applications, their full optimization is a secondary goal, as the primary focus is on establishing core functionality and architectural integrity within the Burn framework._
 
 ## License
 
@@ -199,15 +208,15 @@ project.
 
 ## Project Status
 
-| Component  | Status     | Notes                                       |
-|------------|------------|---------------------------------------------|
+| Component  | Status      | Notes                                       |
+| ---------- | ----------- | ------------------------------------------- |
 | Core Model | ✅ Complete | Full BiRefNet architecture implemented      |
 | Inference  | ✅ Complete | Single/batch image processing               |
 | Training   | ✅ Complete | Full training pipeline with metrics         |
 | Conversion | ✅ Complete | PyTorch to Burn model conversion            |
-| Datasets   | 🔄 Partial | DIS5K supported, others need implementation |
-| Backbones  | 🔄 Partial | Swin v1 complete, PVT v2 missing            |
-| Evaluation | 🔄 Partial | Basic metrics, advanced benchmarking needed |
+| Datasets   | 🔄 Partial  | DIS5K supported, others need implementation |
+| Backbones  | 🔄 Partial  | Swin v1 complete, PVT v2 missing            |
+| Evaluation | 🔄 Partial  | Basic metrics, advanced benchmarking needed |
 
 ## Contributing
 
@@ -265,17 +274,28 @@ This implementation is based on extensive research in computer vision and deep l
 
 ## References
 
-**Primary Paper:**
-[1] Zheng, P., Gao, D., Fan, D., Liu, L., Laaksonen, J., Ouyang, W., & Sebe, N. (2024). "Bilateral Reference for
-High-Resolution Dichotomous Image Segmentation". *CAAI Artificial Intelligence Research*, 3,
+### Primary Paper
 
-1. [arXiv:2401.03407](https://arxiv.org/abs/2401.03407)
+- Zheng, P., Gao, D., Fan, D., Liu, L., Laaksonen, J., Ouyang, W., & Sebe, N. (2024). "Bilateral Reference for High-Resolution Dichotomous Image Segmentation". _CAAI Artificial Intelligence Research_, 3, [arXiv:2401.03407](https://arxiv.org/abs/2401.03407)
 
-**Key Dependencies:**
-[2] Liu, Z., Lin, Y., Cao, Y., et al. (2021). "Swin Transformer: Hierarchical Vision Transformer using Shifted Windows".
-*ICCV 2021*. [arXiv:2103.14030](https://arxiv.org/abs/2103.14030)
+### Backbone Architectures
 
-[3] Burn Framework Documentation: [https://burn.dev](https://burn.dev)
+- Simonyan, K., & Zisserman, A. (2015). "Very Deep Convolutional Networks for Large-Scale Image Recognition". _International Conference on Learning Representations (ICLR)_. [arXiv:1409.1556](https://arxiv.org/abs/1409.1556)
+- He, K., Zhang, X., Ren, S., & Sun, J. (2016). "Deep Residual Learning for Image Recognition". _Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR)_. [arXiv:1512.03385](https://arxiv.org/abs/1512.03385)
+- Liu, Z., Lin, Y., Cao, Y., et al. (2021). "Swin Transformer: Hierarchical Vision Transformer using Shifted Windows". _ICCV 2021_. [arXiv:2103.14030](https://arxiv.org/abs/2103.14030)
+
+### Implementation Details & Inspirations
+
+Many components and design patterns in BiRefNet-Burn are inspired by or directly adapted from established deep learning libraries and research implementations.
+
+- PyTorch: A widely used open-source machine learning framework. [https://pytorch.org/](https://pytorch.org/)
+- OpenCV: An open-source computer vision and machine learning software library. [https://opencv.org/](https://opencv.org/)
+- timm (PyTorch Image Models): A collection of SOTA image models, often used for backbone implementations. [https://github.com/rwightman/pytorch-image-models](https://github.com/rwightman/pytorch-image-models)
+- Kornia: An open-source computer vision library for PyTorch. [https://kornia.readthedocs.io/](https://kornia.readthedocs.io/)
+
+### Key Dependencies
+
+- Burn Framework Documentation: [https://burn.dev](https://burn.dev)
 
 ---
 
