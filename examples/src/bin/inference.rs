@@ -102,7 +102,7 @@ fn main() -> Result<()> {
 
     // Apply command line overrides
     config.image_size = args.image_size;
-    config.output_path = args.output.clone();
+    config.output_path = args.output;
     config.save_mask_only = args.mask_only;
     config.threshold = args.threshold;
     config.postprocess = !args.no_postprocess;
@@ -120,7 +120,7 @@ fn main() -> Result<()> {
             );
         }
     } else {
-        config.checkpoint_paths = vec![args.model.clone()];
+        config.checkpoint_paths = vec![args.model];
     }
 
     // Validate inputs
@@ -367,7 +367,7 @@ fn process_single_image(
             + "_mask.png",
     );
 
-    save_mask_as_image(&final_mask, &output_path)?;
+    save_mask_as_image(final_mask, &output_path)?;
 
     let elapsed = start_time.elapsed();
     println!(
@@ -579,7 +579,7 @@ fn process_image_batch(
                 + "_mask.png",
         );
 
-        match save_mask_as_image(&final_mask, &output_path) {
+        match save_mask_as_image(final_mask, &output_path) {
             Ok(_) => {
                 processed_count += 1;
                 println!(
@@ -670,9 +670,9 @@ fn resize_tensor_to_original_size(
 }
 
 /// Save mask as image
-fn save_mask_as_image(mask: &Tensor<SelectedBackend, 4>, output_path: &Path) -> Result<()> {
+fn save_mask_as_image(mask: Tensor<SelectedBackend, 4>, output_path: &Path) -> Result<()> {
     // Convert tensor to DynamicImage using improved ImageUtils
-    let dynamic_image = ImageUtils::tensor_to_dynamic_image(mask.clone(), true)
+    let dynamic_image = ImageUtils::tensor_to_dynamic_image(mask, true)
         .with_context(|| "Failed to convert tensor to image")?;
 
     // Save the image

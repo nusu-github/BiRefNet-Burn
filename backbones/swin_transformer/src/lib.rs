@@ -948,8 +948,10 @@ impl<B: Backend> BasicLayer<B> {
                     // img_mask[:, h, w, :] = cnt
                     let value_tensor =
                         Tensor::<B, 4>::full([1, h_range.len(), w_range.len(), 1], cnt, &device);
-                    img_mask = img_mask
-                        .slice_assign([0..1, h_range.clone(), w_range.clone(), 0..1], value_tensor);
+                    img_mask = img_mask.slice_assign(
+                        [0..1, h_range.to_owned(), w_range.to_owned(), 0..1],
+                        value_tensor,
+                    );
                     cnt += 1;
                 }
             }

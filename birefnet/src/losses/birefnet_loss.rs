@@ -119,19 +119,19 @@ impl<B: Backend> BiRefNetLoss<B> {
         if let (Some(ref gdt_loss), Some((gdt_preds, gdt_labels))) = (&self.gdt_loss, gdt_outputs) {
             let mut total_gdt_loss = Tensor::zeros([1], &device);
 
-            for (gdt_pred, gdt_label) in gdt_preds.iter().zip(gdt_labels.iter()) {
+            for (gdt_pred, gdt_label) in gdt_preds.into_iter().zip(gdt_labels.into_iter()) {
                 // Resize gdt_pred to match gdt_label if necessary
                 let gdt_pred_resized = if gdt_pred.dims() != gdt_label.dims() {
                     let [_, _, h, w] = gdt_label.dims();
                     let options = InterpolateOptions::new(InterpolateMode::Bilinear);
-                    interpolate(gdt_pred.clone(), [h, w], options)
+                    interpolate(gdt_pred, [h, w], options)
                 } else {
-                    gdt_pred.clone()
+                    gdt_pred
                 };
 
                 // Apply sigmoid to both prediction and label
                 let gdt_pred_sigmoid = burn::tensor::activation::sigmoid(gdt_pred_resized);
-                let gdt_label_sigmoid = burn::tensor::activation::sigmoid(gdt_label.clone());
+                let gdt_label_sigmoid = burn::tensor::activation::sigmoid(gdt_label);
 
                 // Calculate BCE loss
                 let gdt_loss_val = gdt_loss.forward(gdt_pred_sigmoid, gdt_label_sigmoid);

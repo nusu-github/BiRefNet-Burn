@@ -310,7 +310,7 @@ impl<B: Backend> PixLoss<B> {
 
             // Structure Loss
             if let Some(ref structure_loss) = self.structure_loss {
-                let loss = structure_loss.forward(pred_resized.clone(), gt.clone())
+                let loss = structure_loss.forward(pred_resized, gt.clone())
                     * self.structure_weight.elem::<B::FloatElem>()
                     * pix_loss_lambda.elem::<B::FloatElem>();
                 level_loss = Some(level_loss.map_or_else(|| loss.clone(), |l| l + loss.clone()));

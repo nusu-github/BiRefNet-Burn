@@ -15,7 +15,7 @@ pub struct MaeLossConfig {
 /// Mean Absolute Error (L1) loss.
 #[derive(Module, Debug)]
 pub struct MaeLoss<B: Backend> {
-    pub weight: f32, // Keep as f32, convert during tensor operations
+    pub weight: f32,
     _phantom: std::marker::PhantomData<B>,
 }
 

@@ -56,10 +56,10 @@ impl<B: Backend> FMeasureMetric<B> {
         FMeasureMetricConfig::new().init()
     }
 
-    fn update_stats(&mut self, predictions: &Tensor<B, 4>, targets: &Tensor<B, 4>) {
+    fn update_stats(&mut self, predictions: Tensor<B, 4>, targets: Tensor<B, 4>) {
         let preds_sigmoid = burn::tensor::activation::sigmoid(predictions.clone());
         let preds_binary = preds_sigmoid.greater_elem(self.threshold).int();
-        let targets_binary = targets.clone().greater_elem(0.5).int();
+        let targets_binary = targets.greater_elem(0.5).int();
 
         let tp = (preds_binary.clone() * targets_binary.clone())
             .sum()
@@ -106,7 +106,7 @@ impl<B: Backend> Metric for FMeasureMetric<B> {
     }
 
     fn update(&mut self, item: &Self::Input, _metadata: &MetricMetadata) -> MetricEntry {
-        self.update_stats(&item.predictions, &item.targets);
+        self.update_stats(item.predictions.clone(), item.targets.clone());
         let value = self.fmeasure_value();
         MetricEntry::new(self.name(), format!("{value:.5}"), format!("{value:.5}"))
     }

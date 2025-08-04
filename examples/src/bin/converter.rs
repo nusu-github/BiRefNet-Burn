@@ -71,8 +71,8 @@ fn main() -> Result<()> {
     };
 
     // Apply command line overrides
-    config.input_path = args.input.clone();
-    config.output_path = args.output.clone();
+    config.input_path = args.input;
+    config.output_path = args.output;
 
     // Validate inputs
     if !config.input_path.exists() {
@@ -191,7 +191,7 @@ fn validate_conversion(
     let output2 = model.forward(test_input2)?;
 
     // Compare outputs for consistency
-    compare_tensors(&output1, &output2, 1e-6)?;
+    compare_tensors(output1.clone(), output2, 1e-6)?;
 
     // Validate output shape and ranges
     let output_shape = output1.dims();
@@ -256,11 +256,11 @@ fn print_model_info(_model: &BiRefNet<SelectedBackend>, verbose: bool) {
 
 /// Compare two tensors for validation
 fn compare_tensors<B: Backend<FloatElem = f32>, const D: usize>(
-    tensor1: &Tensor<B, D>,
-    tensor2: &Tensor<B, D>,
+    tensor1: Tensor<B, D>,
+    tensor2: Tensor<B, D>,
     tolerance: f32,
 ) -> Result<()> {
-    let diff = (tensor1.clone() - tensor2.clone()).abs();
+    let diff = (tensor1 - tensor2).abs();
     let max_diff: f32 = diff.clone().max().into_scalar();
     let mean_diff: f32 = diff.mean().into_scalar();
 

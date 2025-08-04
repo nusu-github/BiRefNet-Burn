@@ -149,8 +149,8 @@ fn test_individual_samples(
         println!("  Mask shape: {:?}", sample.mask.dims());
 
         // Check data ranges
-        let image_stats = calculate_tensor_stats(&sample.image);
-        let mask_stats = calculate_tensor_stats(&sample.mask);
+        let image_stats = calculate_tensor_stats(sample.image);
+        let mask_stats = calculate_tensor_stats(sample.mask);
 
         println!(
             "  Image stats: min={:.4}, max={:.4}, mean={:.4}",
@@ -242,8 +242,8 @@ fn test_data_statistics(
     for i in 0..num_samples {
         let sample = dataset.get(i).context("Failed to get sample")?;
 
-        let (img_min, img_max, img_mean) = calculate_tensor_stats(&sample.image);
-        let (mask_min, mask_max, mask_mean) = calculate_tensor_stats(&sample.mask);
+        let (img_min, img_max, img_mean) = calculate_tensor_stats(sample.image);
+        let (mask_min, mask_max, mask_mean) = calculate_tensor_stats(sample.mask);
 
         image_stats.add(img_min, img_max, img_mean);
         mask_stats.add(mask_min, mask_max, mask_mean);
@@ -279,10 +279,10 @@ fn test_data_statistics(
 }
 
 /// Calculate tensor statistics
-fn calculate_tensor_stats<B: Backend, const D: usize>(tensor: &Tensor<B, D>) -> (f32, f32, f32) {
+fn calculate_tensor_stats<B: Backend, const D: usize>(tensor: Tensor<B, D>) -> (f32, f32, f32) {
     let min_val = tensor.clone().min().into_scalar().to_f32();
     let max_val = tensor.clone().max().into_scalar().to_f32();
-    let mean_val = tensor.clone().mean().into_scalar().to_f32();
+    let mean_val = tensor.mean().into_scalar().to_f32();
 
     (min_val, max_val, mean_val)
 }

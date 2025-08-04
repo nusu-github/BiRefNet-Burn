@@ -36,10 +36,8 @@ pub fn gaussian_blur<B: Backend<FloatElem = f32>>(
     // Should implement: Separable Gaussian kernel with proper convolution
     // for accurate image smoothing as used in post-processing pipeline
     // In a real implementation, you would use proper Gaussian convolution
-    let _padding = kernel_size / 2;
 
     // Create a simple averaging filter as approximation
-    let [_n, _c, _h, _w] = mask.dims();
     let _kernel: Tensor<B, 4> = Tensor::ones([1, 1, kernel_size, kernel_size], &mask.device())
         / (kernel_size * kernel_size) as f32;
 
@@ -205,5 +203,5 @@ pub fn resize_tensor<B: Backend>(
     let [n, c, _h, _w] = tensor.dims();
 
     // Create placeholder tensor with target dimensions
-    Tensor::zeros([n, c, target_height, target_width], &tensor.device())
+    Tensor::zeros([n, c, target_height, target_width], &Default::default())
 }

@@ -289,7 +289,7 @@ impl<B: Backend> BiRefNetDataset<B> {
 
 impl<B: Backend> Dataset<BiRefNetItem<B>> for BiRefNetDataset<B> {
     fn get(&self, index: usize) -> Option<BiRefNetItem<B>> {
-        let (image_path, mask_path) = self.items.get(index)?.clone();
+        let (image_path, mask_path) = self.items.get(index)?;
 
         let image = image::open(image_path).ok()?;
         let mask = image::open(mask_path).ok()?;

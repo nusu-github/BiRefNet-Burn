@@ -83,7 +83,7 @@ impl<B: Backend> Metric for WeightedFMeasureMetric<B> {
     type Input = WeightedFMeasureInput<B>;
 
     fn name(&self) -> String {
-        self.name.clone()
+        self.name.to_string()
     }
 
     fn update(&mut self, input: &Self::Input, _metadata: &MetricMetadata) -> MetricEntry {
@@ -111,7 +111,7 @@ impl<B: Backend> Metric for WeightedFMeasureMetric<B> {
         self.state.update(
             avg_wfm,
             batch_size,
-            FormatOptions::new(self.name.clone()).precision(5),
+            FormatOptions::new(self.name.to_string()).precision(5),
         )
     }
 
@@ -163,22 +163,22 @@ pub fn calculate_weighted_f_measure<B: Backend>(
     };
 
     // Calculate distance transform for background pixels
-    let dst = distance_transform(&gt);
+    let dst = distance_transform(gt.clone());
 
     // Calculate error
     let e = (pred - gt.clone().float()).abs();
 
     // Apply error dependency transformation
-    let et = apply_error_dependency(&e, &gt, &dst);
+    let et = apply_error_dependency(e.clone(), gt.clone(), dst.clone());
 
     // Apply Gaussian filter for smoothing
-    let ea = gaussian_filter(&et, 7, 5.0);
+    let ea = gaussian_filter(et, 7, 5.0);
 
     // Calculate minimum error
-    let min_e_ea = calculate_min_error(&e, &ea, &gt);
+    let min_e_ea = calculate_min_error(e, ea, gt.clone());
 
     // Calculate pixel importance weights
-    let b = calculate_importance_weights(&gt, &dst);
+    let b = calculate_importance_weights(gt.clone(), dst);
 
     // Calculate weighted error
     let ew = min_e_ea * b;
@@ -211,7 +211,7 @@ pub fn calculate_weighted_f_measure<B: Backend>(
 /// Current implementation uses simplified approximation.
 /// Should implement: Fast marching method or chamfer distance transform
 /// for accurate boundary distance calculation as per weighted F-measure paper.
-fn distance_transform<B: Backend>(gt: &Tensor<B, 2, Bool>) -> Tensor<B, 2> {
+fn distance_transform<B: Backend>(gt: Tensor<B, 2, Bool>) -> Tensor<B, 2> {
     let [height, width] = gt.dims();
     let device = gt.device();
 
@@ -231,8 +231,8 @@ fn distance_transform<B: Backend>(gt: &Tensor<B, 2, Bool>) -> Tensor<B, 2> {
     // Should implement: Sobel edge detection or proper contour finding
     let kernel = Tensor::<B, 2>::ones([3, 3], &device);
     let dilated = conv2d_simple(
-        &gt.clone().float().unsqueeze_dims(&[0, 0]),
-        &kernel.unsqueeze_dims(&[0, 0]),
+        gt.clone().float().unsqueeze_dims(&[0, 0]),
+        kernel.unsqueeze_dims(&[0, 0]),
         1,
     );
     let _boundary = dilated
@@ -271,32 +271,32 @@ fn distance_transform<B: Backend>(gt: &Tensor<B, 2, Bool>) -> Tensor<B, 2> {
     let dist_x = x_grid - fg_x_scalar;
     let dist = (dist_y.powf_scalar(2.0) + dist_x.powf_scalar(2.0)).sqrt();
 
-    dist.clone().mask_where(gt.clone(), dist.zeros_like())
+    dist.clone().mask_where(gt, dist.zeros_like())
 }
 
 /// Apply error dependency transformation.
 fn apply_error_dependency<B: Backend>(
-    e: &Tensor<B, 2>,
-    gt: &Tensor<B, 2, Bool>,
-    _dst: &Tensor<B, 2>,
+    e: Tensor<B, 2>,
+    gt: Tensor<B, 2, Bool>,
+    _dst: Tensor<B, 2>,
 ) -> Tensor<B, 2> {
     let mut et = e.clone();
 
     // For background pixels, use error from nearest foreground pixel
-    let bg_mask = gt.clone().bool_not();
+    let bg_mask = gt.bool_not();
 
     // TODO: Implement proper error dependency mapping using distance transform indices
     // Current: Simplified implementation copying error values
     // Should implement: Use index map from distance transform to propagate
     // error values from nearest foreground pixels as per weighted F-measure algorithm
-    et = et.clone().mask_where(bg_mask, e.clone());
+    et = et.mask_where(bg_mask, e);
 
     et
 }
 
 /// Apply Gaussian filter for smoothing.
 fn gaussian_filter<B: Backend>(
-    tensor: &Tensor<B, 2>,
+    tensor: Tensor<B, 2>,
     kernel_size: usize,
     sigma: f32,
 ) -> Tensor<B, 2> {
@@ -327,42 +327,41 @@ fn gaussian_filter<B: Backend>(
 
     // Apply convolution
     conv2d_simple(
-        &tensor.clone().unsqueeze_dims(&[0, 0]),
-        &kernel.unsqueeze_dims(&[0, 0]),
+        tensor.unsqueeze_dims(&[0, 0]),
+        kernel.unsqueeze_dims(&[0, 0]),
         half_size as usize,
     )
     .squeeze_dims(&[0, 0])
 }
 
-/// Simple 2D convolution (for demonstration - in practice, use proper conv2d).
+/// TODO: Simple 2D convolution (for demonstration - in practice, use proper conv2d).
 fn conv2d_simple<B: Backend>(
-    input: &Tensor<B, 4>,
-    _kernel: &Tensor<B, 4>,
+    input: Tensor<B, 4>,
+    _kernel: Tensor<B, 4>,
     _padding: usize,
 ) -> Tensor<B, 4> {
     // This is a placeholder for actual convolution
     // In practice, you would use burn's conv2d module
-    input.clone()
+    input
 }
 
 /// Calculate minimum error between original and smoothed versions.
 fn calculate_min_error<B: Backend>(
-    e: &Tensor<B, 2>,
-    ea: &Tensor<B, 2>,
-    gt: &Tensor<B, 2, Bool>,
+    e: Tensor<B, 2>,
+    ea: Tensor<B, 2>,
+    gt: Tensor<B, 2, Bool>,
 ) -> Tensor<B, 2> {
-    let condition = gt.clone().bool_and(ea.clone().lower(e.clone()));
-    e.clone().mask_where(condition, ea.clone())
+    let condition = gt.bool_and(ea.clone().lower(e.clone()));
+    e.mask_where(condition, ea)
 }
 
 /// Calculate pixel importance weights based on distance from boundaries.
 fn calculate_importance_weights<B: Backend>(
-    gt: &Tensor<B, 2, Bool>,
-    dst: &Tensor<B, 2>,
+    gt: Tensor<B, 2, Bool>,
+    dst: Tensor<B, 2>,
 ) -> Tensor<B, 2> {
-    let bg_mask = gt.clone().bool_not();
+    let bg_mask = gt.bool_not();
     let importance = dst
-        .clone()
         .mul_scalar(-0.5 / 5.0)
         .exp()
         .mul_scalar(2.0 - 1.0)

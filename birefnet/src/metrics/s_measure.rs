@@ -82,7 +82,7 @@ impl<B: Backend> Metric for SMeasureMetric<B> {
     type Input = SMeasureInput<B>;
 
     fn name(&self) -> String {
-        self.name.clone()
+        self.name.to_string()
     }
 
     fn update(&mut self, input: &Self::Input, _metadata: &MetricMetadata) -> MetricEntry {
@@ -110,7 +110,7 @@ impl<B: Backend> Metric for SMeasureMetric<B> {
         self.state.update(
             avg_sm,
             batch_size,
-            FormatOptions::new(self.name.clone()).precision(5),
+            FormatOptions::new(self.name.to_string()).precision(5),
         )
     }
 
@@ -167,27 +167,27 @@ pub fn calculate_s_measure<B: Backend>(
         pred.mean().into_scalar().elem::<f32>()
     } else {
         // Mixed case
-        let object_score = calculate_object_score(&pred, &gt);
-        let region_score = calculate_region_score(&pred, &gt);
+        let object_score = calculate_object_score(pred.clone(), gt.clone());
+        let region_score = calculate_region_score(pred, gt);
         let score = alpha.mul_add(object_score, (1.0 - alpha) * region_score);
         score.max(0.0)
     }
 }
 
-fn calculate_object_score<B: Backend>(pred: &Tensor<B, 2>, gt: &Tensor<B, 2>) -> f32 {
+fn calculate_object_score<B: Backend>(pred: Tensor<B, 2>, gt: Tensor<B, 2>) -> f32 {
     let fg = pred.clone() * gt.clone();
-    let bg = (pred.clone().sub_scalar(1.0).neg()) * (gt.clone().sub_scalar(1.0).neg());
+    let bg = (pred.sub_scalar(1.0).neg()) * (gt.clone().sub_scalar(1.0).neg());
 
     let u = gt.clone().mean().into_scalar().elem::<f32>();
 
-    let fg_score = calculate_s_object(&fg, gt);
-    let bg_score = calculate_s_object(&bg, &(gt.clone().sub_scalar(1.0).neg()));
+    let fg_score = calculate_s_object(fg, gt.clone());
+    let bg_score = calculate_s_object(bg, gt.sub_scalar(1.0).neg());
 
     u.mul_add(fg_score, (1.0 - u) * bg_score)
 }
 
-fn calculate_s_object<B: Backend>(pred: &Tensor<B, 2>, gt: &Tensor<B, 2>) -> f32 {
-    let mask = gt.clone().equal_elem(1.0);
+fn calculate_s_object<B: Backend>(pred: Tensor<B, 2>, gt: Tensor<B, 2>) -> f32 {
+    let mask = gt.equal_elem(1.0);
     let masked_pred = pred
         .clone()
         .mask_where(mask.clone().bool_not(), pred.zeros_like());
@@ -218,11 +218,11 @@ fn calculate_s_object<B: Backend>(pred: &Tensor<B, 2>, gt: &Tensor<B, 2>) -> f32
     2.0 * x / (x.mul_add(x, 1.0) + sigma_x + 1e-8)
 }
 
-fn calculate_region_score<B: Backend>(pred: &Tensor<B, 2>, gt: &Tensor<B, 2>) -> f32 {
+fn calculate_region_score<B: Backend>(pred: Tensor<B, 2>, gt: Tensor<B, 2>) -> f32 {
     let [height, width] = gt.dims();
 
     // Calculate centroid
-    let (cx, cy) = calculate_centroid(gt);
+    let (cx, cy) = calculate_centroid(gt.clone());
 
     // Divide into 4 regions
     let weights = calculate_region_weights(cx, cy, height, width);
@@ -234,7 +234,7 @@ fn calculate_region_score<B: Backend>(pred: &Tensor<B, 2>, gt: &Tensor<B, 2>) ->
     if cx > 0 && cy > 0 {
         let pred_tl = pred.clone().slice([0..cy, 0..cx]);
         let gt_tl = gt.clone().slice([0..cy, 0..cx]);
-        let score = calculate_ssim(&pred_tl, &gt_tl);
+        let score = calculate_ssim(pred_tl, gt_tl);
         total_score += weights.0 * score;
     }
 
@@ -242,7 +242,7 @@ fn calculate_region_score<B: Backend>(pred: &Tensor<B, 2>, gt: &Tensor<B, 2>) ->
     if cx < width && cy > 0 {
         let pred_tr = pred.clone().slice([0..cy, cx..width]);
         let gt_tr = gt.clone().slice([0..cy, cx..width]);
-        let score = calculate_ssim(&pred_tr, &gt_tr);
+        let score = calculate_ssim(pred_tr, gt_tr);
         total_score += weights.1 * score;
     }
 
@@ -250,34 +250,32 @@ fn calculate_region_score<B: Backend>(pred: &Tensor<B, 2>, gt: &Tensor<B, 2>) ->
     if cx > 0 && cy < height {
         let pred_bl = pred.clone().slice([cy..height, 0..cx]);
         let gt_bl = gt.clone().slice([cy..height, 0..cx]);
-        let score = calculate_ssim(&pred_bl, &gt_bl);
+        let score = calculate_ssim(pred_bl, gt_bl);
         total_score += weights.2 * score;
     }
 
     // Bottom-right
     if cx < width && cy < height {
-        let pred_br = pred.clone().slice([cy..height, cx..width]);
-        let gt_br = gt.clone().slice([cy..height, cx..width]);
-        let score = calculate_ssim(&pred_br, &gt_br);
+        let pred_br = pred.slice([cy..height, cx..width]);
+        let gt_br = gt.slice([cy..height, cx..width]);
+        let score = calculate_ssim(pred_br, gt_br);
         total_score += weights.3 * score;
     }
 
     total_score
 }
 
-fn calculate_centroid<B: Backend>(gt: &Tensor<B, 2>) -> (usize, usize) {
+fn calculate_centroid<B: Backend>(gt: Tensor<B, 2>) -> (usize, usize) {
     let [height, width] = gt.dims();
+    let device = gt.device();
 
-    let mask = gt.clone().equal_elem(1.0);
+    let mask = gt.equal_elem(1.0);
     let count = mask.clone().float().sum().into_scalar();
 
     if count.elem::<f32>() == 0.0 {
         // Return center if no foreground
         (width / 2, height / 2)
     } else {
-        // Calculate weighted centroid
-        let device = gt.device();
-
         // Create coordinate grids
         let y_coords: Tensor<B, 2> = Tensor::<B, 1, Int>::arange(0..height as i64, &device)
             .float()
@@ -317,7 +315,7 @@ fn calculate_region_weights(
     (w1, w2, w3, w4)
 }
 
-fn calculate_ssim<B: Backend>(pred: &Tensor<B, 2>, gt: &Tensor<B, 2>) -> f32 {
+fn calculate_ssim<B: Backend>(pred: Tensor<B, 2>, gt: Tensor<B, 2>) -> f32 {
     let [h, w] = pred.dims();
     let n = (h * w) as f32;
 
@@ -328,8 +326,8 @@ fn calculate_ssim<B: Backend>(pred: &Tensor<B, 2>, gt: &Tensor<B, 2>) -> f32 {
     let x = pred.clone().mean().into_scalar().elem::<f32>();
     let y = gt.clone().mean().into_scalar().elem::<f32>();
 
-    let pred_centered = pred.clone() - x;
-    let gt_centered = gt.clone() - y;
+    let pred_centered = pred - x;
+    let gt_centered = gt - y;
 
     let sigma_x_sq = (pred_centered
         .clone()

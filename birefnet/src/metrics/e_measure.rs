@@ -87,7 +87,7 @@ impl<B: Backend> Metric for EMeasureMetric<B> {
     type Input = EMeasureInput<B>;
 
     fn name(&self) -> String {
-        self.name.clone()
+        self.name.to_string()
     }
 
     fn update(&mut self, input: &Self::Input, _metadata: &MetricMetadata) -> MetricEntry {
@@ -118,7 +118,7 @@ impl<B: Backend> Metric for EMeasureMetric<B> {
         self.numeric_state.update(
             avg_adaptive_em,
             batch_size,
-            FormatOptions::new(self.name.clone()).precision(5),
+            FormatOptions::new(self.name.to_string()).precision(5),
         )
     }
 
@@ -170,10 +170,10 @@ pub fn calculate_e_measure<B: Backend>(
     let gt_fg_numel = gt.clone().float().sum().into_scalar();
 
     // Calculate adaptive E-measure
-    let adaptive_threshold = get_adaptive_threshold(&pred);
+    let adaptive_threshold = get_adaptive_threshold(pred.clone());
     let adaptive_em: f32 = calculate_em_with_threshold(
-        &pred,
-        &gt,
+        pred.clone(),
+        gt.clone(),
         adaptive_threshold.elem::<B::FloatElem>(),
         gt_fg_numel,
         gt_size,
@@ -181,8 +181,8 @@ pub fn calculate_e_measure<B: Backend>(
 
     // Calculate changeable E-measure curve
     let changeable_em = calculate_em_with_cumsumhistogram(
-        &pred,
-        &gt,
+        pred,
+        gt,
         gt_fg_numel.elem::<f32>(),
         gt_size.elem::<f32>(),
     );
@@ -190,19 +190,19 @@ pub fn calculate_e_measure<B: Backend>(
     (adaptive_em, changeable_em)
 }
 
-fn get_adaptive_threshold<B: Backend>(pred: &Tensor<B, 2>) -> f32 {
-    let mean_val = pred.clone().mean().into_scalar().elem::<f32>();
+fn get_adaptive_threshold<B: Backend>(pred: Tensor<B, 2>) -> f32 {
+    let mean_val = pred.mean().into_scalar().elem::<f32>();
     (2.0 * mean_val).min(1.0)
 }
 
 fn calculate_em_with_threshold<B: Backend>(
-    pred: &Tensor<B, 2>,
-    gt: &Tensor<B, 2, Bool>,
+    pred: Tensor<B, 2>,
+    gt: Tensor<B, 2, Bool>,
     threshold: B::FloatElem,
     gt_fg_numel: B::FloatElem,
     gt_size: B::FloatElem,
 ) -> f32 {
-    let binarized_pred = pred.clone().greater_equal_elem(threshold);
+    let binarized_pred = pred.greater_equal_elem(threshold);
 
     let fg_fg_numel: f32 = binarized_pred
         .clone()
@@ -212,7 +212,7 @@ fn calculate_em_with_threshold<B: Backend>(
         .into_scalar()
         .elem::<f32>();
     let fg_bg_numel: f32 = binarized_pred
-        .bool_and(gt.clone().bool_not())
+        .bool_and(gt.bool_not())
         .float()
         .sum()
         .into_scalar()
@@ -249,13 +249,13 @@ fn calculate_em_with_threshold<B: Backend>(
 }
 
 fn calculate_em_with_cumsumhistogram<B: Backend>(
-    pred: &Tensor<B, 2>,
-    gt: &Tensor<B, 2, Bool>,
+    pred: Tensor<B, 2>,
+    gt: Tensor<B, 2, Bool>,
     gt_fg_numel: f32,
     gt_size: f32,
 ) -> Vec<f32> {
     // Scale predictions to 0-255 range
-    let pred_scaled = (pred.clone() * 255.0).int();
+    let pred_scaled = (pred * 255.0).int();
 
     // Create histogram bins
     let num_bins = 256;
@@ -273,7 +273,6 @@ fn calculate_em_with_cumsumhistogram<B: Backend>(
             .into_scalar()
             .elem::<f32>();
         let fg_bg_numel: f32 = binarized_pred
-            .clone()
             .bool_and(gt.clone().bool_not())
             .float()
             .sum()

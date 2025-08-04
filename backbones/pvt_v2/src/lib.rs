@@ -403,7 +403,7 @@ impl<B: Backend> PyramidVisionTransformerImpr<B> {
         // Stage 1
         let (mut x, h, w) = self.patch_embed1.forward(x);
         for blk in &self.block1 {
-            x = blk.forward(x.clone(), h, w);
+            x = blk.forward(x, h, w);
         }
         x = self.norm1.forward(x);
         let out1 = x
@@ -414,7 +414,7 @@ impl<B: Backend> PyramidVisionTransformerImpr<B> {
         let (x, h, w) = self.patch_embed2.forward(out1.clone());
         let mut x = x;
         for blk in &self.block2 {
-            x = blk.forward(x.clone(), h, w);
+            x = blk.forward(x, h, w);
         }
         x = self.norm2.forward(x);
         let out2 = x
@@ -425,7 +425,7 @@ impl<B: Backend> PyramidVisionTransformerImpr<B> {
         let (x, h, w) = self.patch_embed3.forward(out2.clone());
         let mut x = x;
         for blk in &self.block3 {
-            x = blk.forward(x.clone(), h, w);
+            x = blk.forward(x, h, w);
         }
         x = self.norm3.forward(x);
         let out3 = x
@@ -436,7 +436,7 @@ impl<B: Backend> PyramidVisionTransformerImpr<B> {
         let (x, h, w) = self.patch_embed4.forward(out3.clone());
         let mut x = x;
         for blk in &self.block4 {
-            x = blk.forward(x.clone(), h, w);
+            x = blk.forward(x, h, w);
         }
         x = self.norm4.forward(x);
         let out4 = x

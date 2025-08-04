@@ -64,7 +64,7 @@ impl<B: Backend> Metric for MSEMetric<B> {
     type Input = MSEInput<B>;
 
     fn name(&self) -> String {
-        self.name.clone()
+        self.name.to_string()
     }
 
     fn update(&mut self, input: &Self::Input, _metadata: &MetricMetadata) -> MetricEntry {
@@ -105,7 +105,7 @@ impl<B: Backend> Metric for MSEMetric<B> {
         self.state.update(
             mse_value,
             batch_size,
-            FormatOptions::new(self.name.clone()).precision(5),
+            FormatOptions::new(self.name.to_string()).precision(5),
         )
     }
 

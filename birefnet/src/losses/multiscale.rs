@@ -86,19 +86,24 @@ impl<B: Backend> MultiScaleLoss<B> {
             "Number of predictions and scale_weights must be equal."
         );
 
-        let total_loss = preds
-            .iter()
-            .zip(targets.iter())
-            .zip(self.scale_weights.iter())
-            .fold(None, |acc, ((pred, target), &weight)| {
-                let scale_loss = self.base_loss.forward(pred.clone(), target.clone());
-                let weighted_loss = scale_loss * weight;
-                match acc {
-                    Some(total) => Some(total + weighted_loss),
-                    None => Some(weighted_loss),
-                }
-            });
+        let device = preds[0].device();
 
-        total_loss.unwrap_or_else(|| Tensor::zeros([1], &preds[0].device()))
+        let total_loss = preds
+            .into_iter()
+            .zip(targets)
+            .zip(self.scale_weights.iter())
+            .fold(
+                None,
+                |acc: Option<Tensor<B, 1>>, ((pred, target), &weight)| {
+                    let scale_loss = self.base_loss.forward(pred, target);
+                    let weighted_loss = scale_loss * weight;
+                    match acc {
+                        Some(total) => Some(total + weighted_loss),
+                        None => Some(weighted_loss),
+                    }
+                },
+            );
+
+        total_loss.unwrap_or_else(|| Tensor::zeros([1], &device))
     }
 }

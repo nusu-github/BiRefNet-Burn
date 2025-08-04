@@ -45,7 +45,7 @@ impl<B: Backend> BCELoss<B> {
 
         // Calculate log terms with clamping (matching PyTorch's -100 clamp)
         let log_input = input.clone().log().clamp_min(log_clamp_min);
-        let one_minus_input = Tensor::ones_like(&input) - input.clone();
+        let one_minus_input = Tensor::ones_like(&input) - input;
         let log_one_minus_input = one_minus_input.log().clamp_min(log_clamp_min);
 
         // PyTorch BCE formula: L = -w * (y * log(x) + (1 - y) * log(1 - x))
