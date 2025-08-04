@@ -350,8 +350,7 @@ impl<B: Backend> RefinerPVTInChannels4<B> {
         // Handle channel mismatch: backbone expects 3 channels, but we have 4
         let x_rgb = if x.dims()[1] == 4 {
             // Take only RGB channels for backbone
-            x.clone()
-                .slice([0..x.dims()[0], 0..3, 0..x.dims()[2], 0..x.dims()[3]])
+            x.clone().slice(s![.., 0..3, .., ..])
         } else {
             x.clone()
         };

@@ -6,6 +6,7 @@
 use burn::tensor::cast::ToElement;
 use burn::{
     config::Config,
+    prelude::*,
     tensor::{backend::Backend, Bool, ElementConversion, Tensor},
     train::metric::{
         state::{FormatOptions, NumericMetricState},
@@ -97,13 +98,9 @@ impl<B: Backend> Metric for EMeasureMetric<B> {
             let pred = input
                 .predictions
                 .clone()
-                .slice([b..b + 1, 0..height, 0..width])
+                .slice(s![b..b + 1, .., ..])
                 .squeeze(0);
-            let gt = input
-                .targets
-                .clone()
-                .slice([b..b + 1, 0..height, 0..width])
-                .squeeze(0);
+            let gt = input.targets.clone().slice(s![b..b + 1, .., ..]).squeeze(0);
 
             let (adaptive_em, changeable_em) = calculate_e_measure(pred, gt);
             self.state.adaptive_ems.push(adaptive_em as f64);

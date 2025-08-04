@@ -3,7 +3,10 @@
 //! This module provides common post-processing operations for
 //! segmentation masks and images.
 
+use super::image::ImageUtils;
+use anyhow::{Context, Result};
 use burn::tensor::{backend::Backend, Tensor};
+use image;
 
 /// Apply threshold to create binary mask.
 ///
@@ -196,12 +199,26 @@ pub fn resize_tensor<B: Backend>(
     tensor: Tensor<B, 4>,
     target_height: usize,
     target_width: usize,
-) -> Tensor<B, 4> {
-    // TODO: Implement proper tensor resizing with interpolation
-    // Current: Placeholder creating zeros tensor
-    // Should implement: Bilinear or bicubic interpolation for accurate resizing
-    let [n, c, _h, _w] = tensor.dims();
+    device: &B::Device,
+) -> Result<Tensor<B, 4>> {
+    let [_batch_size, _channels, current_height, current_width] = tensor.dims();
 
-    // Create placeholder tensor with target dimensions
-    Tensor::zeros([n, c, target_height, target_width], &Default::default())
+    if current_height == target_height && current_width == target_width {
+        return Ok(tensor);
+    }
+
+    // This approach converts tensor to image, resizes, then converts back to tensor.
+    // It's inefficient but works without a direct tensor interpolation implementation.
+    let dynamic_image = ImageUtils::tensor_to_dynamic_image(tensor, false)
+        .context("Failed to convert tensor to image for resizing")?;
+
+    let resized_image = dynamic_image.resize_exact(
+        target_width as u32,
+        target_height as u32,
+        image::imageops::FilterType::Lanczos3,
+    );
+
+    // Convert back to tensor
+    ImageUtils::dynamic_image_to_tensor(resized_image, device)
+        .context("Failed to convert resized image back to tensor")
 }

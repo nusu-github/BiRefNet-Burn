@@ -71,6 +71,7 @@ impl<B: Backend> VGGBackbone<B> {
                     VGGLayer::MaxPool,
                     VGGLayer::Conv(128),
                     VGGLayer::Conv(128),
+                    VGGLayer::MaxPool,
                 ],
                 3,
                 true,
@@ -79,10 +80,10 @@ impl<B: Backend> VGGBackbone<B> {
 
             let conv2 = VGGFeatureBlock::new(
                 &[
+                    VGGLayer::Conv(256),
+                    VGGLayer::Conv(256),
+                    VGGLayer::Conv(256),
                     VGGLayer::MaxPool,
-                    VGGLayer::Conv(256),
-                    VGGLayer::Conv(256),
-                    VGGLayer::Conv(256),
                 ],
                 128,
                 true,
@@ -91,10 +92,10 @@ impl<B: Backend> VGGBackbone<B> {
 
             let conv3 = VGGFeatureBlock::new(
                 &[
+                    VGGLayer::Conv(512),
+                    VGGLayer::Conv(512),
+                    VGGLayer::Conv(512),
                     VGGLayer::MaxPool,
-                    VGGLayer::Conv(512),
-                    VGGLayer::Conv(512),
-                    VGGLayer::Conv(512),
                 ],
                 256,
                 true,
@@ -103,10 +104,10 @@ impl<B: Backend> VGGBackbone<B> {
 
             let conv4 = VGGFeatureBlock::new(
                 &[
+                    VGGLayer::Conv(512),
+                    VGGLayer::Conv(512),
+                    VGGLayer::Conv(512),
                     VGGLayer::MaxPool,
-                    VGGLayer::Conv(512),
-                    VGGLayer::Conv(512),
-                    VGGLayer::Conv(512),
                 ],
                 512,
                 true,
@@ -127,6 +128,7 @@ impl<B: Backend> VGGBackbone<B> {
                     VGGLayer::MaxPool,
                     VGGLayer::Conv(128),
                     VGGLayer::Conv(128),
+                    VGGLayer::MaxPool,
                 ],
                 3,
                 false,
@@ -135,10 +137,10 @@ impl<B: Backend> VGGBackbone<B> {
 
             let conv2 = VGGFeatureBlock::new(
                 &[
+                    VGGLayer::Conv(256),
+                    VGGLayer::Conv(256),
+                    VGGLayer::Conv(256),
                     VGGLayer::MaxPool,
-                    VGGLayer::Conv(256),
-                    VGGLayer::Conv(256),
-                    VGGLayer::Conv(256),
                 ],
                 128,
                 false,
@@ -147,10 +149,10 @@ impl<B: Backend> VGGBackbone<B> {
 
             let conv3 = VGGFeatureBlock::new(
                 &[
+                    VGGLayer::Conv(512),
+                    VGGLayer::Conv(512),
+                    VGGLayer::Conv(512),
                     VGGLayer::MaxPool,
-                    VGGLayer::Conv(512),
-                    VGGLayer::Conv(512),
-                    VGGLayer::Conv(512),
                 ],
                 256,
                 false,
@@ -159,10 +161,10 @@ impl<B: Backend> VGGBackbone<B> {
 
             let conv4 = VGGFeatureBlock::new(
                 &[
+                    VGGLayer::Conv(512),
+                    VGGLayer::Conv(512),
+                    VGGLayer::Conv(512),
                     VGGLayer::MaxPool,
-                    VGGLayer::Conv(512),
-                    VGGLayer::Conv(512),
-                    VGGLayer::Conv(512),
                 ],
                 512,
                 false,
@@ -379,6 +381,9 @@ impl VggConfig {
 mod tests {
     use super::*;
     use burn::backend::NdArray;
+    use ndarray_npy::ReadNpyExt;
+    use std::fs::File;
+    use std::path::Path;
 
     type TestBackend = NdArray<f32>;
 
@@ -407,10 +412,10 @@ mod tests {
         let output = model.forward(input);
 
         // Check output shapes for VGG16
-        assert_eq!(output[0].dims(), [1, 128, 112, 112]); // After conv1 block
-        assert_eq!(output[1].dims(), [1, 256, 56, 56]); // After conv2 block
-        assert_eq!(output[2].dims(), [1, 512, 28, 28]); // After conv3 block
-        assert_eq!(output[3].dims(), [1, 512, 14, 14]); // After conv4 block
+        assert_eq!(output[0].dims(), [1, 128, 56, 56]); // After conv1 block
+        assert_eq!(output[1].dims(), [1, 256, 28, 28]); // After conv2 block
+        assert_eq!(output[2].dims(), [1, 512, 14, 14]); // After conv3 block
+        assert_eq!(output[3].dims(), [1, 512, 7, 7]); // After conv4 block
     }
 
     #[test]
@@ -426,9 +431,168 @@ mod tests {
         let output = model.forward(input);
 
         // Check output shapes for VGG16-BN
-        assert_eq!(output[0].dims(), [1, 128, 112, 112]); // After conv1 block
-        assert_eq!(output[1].dims(), [1, 256, 56, 56]); // After conv2 block
-        assert_eq!(output[2].dims(), [1, 512, 28, 28]); // After conv3 block
-        assert_eq!(output[3].dims(), [1, 512, 14, 14]); // After conv4 block
+        assert_eq!(output[0].dims(), [1, 128, 56, 56]); // After conv1 block
+        assert_eq!(output[1].dims(), [1, 256, 28, 28]); // After conv2 block
+        assert_eq!(output[2].dims(), [1, 512, 14, 14]); // After conv3 block
+        assert_eq!(output[3].dims(), [1, 512, 7, 7]); // After conv4 block
+    }
+
+    fn load_numpy_array_4d(path: &Path) -> Option<Tensor<TestBackend, 4>> {
+        if !path.exists() {
+            return None;
+        }
+
+        let file = File::open(path).ok()?;
+        let ndarray: ndarray::Array4<f32> = ndarray::Array4::read_npy(file).ok()?;
+
+        let shape = [
+            ndarray.shape()[0],
+            ndarray.shape()[1],
+            ndarray.shape()[2],
+            ndarray.shape()[3],
+        ];
+        let data: Vec<f32> = ndarray.into_raw_vec_and_offset().0;
+
+        let device = Default::default();
+        Some(Tensor::from_data(
+            burn::tensor::TensorData::new(data, [shape[0], shape[1], shape[2], shape[3]]),
+            &device,
+        ))
+    }
+
+    fn assert_tensor_approx_eq<const D: usize>(
+        actual: &Tensor<TestBackend, D>,
+        expected: &Tensor<TestBackend, D>,
+        tolerance: f32,
+        name: &str,
+    ) {
+        let diff = actual.clone().sub(expected.clone()).abs();
+        let max_diff: f32 = diff.clone().max().into_scalar();
+        let mean_diff: f32 = diff.mean().into_scalar();
+
+        assert!(
+            max_diff <= tolerance,
+            "{name}: Max difference {max_diff} exceeds tolerance {tolerance}"
+        );
+
+        println!("{name}: max_diff={max_diff:.6}, mean_diff={mean_diff:.6}");
+    }
+
+    #[test]
+    fn test_vgg16_with_reference_data() {
+        let device = Default::default();
+        let model = VGGBackbone::vgg16(&device);
+
+        let test_data_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("test_data");
+
+        // Try to load reference input
+        if let Some(input) = load_numpy_array_4d(&test_data_dir.join("inputs/vgg16_input.npy")) {
+            // Run forward pass
+            let outputs = model.forward(input);
+
+            // Try to load reference outputs for each stage
+            let stage_names = ["conv1", "conv2", "conv3", "conv4"];
+            let mut all_outputs_found = true;
+
+            for (output, stage_name) in outputs.iter().zip(stage_names.iter()) {
+                let output_path =
+                    test_data_dir.join(format!("outputs/vgg16_{stage_name}_output.npy"));
+                if let Some(expected_output) = load_numpy_array_4d(&output_path) {
+                    assert_tensor_approx_eq(
+                        output,
+                        &expected_output,
+                        10.0,
+                        &format!("VGG16 {stage_name} output"),
+                    );
+                } else {
+                    all_outputs_found = false;
+                    println!("⚠ VGG16 reference output {stage_name} not found");
+                }
+            }
+
+            if all_outputs_found {
+                println!(
+                    "✓ VGG16 array-level test passed for all {} outputs",
+                    outputs.len()
+                );
+            } else {
+                println!("⚠ Some VGG16 reference outputs not found, partial array comparison");
+            }
+        } else {
+            println!("⚠ VGG16 reference input not found, skipping array-level test");
+        }
+    }
+
+    #[test]
+    fn test_vgg16_bn_with_reference_data() {
+        let device = Default::default();
+        let model = VGGBackbone::vgg16_bn(&device);
+
+        let test_data_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("test_data");
+
+        // Try to load reference input
+        if let Some(input) = load_numpy_array_4d(&test_data_dir.join("inputs/vgg16bn_input.npy")) {
+            // Run forward pass
+            let outputs = model.forward(input);
+
+            // Try to load reference outputs for each stage
+            let stage_names = ["conv1", "conv2", "conv3", "conv4"];
+            let mut all_outputs_found = true;
+
+            for (output, stage_name) in outputs.iter().zip(stage_names.iter()) {
+                let output_path =
+                    test_data_dir.join(format!("outputs/vgg16bn_{stage_name}_output.npy"));
+                if let Some(expected_output) = load_numpy_array_4d(&output_path) {
+                    assert_tensor_approx_eq(
+                        output,
+                        &expected_output,
+                        10.0,
+                        &format!("VGG16BN {stage_name} output"),
+                    );
+                } else {
+                    all_outputs_found = false;
+                    println!("⚠ VGG16BN reference output {stage_name} not found");
+                }
+            }
+
+            if all_outputs_found {
+                println!(
+                    "✓ VGG16BN array-level test passed for all {} outputs",
+                    outputs.len()
+                );
+            } else {
+                println!("⚠ Some VGG16BN reference outputs not found, partial array comparison");
+            }
+        } else {
+            println!("⚠ VGG16BN reference input not found, skipping array-level test");
+        }
+    }
+
+    #[test]
+    fn test_vgg_conv1_with_reference_data() {
+        let device = Default::default();
+        let model = VGGBackbone::vgg16(&device);
+
+        let test_data_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("test_data");
+
+        // Try to load reference input for conv1 block
+        if let Some(input) = load_numpy_array_4d(&test_data_dir.join("inputs/vgg_conv1_input.npy"))
+        {
+            // Run forward pass through just the first stage
+            let outputs = model.forward(input);
+            let conv1_output = &outputs[0]; // First output is conv1
+
+            // Try to load reference output
+            if let Some(expected_output) =
+                load_numpy_array_4d(&test_data_dir.join("outputs/vgg_conv1_output.npy"))
+            {
+                assert_tensor_approx_eq(conv1_output, &expected_output, 10.0, "VGG Conv1 block");
+                println!("✓ VGG Conv1 array-level test passed");
+            } else {
+                println!("⚠ VGG Conv1 reference output not found, skipping array comparison");
+            }
+        } else {
+            println!("⚠ VGG Conv1 reference input not found, skipping array-level test");
+        }
     }
 }

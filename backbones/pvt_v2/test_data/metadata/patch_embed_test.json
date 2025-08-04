@@ -1,0 +1,22 @@
+{
+  "module": "OverlapPatchEmbed",
+  "img_size": 224,
+  "patch_size": 7,
+  "stride": 4,
+  "in_chans": 3,
+  "embed_dim": 64,
+  "input_shape": [
+    1,
+    3,
+    224,
+    224
+  ],
+  "output_shape": [
+    1,
+    3136,
+    64
+  ],
+  "output_h": 56,
+  "output_w": 56,
+  "seed": 42
+}

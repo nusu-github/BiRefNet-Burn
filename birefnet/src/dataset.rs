@@ -242,22 +242,22 @@ impl<B: Backend> BiRefNetDataset<B> {
 
     /// Convert an image to a tensor.
     fn image_to_tensor(&self, img: DynamicImage) -> Tensor<B, 3> {
-        let img = img.to_rgb8();
+        let img = img.to_rgb32f();
         let (width, height) = img.dimensions();
         let data = TensorData::new(img.into_raw(), [height as usize, width as usize, 3]);
-        let tensor = Tensor::<B, 3, burn::tensor::Int>::from_data(data, &self.device);
+        let tensor = Tensor::<B, 3>::from_data(data, &self.device);
         // HWC to CHW
-        tensor.permute([2, 0, 1]).float() / 255.0
+        tensor.permute([2, 0, 1])
     }
 
     /// Convert a mask to a tensor.
     fn mask_to_tensor(&self, mask: DynamicImage) -> Tensor<B, 3> {
-        let mask = mask.to_luma8();
+        let mask = mask.to_luma32f();
         let (width, height) = mask.dimensions();
         let data = TensorData::new(mask.into_raw(), [height as usize, width as usize]);
-        let tensor = Tensor::<B, 2, burn::tensor::Int>::from_data(data, &self.device);
+        let tensor = Tensor::<B, 3>::from_data(data, &self.device);
         // Add channel dimension and normalize
-        tensor.unsqueeze_dim(0).float() / 255.0
+        tensor.permute([2, 0, 1])
     }
 
     /// Apply normalization to an image tensor.

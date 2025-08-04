@@ -64,28 +64,22 @@ impl<B: Backend> ContourLoss<B> {
         // The original PyTorch implementation computes loss on probabilities
         let pred_prob = burn::tensor::activation::sigmoid(pred);
 
-        let [n, c, h, w] = pred_prob.dims();
-
         // length term - replicating the specific slicing from the original PyTorch code
         // delta_r = pred[:,:,1:,:] - pred[:,:,:-1,:]
-        let delta_r = pred_prob.clone().slice([0..n, 0..c, 1..h, 0..w])
-            - pred_prob.clone().slice([0..n, 0..c, 0..h - 1, 0..w]);
+        let delta_r = pred_prob.clone().slice(s![.., .., 1.., ..])
+            - pred_prob.clone().slice(s![.., .., 0..-1, ..]);
 
         // delta_c = pred[:,:,:,1:] - pred[:,:,:,:-1]
-        let delta_c = pred_prob.clone().slice([0..n, 0..c, 0..h, 1..w])
-            - pred_prob.clone().slice([0..n, 0..c, 0..h, 0..w - 1]);
+        let delta_c = pred_prob.clone().slice(s![.., .., .., 1..])
+            - pred_prob.clone().slice(s![.., .., .., 0..-1]);
 
         // These specific slices require the input to be at least 3x3.
         // Panics will occur on smaller inputs, which matches the original PyTorch behavior.
         // delta_r    = delta_r[:,:,1:,:-2]**2
-        let delta_r_sq = delta_r
-            .slice([0..n, 0..c, 1..(h - 1), 0..(w - 2)])
-            .powf_scalar(2.0);
+        let delta_r_sq = delta_r.slice(s![.., .., 1.., 0..-2]).powf_scalar(2.0);
 
         // delta_c    = delta_c[:,:,:-2,1:]**2
-        let delta_c_sq = delta_c
-            .slice([0..n, 0..c, 0..(h - 2), 1..(w - 1)])
-            .powf_scalar(2.0);
+        let delta_c_sq = delta_c.slice(s![.., .., ..-2, 1..]).powf_scalar(2.0);
 
         let delta_pred = (delta_r_sq + delta_c_sq).abs();
         let length = (delta_pred + self.epsilon).sqrt().mean();

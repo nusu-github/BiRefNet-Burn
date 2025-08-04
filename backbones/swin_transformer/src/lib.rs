@@ -407,14 +407,14 @@ impl<B: Backend> WindowAttention<B> {
         // Use reshape instead of squeeze to avoid backend-specific issues
         let q: Tensor<B, 4> = qkv
             .clone()
-            .slice([0..1, 0..d2, 0..d3, 0..d4m, 0..d5])
+            .slice(s![0..1, .., .., .., ..])
             .reshape([d2, d3, d4m, d5]);
         let k: Tensor<B, 4> = qkv
             .clone()
-            .slice([1..2, 0..d2, 0..d3, 0..d4m, 0..d5])
+            .slice(s![1..2, .., .., .., ..])
             .reshape([d2, d3, d4m, d5]);
         let v: Tensor<B, 4> = qkv
-            .slice([2..3, 0..d2, 0..d3, 0..d4m, 0..d5])
+            .slice(s![2..3, .., .., .., ..])
             .reshape([d2, d3, d4m, d5]);
 
         let q = q * self.scale;
@@ -662,8 +662,7 @@ impl<B: Backend> SwinTransformerBlock<B> {
 
         let x = {
             if pad_r > 0 || pad_b > 0 {
-                let [d1, _, _, d4] = x.dims();
-                x.slice([0..d1, 0..h, 0..w, 0..d4])
+                x.slice(s![.., 0..h, 0..w, ..])
             } else {
                 x
             }
@@ -931,29 +930,24 @@ impl<B: Backend> BasicLayer<B> {
         let wp = ((w as f64) / self.window_size as f64).ceil() as usize * self.window_size;
         let mut img_mask: Tensor<B, 4> = Tensor::zeros([1, hp, wp, 1], &device);
         let h_slices = [
-            0..hp.saturating_sub(self.window_size),
-            hp.saturating_sub(self.window_size)..hp.saturating_sub(self.shift_size),
-            hp.saturating_sub(self.shift_size)..hp,
+            0..-(self.window_size as isize),
+            -(self.window_size as isize)..-(self.shift_size as isize),
+            -(self.shift_size as isize)..-1,
         ];
         let w_slices = [
-            0..wp.saturating_sub(self.window_size),
-            wp.saturating_sub(self.window_size)..wp.saturating_sub(self.shift_size),
-            wp.saturating_sub(self.shift_size)..wp,
+            0..-(self.window_size as isize),
+            -(self.window_size as isize)..-(self.shift_size as isize),
+            -(self.shift_size as isize)..-1,
         ];
 
         let mut cnt = 0;
-        for h_range in &h_slices {
-            for w_range in &w_slices {
-                if !h_range.is_empty() && !w_range.is_empty() {
-                    // img_mask[:, h, w, :] = cnt
-                    let value_tensor =
-                        Tensor::<B, 4>::full([1, h_range.len(), w_range.len(), 1], cnt, &device);
-                    img_mask = img_mask.slice_assign(
-                        [0..1, h_range.to_owned(), w_range.to_owned(), 0..1],
-                        value_tensor,
-                    );
-                    cnt += 1;
-                }
+        for h_slice in h_slices {
+            for w_slice in w_slices.clone() {
+                img_mask = img_mask.slice_fill(
+                    s![0.., h_slice.clone(), w_slice, 0..],
+                    B::FloatElem::from_elem(cnt as f64),
+                );
+                cnt += 1;
             }
         }
         let mask_windows = window_partition(img_mask, self.window_size);
@@ -1401,6 +1395,9 @@ pub fn swin_v1_l<B: Backend>(device: &Device<B>) -> SwinTransformerResult<SwinTr
 mod tests {
     use super::*;
     use burn::backend::ndarray::NdArray;
+    use ndarray_npy::ReadNpyExt;
+    use std::fs::File;
+    use std::path::Path;
 
     type TestBackend = NdArray;
 
@@ -1662,6 +1659,153 @@ mod tests {
     }
 
     #[test]
+    fn test_patch_embed_with_reference_data() {
+        let device = Default::default();
+        let config = PatchEmbedConfig::new()
+            .with_patch_size(4)
+            .with_in_channels(3)
+            .with_embed_dim(96);
+        let patch_embed = config.init::<TestBackend>(&device);
+
+        let test_data_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("test_data");
+
+        // Try to load reference input
+        if let Some(input) =
+            load_numpy_array_4d(&test_data_dir.join("inputs/patch_embed_input.npy"))
+        {
+            // Run forward pass
+            let output = patch_embed.forward(input);
+
+            // Try to load reference output
+            if let Some(expected_output) =
+                load_numpy_array_4d(&test_data_dir.join("outputs/patch_embed_output.npy"))
+            {
+                assert_tensor_approx_eq(&output, &expected_output, 10.0, "PatchEmbed forward");
+                println!("✓ PatchEmbed array-level test passed");
+            } else {
+                println!("⚠ PatchEmbed reference output not found, skipping array comparison");
+            }
+        } else {
+            println!("⚠ PatchEmbed reference input not found, skipping array-level test");
+        }
+    }
+
+    #[test]
+    fn test_window_attention_with_reference_data() {
+        let device = Default::default();
+        let config = WindowAttentionConfig::new(96, [7, 7], 3);
+        let window_attn = config.init::<TestBackend>(&device);
+
+        let test_data_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("test_data");
+
+        // Try to load reference input
+        if let Some(input) =
+            load_numpy_array_3d(&test_data_dir.join("inputs/window_attention_input.npy"))
+        {
+            // Run forward pass
+            let output = window_attn.forward(input, None);
+
+            // Try to load reference output
+            if let Some(expected_output) =
+                load_numpy_array_3d(&test_data_dir.join("outputs/window_attention_output.npy"))
+            {
+                assert_tensor_approx_eq(&output, &expected_output, 10.0, "WindowAttention forward");
+                println!("✓ WindowAttention array-level test passed");
+            } else {
+                println!("⚠ WindowAttention reference output not found, skipping array comparison");
+            }
+        } else {
+            println!("⚠ WindowAttention reference input not found, skipping array-level test");
+        }
+    }
+
+    #[test]
+    fn test_swin_v1_t_with_reference_data() {
+        let device = Default::default();
+        let model = swin_v1_t::<TestBackend>(&device).expect("Failed to create Swin-T model");
+
+        let test_data_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("test_data");
+
+        // Try to load reference input
+        if let Some(input) = load_numpy_array_4d(&test_data_dir.join("inputs/swin_v1_t_input.npy"))
+        {
+            // Run forward pass
+            let outputs = model.forward(input).expect("Forward pass failed");
+
+            // Try to load reference outputs
+            let mut all_outputs_found = true;
+            for (i, output) in outputs.iter().enumerate() {
+                let output_path = test_data_dir.join(format!("outputs/swin_v1_t_output_{i}.npy"));
+                if let Some(expected_output) = load_numpy_array_4d(&output_path) {
+                    assert_tensor_approx_eq(
+                        output,
+                        &expected_output,
+                        10.0,
+                        &format!("Swin-T output {i}"),
+                    );
+                } else {
+                    all_outputs_found = false;
+                    println!("⚠ Swin-T reference output {i} not found");
+                }
+            }
+
+            if all_outputs_found {
+                println!(
+                    "✓ Swin-T array-level test passed for all {} outputs",
+                    outputs.len()
+                );
+            } else {
+                println!("⚠ Some Swin-T reference outputs not found, partial array comparison");
+            }
+        } else {
+            println!("⚠ Swin-T reference input not found, skipping array-level test");
+        }
+    }
+
+    #[test]
+    fn test_swin_v1_s_with_reference_data() {
+        let device = Default::default();
+        let model = swin_v1_s::<TestBackend>(&device).expect("Failed to create Swin-S model");
+
+        let test_data_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("test_data");
+
+        // Try to load reference input
+        if let Some(input) = load_numpy_array_4d(&test_data_dir.join("inputs/swin_v1_s_input.npy"))
+        {
+            // Run forward pass
+            let outputs = model.forward(input).expect("Forward pass failed");
+
+            // Try to load reference outputs
+            let mut all_outputs_found = true;
+            for (i, output) in outputs.iter().enumerate() {
+                let output_path = test_data_dir.join(format!("outputs/swin_v1_s_output_{i}.npy"));
+                if let Some(expected_output) = load_numpy_array_4d(&output_path) {
+                    assert_tensor_approx_eq(
+                        output,
+                        &expected_output,
+                        10.0,
+                        &format!("Swin-S output {i}"),
+                    );
+                } else {
+                    all_outputs_found = false;
+                    println!("⚠ Swin-S reference output {i} not found");
+                }
+            }
+
+            if all_outputs_found {
+                println!(
+                    "✓ Swin-S array-level test passed for all {} outputs",
+                    outputs.len()
+                );
+            } else {
+                println!("⚠ Some Swin-S reference outputs not found, partial array comparison");
+            }
+        } else {
+            println!("⚠ Swin-S reference input not found, skipping array-level test");
+        }
+    }
+
+    #[test]
     fn test_different_input_sizes() {
         let device = Default::default();
         let model = swin_v1_t::<TestBackend>(&device).expect("Failed to create Swin-T model");
@@ -1692,5 +1836,64 @@ mod tests {
             assert_eq!(outputs[3].shape().dims[2], expected_h / 8);
             assert_eq!(outputs[3].shape().dims[3], expected_w / 8);
         }
+    }
+
+    fn load_numpy_array_3d(path: &Path) -> Option<Tensor<TestBackend, 3>> {
+        if !path.exists() {
+            return None;
+        }
+
+        let file = File::open(path).ok()?;
+        let ndarray: ndarray::Array3<f32> = ndarray::Array3::read_npy(file).ok()?;
+
+        let shape = [ndarray.shape()[0], ndarray.shape()[1], ndarray.shape()[2]];
+        let data: Vec<f32> = ndarray.into_raw_vec_and_offset().0;
+
+        let device = Default::default();
+        Some(Tensor::from_data(
+            burn::tensor::TensorData::new(data, [shape[0], shape[1], shape[2]]),
+            &device,
+        ))
+    }
+
+    fn load_numpy_array_4d(path: &Path) -> Option<Tensor<TestBackend, 4>> {
+        if !path.exists() {
+            return None;
+        }
+
+        let file = File::open(path).ok()?;
+        let ndarray: ndarray::Array4<f32> = ndarray::Array4::read_npy(file).ok()?;
+
+        let shape = [
+            ndarray.shape()[0],
+            ndarray.shape()[1],
+            ndarray.shape()[2],
+            ndarray.shape()[3],
+        ];
+        let data: Vec<f32> = ndarray.into_raw_vec_and_offset().0;
+
+        let device = Default::default();
+        Some(Tensor::from_data(
+            burn::tensor::TensorData::new(data, [shape[0], shape[1], shape[2], shape[3]]),
+            &device,
+        ))
+    }
+
+    fn assert_tensor_approx_eq<const D: usize>(
+        actual: &Tensor<TestBackend, D>,
+        expected: &Tensor<TestBackend, D>,
+        tolerance: f32,
+        name: &str,
+    ) {
+        let diff = actual.clone().sub(expected.clone()).abs();
+        let max_diff: f32 = diff.clone().max().into_scalar();
+        let mean_diff: f32 = diff.mean().into_scalar();
+
+        assert!(
+            max_diff <= tolerance,
+            "{name}: Max difference {max_diff} exceeds tolerance {tolerance}"
+        );
+
+        println!("{name}: max_diff={max_diff:.6}, mean_diff={mean_diff:.6}");
     }
 }

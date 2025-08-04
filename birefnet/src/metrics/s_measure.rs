@@ -5,6 +5,7 @@
 
 use burn::{
     config::Config,
+    prelude::*,
     tensor::{backend::Backend, cast::ToElement, ElementConversion, Int, Tensor},
     train::metric::{
         state::{FormatOptions, NumericMetricState},
@@ -94,13 +95,9 @@ impl<B: Backend> Metric for SMeasureMetric<B> {
             let pred = input
                 .predictions
                 .clone()
-                .slice([b..b + 1, 0..height, 0..width])
+                .slice(s![b..b + 1, .., ..])
                 .squeeze(0);
-            let gt = input
-                .targets
-                .clone()
-                .slice([b..b + 1, 0..height, 0..width])
-                .squeeze(0);
+            let gt = input.targets.clone().slice(s![b..b + 1, .., ..]).squeeze(0);
 
             let sm = calculate_s_measure(pred, gt, self.alpha);
             total_sm += sm as f64;

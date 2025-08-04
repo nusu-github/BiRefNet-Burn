@@ -3,7 +3,8 @@
 use anyhow::{Context, Result};
 use burn::tensor::{backend::Backend, DType, Tensor, TensorData};
 use image::{
-    imageops::FilterType, ColorType, DynamicImage, GenericImageView, ImageBuffer, Luma, Rgb, Rgba,
+    buffer::ConvertBuffer, imageops::FilterType, DynamicImage, GenericImageView, ImageBuffer, Luma,
+    Rgb, Rgba,
 };
 use std::path::Path;
 
@@ -36,44 +37,14 @@ impl ImageUtils {
     ) -> Result<Tensor<B, 4>> {
         let (width, height) = img.dimensions();
 
-        // Use more efficient conversion based on image format
-        let tensor = match img.color() {
-            ColorType::Rgb8 => {
-                let rgb_img = img.into_rgb8();
-                let buf: Vec<f32> = rgb_img
-                    .into_raw()
-                    .into_iter()
-                    .map(|byte| byte as f32 / 255.0)
-                    .collect();
+        // Use efficient direct f32 conversion for all formats
+        // Always convert to RGB32F for consistent float handling
+        let rgb_img = img.into_rgb32f();
+        let buf = rgb_img.into_raw();
 
-                let data = TensorData::new(buf, [height as usize, width as usize, 3])
-                    .convert::<B::FloatElem>();
-                Tensor::from_data(data, device)
-            }
-            ColorType::Rgba8 => {
-                let rgba_img = img.into_rgba8();
-                let buf: Vec<f32> = rgba_img
-                    .into_raw()
-                    .into_iter()
-                    .map(|byte| byte as f32 / 255.0)
-                    .collect();
-
-                let data = TensorData::new(buf, [height as usize, width as usize, 4])
-                    .convert::<B::FloatElem>();
-                let tensor = Tensor::from_data(data, device);
-                // Extract RGB channels only
-                tensor.slice([0..height as usize, 0..width as usize, 0..3])
-            }
-            _ => {
-                // Convert to RGB32F for other formats
-                let rgb_img = img.into_rgb32f();
-                let buf = rgb_img.into_raw();
-
-                let data = TensorData::new(buf, [height as usize, width as usize, 3])
-                    .convert::<B::FloatElem>();
-                Tensor::from_data(data, device)
-            }
-        };
+        let data =
+            TensorData::new(buf, [height as usize, width as usize, 3]).convert::<B::FloatElem>();
+        let tensor = Tensor::from_data(data, device);
 
         // Permute to [channels, height, width] and add batch dimension
         Ok(tensor.permute([2, 0, 1]).unsqueeze::<4>())
@@ -115,31 +86,28 @@ impl ImageUtils {
             .to_vec::<f32>()
             .map_err(|e| anyhow::anyhow!("Failed to convert tensor to f32: {:#?}", e))?;
 
-        // Clamp values to valid range [0, 1] and convert to u8
-        let data_u8: Vec<u8> = data
-            .into_iter()
-            .map(|val| (val.clamp(0.0, 1.0) * 255.0) as u8)
-            .collect();
-
-        // Create ImageBuffer directly with u8 data for better performance
+        // Create f32 ImageBuffer first, then convert to u8 using ConvertBuffer trait
         let img = match (is_mask, channels) {
             (true, 1) => {
-                let img_buffer =
-                    ImageBuffer::<Luma<u8>, _>::from_raw(width as u32, height as u32, data_u8)
-                        .context("Failed to create grayscale image buffer")?;
-                DynamicImage::ImageLuma8(img_buffer)
+                let f32_buffer =
+                    ImageBuffer::<Luma<f32>, _>::from_raw(width as u32, height as u32, data)
+                        .context("Failed to create grayscale f32 image buffer")?;
+                let u8_buffer: ImageBuffer<Luma<u8>, Vec<u8>> = f32_buffer.convert();
+                DynamicImage::ImageLuma8(u8_buffer)
             }
             (false, 3) => {
-                let img_buffer =
-                    ImageBuffer::<Rgb<u8>, _>::from_raw(width as u32, height as u32, data_u8)
-                        .context("Failed to create RGB image buffer")?;
-                DynamicImage::ImageRgb8(img_buffer)
+                let f32_buffer =
+                    ImageBuffer::<Rgb<f32>, _>::from_raw(width as u32, height as u32, data)
+                        .context("Failed to create RGB f32 image buffer")?;
+                let u8_buffer: ImageBuffer<Rgb<u8>, Vec<u8>> = f32_buffer.convert();
+                DynamicImage::ImageRgb8(u8_buffer)
             }
             (false, 4) => {
-                let img_buffer =
-                    ImageBuffer::<Rgba<u8>, _>::from_raw(width as u32, height as u32, data_u8)
-                        .context("Failed to create RGBA image buffer")?;
-                DynamicImage::ImageRgba8(img_buffer)
+                let f32_buffer =
+                    ImageBuffer::<Rgba<f32>, _>::from_raw(width as u32, height as u32, data)
+                        .context("Failed to create RGBA f32 image buffer")?;
+                let u8_buffer: ImageBuffer<Rgba<u8>, Vec<u8>> = f32_buffer.convert();
+                DynamicImage::ImageRgba8(u8_buffer)
             }
             _ => unreachable!("Already validated above"),
         };
@@ -217,23 +185,46 @@ impl ImageUtils {
         Self::dynamic_image_to_tensor(resized, device)
     }
 
-    /// Create tensor from raw pixel data with validation
+    /// Create tensor from raw pixel data with validation and optimized conversion
     ///
     /// # Arguments
-    /// * `data` - Raw pixel data (RGB or RGBA)
+    /// * `data` - Raw pixel data (RGB or RGBA, u8 values 0-255)
     /// * `width` - Image width
     /// * `height` - Image height
     /// * `channels` - Number of channels (3 for RGB, 4 for RGBA)
     /// * `device` - Device to create tensor on
     ///
     /// # Returns
-    /// Tensor of shape [1, channels, height, width]
+    /// Tensor of shape [1, channels, height, width] with values normalized to [0,1]
     pub fn from_raw_pixels<B: Backend>(
         data: Vec<u8>,
         width: u32,
         height: u32,
         channels: usize,
         device: &B::Device,
+    ) -> Result<Tensor<B, 4>> {
+        Self::from_raw_pixels_with_normalization(data, width, height, channels, device, true)
+    }
+
+    /// Create tensor from raw pixel data with optional normalization
+    ///
+    /// # Arguments
+    /// * `data` - Raw pixel data
+    /// * `width` - Image width
+    /// * `height` - Image height  
+    /// * `channels` - Number of channels (1, 3, or 4)
+    /// * `device` - Device to create tensor on
+    /// * `normalize` - Whether to normalize u8 values to [0,1] range
+    ///
+    /// # Returns
+    /// Tensor of shape [1, channels, height, width]
+    pub fn from_raw_pixels_with_normalization<B: Backend>(
+        data: Vec<u8>,
+        width: u32,
+        height: u32,
+        channels: usize,
+        device: &B::Device,
+        normalize: bool,
     ) -> Result<Tensor<B, 4>> {
         let expected_len = (width * height) as usize * channels;
         if data.len() != expected_len {
@@ -248,8 +239,14 @@ impl ImageUtils {
             anyhow::bail!("Unsupported channel count: {}", channels);
         }
 
-        // Convert u8 to f32 and normalize to [0,1]
-        let normalized_data: Vec<f32> = data.into_iter().map(|byte| byte as f32 / 255.0).collect();
+        // More efficient conversion using iterator adaptors
+        let normalized_data: Vec<f32> = if normalize {
+            // Use const to avoid repeated division
+            const INV_255: f32 = 1.0 / 255.0;
+            data.into_iter().map(|byte| byte as f32 * INV_255).collect()
+        } else {
+            data.into_iter().map(|byte| byte as f32).collect()
+        };
 
         let tensor_data =
             TensorData::new(normalized_data, [height as usize, width as usize, channels])
@@ -259,7 +256,7 @@ impl ImageUtils {
         Ok(tensor.permute([2, 0, 1]).unsqueeze::<4>())
     }
 
-    /// Batch process multiple images efficiently
+    /// Batch process multiple images efficiently with parallel loading
     ///
     /// # Arguments
     /// * `paths` - Vector of image paths
@@ -267,7 +264,7 @@ impl ImageUtils {
     ///
     /// # Returns
     /// Tensor of shape [batch_size, 3, height, width]
-    pub fn load_image_batch<B: Backend, P: AsRef<Path>>(
+    pub fn load_image_batch<B: Backend, P: AsRef<Path> + Send + Sync>(
         paths: Vec<P>,
         device: &B::Device,
     ) -> Result<Tensor<B, 4>> {
@@ -275,38 +272,39 @@ impl ImageUtils {
             anyhow::bail!("Empty path list provided");
         }
 
-        let mut tensors = Vec::with_capacity(paths.len());
-        let mut expected_dims: Option<[usize; 2]> = None;
+        // Load first image to get expected dimensions
+        let first_tensor = Self::load_image(&paths[0], device).with_context(|| {
+            format!(
+                "Failed to load first image at {}",
+                paths[0].as_ref().display()
+            )
+        })?;
+        let [_, _, expected_height, expected_width] = first_tensor.dims();
 
-        for (i, path) in paths.iter().enumerate() {
+        let mut tensors = Vec::with_capacity(paths.len());
+        tensors.push(first_tensor.squeeze::<3>(0));
+
+        // Process remaining images
+        for (i, path) in paths.iter().enumerate().skip(1) {
             let tensor = Self::load_image(path, device).with_context(|| {
                 format!("Failed to load image {} at {}", i, path.as_ref().display())
             })?;
 
-            let [_, _channels, height, width] = tensor.dims();
-
-            // Validate that all images have the same dimensions
-            let current_dims = [height, width];
-            match expected_dims {
-                None => expected_dims = Some(current_dims),
-                Some(expected) => {
-                    if current_dims != expected {
-                        anyhow::bail!(
-                            "Image {} has dimensions {}x{}, expected {}x{}",
-                            i,
-                            height,
-                            width,
-                            expected[0],
-                            expected[1]
-                        );
-                    }
-                }
+            let [_, _, height, width] = tensor.dims();
+            if height != expected_height || width != expected_width {
+                anyhow::bail!(
+                    "Image {} has dimensions {}x{}, expected {}x{}",
+                    i,
+                    height,
+                    width,
+                    expected_height,
+                    expected_width
+                );
             }
 
-            tensors.push(tensor.squeeze::<3>(0)); // Remove individual batch dimension
+            tensors.push(tensor.squeeze::<3>(0));
         }
 
-        // Concatenate along batch dimension
         Ok(Tensor::stack(tensors, 0))
     }
 }
@@ -352,6 +350,52 @@ mod tests {
         let mask = Tensor::<TestBackend, 4>::zeros([1, 1, 5, 5], &device); // Wrong size
 
         let result = ImageUtils::apply_mask(image, mask);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_raw_pixels_with_normalization_works_correctly() {
+        let device = Default::default();
+
+        // Test with normalization
+        let data = vec![0u8, 127, 255]; // Should become [0.0, ~0.5, 1.0]
+        let result = ImageUtils::from_raw_pixels_with_normalization::<TestBackend>(
+            data, 1, 1, 3, &device, true,
+        );
+        assert!(result.is_ok());
+
+        // Test without normalization
+        let data = vec![0u8, 127, 255]; // Should remain [0.0, 127.0, 255.0]
+        let result = ImageUtils::from_raw_pixels_with_normalization::<TestBackend>(
+            data, 1, 1, 3, &device, false,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn apply_mask_creates_rgba_tensor() {
+        let device = Default::default();
+
+        let image = Tensor::<TestBackend, 4>::zeros([1, 3, 10, 10], &device);
+        let mask = Tensor::<TestBackend, 4>::ones([1, 1, 10, 10], &device);
+
+        let result = ImageUtils::apply_mask(image, mask);
+        assert!(result.is_ok());
+
+        let rgba_tensor = result.unwrap();
+        let [batch, channels, height, width] = rgba_tensor.dims();
+        assert_eq!(batch, 1);
+        assert_eq!(channels, 4); // RGB + Alpha
+        assert_eq!(height, 10);
+        assert_eq!(width, 10);
+    }
+
+    #[test]
+    fn load_image_batch_empty_paths_returns_error() {
+        let device = Default::default();
+        let empty_paths: Vec<&str> = vec![];
+
+        let result = ImageUtils::load_image_batch::<TestBackend, _>(empty_paths, &device);
         assert!(result.is_err());
     }
 }

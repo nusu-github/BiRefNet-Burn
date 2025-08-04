@@ -13,3 +13,7 @@ thiserror = "2"
 
 [dev-dependencies]
 burn = { workspace = true, features = ["ndarray"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ndarray = "0.16"
+ndarray-npy = "0.9"

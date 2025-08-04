@@ -70,7 +70,7 @@ pub enum RefineModule<B: Backend> {
     RefUNet(RefUNet<B>),
     Refiner(Refiner<B>),
     RefinerPVTInChannels4(RefinerPVTInChannels4<B>),
-    None(burn_extra_ops::Identity<B>),
+    None(Identity<B>),
 }
 
 /// Configuration for the `BiRefNet` model.
@@ -172,10 +172,8 @@ impl BiRefNetConfig {
                 let refine_config = RefinerPVTInChannels4Config::new(self.config.clone());
                 RefineModule::RefinerPVTInChannels4(refine_config.init(device)?)
             }
-            crate::config::Refine::Itself => {
-                RefineModule::None(burn_extra_ops::Identity::<B>::new())
-            }
-            crate::config::Refine::None => RefineModule::None(burn_extra_ops::Identity::<B>::new()),
+            crate::config::Refine::Itself => RefineModule::None(Identity::<B>::new()),
+            crate::config::Refine::None => RefineModule::None(Identity::<B>::new()),
         };
 
         Ok(BiRefNet {

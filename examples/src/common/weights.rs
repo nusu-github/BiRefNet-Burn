@@ -18,6 +18,47 @@ pub struct ModelSpec {
     pub config_builder: fn() -> BiRefNetConfig,
 }
 
+/// Helper function to create a BiRefNetConfig with a specific task
+fn create_birefnet_config(task: Task) -> BiRefNetConfig {
+    let model_config = ModelConfig::new()
+        .with_task(
+            TaskConfig::new()
+                .with_task(task)
+                .with_prompt4_loc(Prompt4loc::Dense)
+                .with_batch_size(4),
+        )
+        .with_backbone(BackboneConfig::new().with_backbone(Backbone::SwinV1L))
+        .with_decoder(
+            DecoderConfig::new()
+                .with_ms_supervision(true)
+                .with_out_ref(true)
+                .with_dec_ipt(true)
+                .with_dec_ipt_split(true)
+                .with_cxt_num(3)
+                .with_mul_scl_ipt(MulSclIpt::Cat)
+                .with_dec_att(DecAtt::ASPPDeformable)
+                .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
+                .with_dec_blk(DecBlk::BasicDecBlk)
+                .with_lat_blk(LatBlk::BasicLatBlk)
+                .with_dec_channels_inter(DecChannelsInter::Fixed),
+        )
+        .with_refine(RefineConfig::new().with_refine(Refine::None));
+
+    let loss_config = BiRefNetLossConfig::new(PixLossConfig::new(
+        LossWeightsConfig::new()
+            .with_bce(30.0 * 1.0)
+            .with_iou(0.5 * 1.0)
+            .with_iou_patch(0.5 * 0.0)
+            .with_mse(150.0 * 0.0)
+            .with_triplet(3.0 * 0.0)
+            .with_reg(100.0 * 0.0)
+            .with_ssim(10.0 * 1.0)
+            .with_cnt(5.0 * 0.0)
+            .with_structure(5.0 * 0.0),
+    ));
+    BiRefNetConfig::new(model_config, loss_config)
+}
+
 /// モデルカタログ - 元の実装と同じシンプルなマッピング方式
 static MODEL_SPECS: LazyLock<HashMap<String, ModelSpec>> = LazyLock::new(|| {
     let mut specs = HashMap::new();
@@ -30,45 +71,7 @@ static MODEL_SPECS: LazyLock<HashMap<String, ModelSpec>> = LazyLock::new(|| {
                 hf_model_id: "BiRefNet",
                 default_resolution: (1024, 1024),
                 supports_dynamic_resolution: false,
-                config_builder: || {
-                    let model_config = ModelConfig::new()
-                        .with_task(
-                            TaskConfig::new()
-                                .with_task(Task::DIS5K)
-                                .with_prompt4_loc(Prompt4loc::Dense)
-                                .with_batch_size(4),
-                        )
-                        .with_backbone(BackboneConfig::new().with_backbone(Backbone::SwinV1L))
-                        .with_decoder(
-                            DecoderConfig::new()
-                                .with_ms_supervision(true)
-                                .with_out_ref(true)
-                                .with_dec_ipt(true)
-                                .with_dec_ipt_split(true)
-                                .with_cxt_num(3)
-                                .with_mul_scl_ipt(MulSclIpt::Cat)
-                                .with_dec_att(DecAtt::ASPPDeformable)
-                                .with_squeeze_block(SqueezeBlock::BasicDecBlk(1))
-                                .with_dec_blk(DecBlk::BasicDecBlk)
-                                .with_lat_blk(LatBlk::BasicLatBlk)
-                                .with_dec_channels_inter(DecChannelsInter::Fixed),
-                        )
-                        .with_refine(RefineConfig::new().with_refine(Refine::None));
-
-                    let loss_config = BiRefNetLossConfig::new(PixLossConfig::new(
-                        LossWeightsConfig::new()
-                            .with_bce(30.0 * 1.0)
-                            .with_iou(0.5 * 1.0)
-                            .with_iou_patch(0.5 * 0.0)
-                            .with_mse(150.0 * 0.0)
-                            .with_triplet(3.0 * 0.0)
-                            .with_reg(100.0 * 0.0)
-                            .with_ssim(10.0 * 1.0)
-                            .with_cnt(5.0 * 0.0)
-                            .with_structure(5.0 * 0.0),
-                    ));
-                    BiRefNetConfig::new(model_config, loss_config)
-                },
+                config_builder: || create_birefnet_config(Task::DIS5K),
             },
         ),
         (

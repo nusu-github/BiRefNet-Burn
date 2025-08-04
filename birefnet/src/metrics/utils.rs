@@ -3,7 +3,10 @@
 //! This module provides convenience functions for calculating multiple metrics
 //! at once and other metric-related utilities.
 
-use burn::tensor::{backend::Backend, Tensor};
+use burn::{
+    prelude::*,
+    tensor::{backend::Backend, Tensor},
+};
 
 use crate::metrics::{
     e_measure::calculate_e_measure, f_measure::calculate_f_measure, iou::calculate_iou,
@@ -31,7 +34,7 @@ pub fn calculate_all_metrics<B: Backend>(
     threshold: f32,
 ) -> AllMetricsResult {
     // Ensure predictions and targets have correct shape
-    let [batch_size, _, height, width] = predictions.dims();
+    let [batch_size, _, _, _] = predictions.dims();
 
     // Calculate metrics that work with 4D tensors
     let iou = calculate_iou(predictions.clone(), targets.clone(), threshold);
@@ -48,12 +51,12 @@ pub fn calculate_all_metrics<B: Backend>(
     for b in 0..batch_size {
         let pred_2d: Tensor<B, 2> = predictions
             .clone()
-            .slice([b..b + 1, 0..1, 0..height, 0..width])
+            .slice(s![b..b + 1, 0..1, .., ..])
             .squeeze::<3>(0)
             .squeeze::<2>(0);
         let target_2d: Tensor<B, 2> = targets
             .clone()
-            .slice([b..b + 1, 0..1, 0..height, 0..width])
+            .slice(s![b..b + 1, 0..1, .., ..])
             .squeeze::<3>(0)
             .squeeze::<2>(0);
 

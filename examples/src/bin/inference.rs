@@ -35,6 +35,7 @@ use burn::{
     record::{FullPrecisionSettings, NamedMpkFileRecorder, Recorder},
 };
 use clap::Parser;
+use image::GenericImageView;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -55,8 +56,8 @@ struct Args {
     output: PathBuf,
 
     /// Image size for processing (None for original resolution)
-    #[arg(long)]
-    image_size: Option<u32>,
+    #[arg(long, default_value = "1024")]
+    image_size: u32,
 
     /// Only save the mask (no composite)
     #[arg(long)]
@@ -101,7 +102,7 @@ fn main() -> Result<()> {
     };
 
     // Apply command line overrides
-    config.image_size = args.image_size;
+    config.image_size = Some(args.image_size);
     config.output_path = args.output;
     config.save_mask_only = args.mask_only;
     config.threshold = args.threshold;
@@ -508,37 +509,15 @@ fn process_image_batch(
         return Ok(0);
     }
 
-    // Load all images as batch using ImageUtils
-    let batch_tensor = ImageUtils::load_image_batch(image_paths.to_vec(), device)
-        .with_context(|| "Failed to load image batch")?;
-
-    // Resize batch if needed and image_size is specified
-    let resized_batch = if let Some(target_size) = config.image_size {
-        if batch_tensor.dims()[2] != target_size as usize
-            || batch_tensor.dims()[3] != target_size as usize
-        {
-            // For batch resizing, we need to process each image individually
-            // as ImageUtils::resize_image_file works on individual files
-            let mut individual_tensors = Vec::with_capacity(image_paths.len());
-            for path in image_paths {
-                let tensor = ImageUtils::resize_image_file(
-                    path,
-                    (target_size, target_size),
-                    image::imageops::FilterType::Lanczos3,
-                    device,
-                )?;
-                individual_tensors.push(tensor.squeeze::<3>(0));
-            }
-            Tensor::stack(individual_tensors, 0)
-        } else {
-            batch_tensor
-        }
-    } else {
-        batch_tensor
-    };
+    let mut tensors = Vec::with_capacity(image_paths.len());
+    for path in image_paths {
+        let tensor = load_and_preprocess_image(path, config.image_size, device)?;
+        tensors.push(tensor.squeeze::<3>(0));
+    }
+    let batch_tensor = Tensor::stack(tensors, 0);
 
     // Run batch inference
-    let predictions = model.forward(resized_batch)?;
+    let predictions = model.forward(batch_tensor)?;
 
     // Apply sigmoid to get probabilities
     let sigmoid = Sigmoid::new();
@@ -548,10 +527,7 @@ fn process_image_batch(
     let mut processed_count = 0;
     for (i, path) in image_paths.iter().enumerate() {
         // Extract single prediction from batch
-        let [_, _, height, width] = probabilities.dims();
-        let single_prediction = probabilities
-            .clone()
-            .slice([i..i + 1, 0..1, 0..height, 0..width]);
+        let single_prediction = probabilities.clone().slice(s![i..i + 1, 0..1, .., ..]);
 
         // Postprocess if enabled
         let final_mask = if config.postprocess {
@@ -603,28 +579,17 @@ fn load_and_preprocess_image(
     target_size: Option<u32>,
     device: &SelectedDevice,
 ) -> Result<Tensor<SelectedBackend, 4>> {
-    // Load image using improved ImageUtils
-    let mut tensor = ImageUtils::load_image(image_path, device)
-        .with_context(|| format!("Failed to load image: {}", image_path.display()))?;
+    let mut img = image::open(image_path)
+        .with_context(|| format!("Failed to open image: {}", image_path.display()))?;
 
-    // Resize if target size is specified
-    if let Some(target_size) = target_size {
-        let [_batch, _channels, height, width] = tensor.dims();
-
-        // Resize if needed
-        if height != target_size as usize || width != target_size as usize {
-            // Use image crate for high-quality resizing
-            tensor = ImageUtils::resize_image_file(
-                image_path,
-                (target_size, target_size),
-                image::imageops::FilterType::Lanczos3,
-                device,
-            )
-            .with_context(|| format!("Failed to resize image: {}", image_path.display()))?;
+    if let Some(size) = target_size {
+        let (width, height) = img.dimensions();
+        if width != size || height != size {
+            img = img.resize_exact(size, size, image::imageops::FilterType::Lanczos3);
         }
     }
 
-    Ok(tensor)
+    ImageUtils::dynamic_image_to_tensor(img, device)
 }
 
 /// Get original image dimensions
@@ -639,34 +604,9 @@ fn resize_tensor_to_original_size(
     tensor: Tensor<SelectedBackend, 4>,
     target_height: usize,
     target_width: usize,
-    _device: &SelectedDevice,
+    device: &SelectedDevice,
 ) -> Result<Tensor<SelectedBackend, 4>> {
-    let [_batch_size, _channels, current_height, current_width] = tensor.dims();
-
-    if current_height == target_height && current_width == target_width {
-        return Ok(tensor);
-    }
-
-    // For now, use a simplified nearest neighbor approach
-    // In a more sophisticated implementation, you would use proper bilinear interpolation
-    // Note: This is a placeholder - Burn's interpolate API may vary by version
-
-    // Convert to ImageUtils for resizing (temporary solution)
-    // This approach converts back to image, resizes, then converts back to tensor
-    let dynamic_image = ImageUtils::tensor_to_dynamic_image(tensor, false)
-        .context("Failed to convert tensor to image for resizing")?;
-
-    let resized_image = dynamic_image.resize_exact(
-        target_width as u32,
-        target_height as u32,
-        image::imageops::FilterType::Lanczos3,
-    );
-
-    // Convert back to tensor
-    let resized_tensor = ImageUtils::dynamic_image_to_tensor(resized_image, _device)
-        .context("Failed to convert resized image back to tensor")?;
-
-    Ok(resized_tensor)
+    birefnet_examples::resize_tensor(tensor, target_height, target_width, device)
 }
 
 /// Save mask as image

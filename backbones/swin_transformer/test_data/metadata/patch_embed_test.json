@@ -1,0 +1,20 @@
+{
+  "module": "PatchEmbed",
+  "img_size": 224,
+  "patch_size": 4,
+  "in_chans": 3,
+  "embed_dim": 96,
+  "input_shape": [
+    1,
+    3,
+    224,
+    224
+  ],
+  "output_shape": [
+    1,
+    96,
+    56,
+    56
+  ],
+  "seed": 42
+}
