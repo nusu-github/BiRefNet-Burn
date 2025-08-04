@@ -12,7 +12,8 @@ use burn::prelude::*;
 use core::f64::consts::SQRT_2;
 
 mod blocks;
-pub use blocks::*;
+// Re-export specific block types instead of wildcard
+pub use blocks::{BasicBlock, Bottleneck, Downsample, LayerBlock, ResidualBlock};
 
 // ResNet residual layer block configs
 const RESNET18_BLOCKS: [usize; 4] = [2, 2, 2, 2];

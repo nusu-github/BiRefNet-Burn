@@ -2,7 +2,7 @@
 
 use burn::{
     prelude::*,
-    tensor::{backend::Backend, Tensor},
+    tensor::{backend::Backend, ElementConversion, Tensor},
 };
 
 /// Configuration for MAE Loss.
@@ -15,7 +15,7 @@ pub struct MaeLossConfig {
 /// Mean Absolute Error (L1) loss.
 #[derive(Module, Debug)]
 pub struct MaeLoss<B: Backend> {
-    pub weight: f32,
+    pub weight: f32, // Keep as f32, convert during tensor operations
     _phantom: std::marker::PhantomData<B>,
 }
 
@@ -43,7 +43,7 @@ impl<B: Backend> MaeLoss<B> {
 
     /// Calculate MAE loss.
     pub fn forward(&self, pred: Tensor<B, 4>, target: Tensor<B, 4>) -> Tensor<B, 1> {
-        (pred - target).abs().mean() * self.weight
+        (pred - target).abs().mean() * self.weight.elem::<B::FloatElem>()
     }
 }
 

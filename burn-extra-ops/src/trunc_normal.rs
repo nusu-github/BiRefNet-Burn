@@ -73,7 +73,7 @@ mod tests {
     type TestBackend = Autodiff<NdArray<f32>>;
 
     #[test]
-    fn test_trunc_normal() {
+    fn trunc_normal_valid_params_returns_correct_dimensions() {
         let device = Default::default();
         let tensor = Tensor::<TestBackend, 2>::zeros([3, 4], &device);
         let result = trunc_normal_(tensor, 0.0, 1.0, -2.0, 2.0);
@@ -81,7 +81,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trunc_normal_3d() {
+    fn trunc_normal_3d_tensor_returns_correct_shape() {
         let device = Default::default();
         let tensor = Tensor::<TestBackend, 3>::zeros([2, 3, 4], &device);
         let result = trunc_normal(tensor, 0.0, 1.0, -2.0, 2.0);

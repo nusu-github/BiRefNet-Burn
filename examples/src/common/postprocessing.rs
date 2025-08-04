@@ -31,7 +31,10 @@ pub fn gaussian_blur<B: Backend<FloatElem = f32>>(
     kernel_size: usize,
     _sigma: f32,
 ) -> Tensor<B, 4> {
-    // Simple implementation using average pooling as approximation
+    // TODO: Implement proper Gaussian blur using separable convolution
+    // Current: Placeholder returning input mask unchanged
+    // Should implement: Separable Gaussian kernel with proper convolution
+    // for accurate image smoothing as used in post-processing pipeline
     // In a real implementation, you would use proper Gaussian convolution
     let _padding = kernel_size / 2;
 
@@ -56,7 +59,9 @@ pub const fn morphological_opening<B: Backend>(
     mask: Tensor<B, 4>,
     _kernel_size: usize,
 ) -> Tensor<B, 4> {
-    // Apply erosion followed by dilation operation
+    // TODO: Implement proper morphological opening (erosion + dilation)
+    // Current: Placeholder returning input unchanged
+    // Should implement: Proper structuring element operations for noise removal
     mask
 }
 
@@ -72,7 +77,9 @@ pub const fn morphological_closing<B: Backend>(
     mask: Tensor<B, 4>,
     _kernel_size: usize,
 ) -> Tensor<B, 4> {
-    // Apply dilation followed by erosion operation
+    // TODO: Implement proper morphological closing (dilation + erosion)
+    // Current: Placeholder returning input unchanged
+    // Should implement: Proper structuring element operations for gap filling
     mask
 }
 
@@ -88,7 +95,9 @@ pub const fn remove_small_components<B: Backend>(
     mask: Tensor<B, 4>,
     _min_size: usize,
 ) -> Tensor<B, 4> {
-    // Remove connected components smaller than minimum size
+    // TODO: Implement connected component analysis and filtering
+    // Current: Placeholder returning input unchanged
+    // Should implement: Flood fill or union-find for component labeling and size filtering
     mask
 }
 
@@ -100,7 +109,9 @@ pub const fn remove_small_components<B: Backend>(
 /// # Returns
 /// Mask with holes filled
 pub const fn fill_holes<B: Backend>(mask: Tensor<B, 4>) -> Tensor<B, 4> {
-    // Fill interior holes in binary mask
+    // TODO: Implement hole filling using morphological reconstruction
+    // Current: Placeholder returning input unchanged
+    // Should implement: Flood fill from border or morphological reconstruction
     mask
 }
 
@@ -188,8 +199,9 @@ pub fn resize_tensor<B: Backend>(
     target_height: usize,
     target_width: usize,
 ) -> Tensor<B, 4> {
-    // This would use proper interpolation in a real implementation
-    // For now, we'll use a simple placeholder
+    // TODO: Implement proper tensor resizing with interpolation
+    // Current: Placeholder creating zeros tensor
+    // Should implement: Bilinear or bicubic interpolation for accurate resizing
     let [n, c, _h, _w] = tensor.dims();
 
     // Create placeholder tensor with target dimensions

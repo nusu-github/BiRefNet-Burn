@@ -39,7 +39,7 @@ mod tests {
     type TestBackend = Autodiff<NdArray<f32>>;
 
     #[test]
-    fn test_identity() {
+    fn identity_forward_input_unchanged() {
         let device = Default::default();
         let identity = Identity::<TestBackend>::new();
         let input = Tensor::<TestBackend, 3>::random(

@@ -21,7 +21,7 @@ pub struct PatchIoULossConfig {
 #[derive(Module, Debug)]
 pub struct PatchIoULoss<B: Backend> {
     pub patch_size: usize,
-    pub epsilon: f32,
+    pub epsilon: f32, // Keep as f32, convert during tensor operations
     pub base_iou: CombinedLoss<B>,
     unfolder: Unfold4d,
 }

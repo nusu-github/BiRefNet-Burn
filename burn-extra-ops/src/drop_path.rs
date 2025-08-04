@@ -46,6 +46,7 @@ impl<B: Backend> DropPath<B> {
     ///
     /// If not in training mode or `drop_prob` is 0, it returns the input tensor unchanged.
     /// Otherwise, it randomly zeros out entire examples in the batch with probability `drop_prob`.
+    /// The mask is generated only for the batch dimension and broadcasted to all other dimensions.
     ///
     /// # Shapes
     /// - input: `[batch_size, ..., channels]`
@@ -55,9 +56,16 @@ impl<B: Backend> DropPath<B> {
             return x;
         }
         let keep_prob = 1.0 - self.drop_prob;
-        let other_dims = vec![1; D - 1];
-        let shape: Vec<_> = core::iter::once(x.dims()[0]).chain(other_dims).collect();
-        let random_tensor = Tensor::random(shape, Distribution::Bernoulli(keep_prob), &x.device());
+        let batch_size = x.dims()[0];
+
+        // Create mask with shape [batch_size, 1, 1, ...] for proper broadcasting
+        // This matches timm's implementation where the mask is applied per batch item
+        let mut mask_shape = [1; D];
+        mask_shape[0] = batch_size;
+
+        let random_tensor =
+            Tensor::random(mask_shape, Distribution::Bernoulli(keep_prob), &x.device());
+
         if self.scale_by_keep {
             x * random_tensor / keep_prob
         } else {

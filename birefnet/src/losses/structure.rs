@@ -6,7 +6,7 @@
 use burn::{
     nn::{pool::AvgPool2dConfig, PaddingConfig2d},
     prelude::*,
-    tensor::{backend::Backend, Tensor},
+    tensor::{backend::Backend, ElementConversion, Tensor},
 };
 
 /// Configuration for Structure Loss function.
@@ -16,10 +16,6 @@ pub struct StructureLossConfig {
     pub weight: f32,
 }
 
-/// Structure loss implementation for edge-aware training.
-///
-/// This is a placeholder for the structure loss used in the original implementation.
-/// The full implementation would include SSIM and other structural similarities.
 #[derive(Module, Debug)]
 pub struct StructureLoss<B: Backend> {
     pub weight: f32,
@@ -27,7 +23,6 @@ pub struct StructureLoss<B: Backend> {
 }
 
 impl StructureLossConfig {
-    /// Initialize a new structure loss function with the given configuration.
     pub const fn init<B: Backend>(&self) -> StructureLoss<B> {
         StructureLoss {
             weight: self.weight,
@@ -63,7 +58,7 @@ impl<B: Backend> StructureLoss<B> {
     /// Structure loss tensor
     pub fn forward(&self, pred: Tensor<B, 4>, target: Tensor<B, 4>) -> Tensor<B, 1> {
         // Calculate edge-aware weight using average pooling
-        let [_n, c, h, w] = target.dims();
+        let [_n, _c, _h, _w] = target.dims();
 
         // Create average pooling layer with kernel size 31
         let avg_pool = AvgPool2dConfig::new([31, 31])
@@ -77,13 +72,17 @@ impl<B: Backend> StructureLoss<B> {
         // Calculate edge weight: weit = 1 + 5 * |avg_pool(target) - target|
         let weit = (pooled - target.clone())
             .abs()
-            .mul_scalar(5.0)
-            .add_scalar(1.0);
+            .mul_scalar(5.0.elem::<B::FloatElem>())
+            .add_scalar(1.0.elem::<B::FloatElem>());
 
         // Weighted BCE loss
         // Using the numerically stable formulation: `max(x, 0) - x*y + log(1 + exp(-abs(x)))`
-        let bce_term1 = pred.clone().clamp_min(0.0) - pred.clone() * target.clone();
-        let bce_term2 = (-pred.clone().abs()).exp().add_scalar(1.0).log();
+        let bce_term1 =
+            pred.clone().clamp_min(0.0.elem::<B::FloatElem>()) - pred.clone() * target.clone();
+        let bce_term2 = (-pred.clone().abs())
+            .exp()
+            .add_scalar(1.0.elem::<B::FloatElem>())
+            .log();
         let wbce = (bce_term1 + bce_term2) * weit.clone();
         let wbce_loss = wbce.sum_dim(2).sum_dim(2) / weit.clone().sum_dim(2).sum_dim(2);
 
@@ -93,11 +92,12 @@ impl<B: Backend> StructureLoss<B> {
             .sum_dim(2)
             .sum_dim(2);
         let union = ((pred_sigmoid + target) * weit).sum_dim(2).sum_dim(2);
-        let wiou = (inter.clone().add_scalar(1.0) / (union - inter).add_scalar(1.0))
-            .neg()
-            .add_scalar(1.0);
+        let wiou = (inter.clone().add_scalar(1.0.elem::<B::FloatElem>())
+            / (union - inter).add_scalar(1.0.elem::<B::FloatElem>()))
+        .neg()
+        .add_scalar(1.0.elem::<B::FloatElem>());
 
         // Combine losses
-        (wbce_loss + wiou).mean() * self.weight
+        (wbce_loss + wiou).mean() * self.weight.elem::<B::FloatElem>()
     }
 }

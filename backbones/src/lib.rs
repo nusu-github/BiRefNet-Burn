@@ -56,10 +56,7 @@ impl<B: Backend> Backbone<B> for SwinTransformer<B> {
     fn forward(&self, input: Tensor<B, 4>) -> [Tensor<B, 4>; 4] {
         let input_dims = input.dims();
         self.forward(input).unwrap_or_else(|err| {
-            panic!(
-                "SwinTransformer forward pass failed with input shape {:?}: {}",
-                input_dims, err
-            )
+            panic!("SwinTransformer forward pass failed with input shape {input_dims:?}: {err}")
         })
     }
 
@@ -169,8 +166,7 @@ impl<B: Backend> Backbone<B> for BackboneWrapper<B> {
                 let input_dims = input.dims();
                 backbone.forward(input).unwrap_or_else(|err| {
                     panic!(
-                        "SwinTransformer backbone forward pass failed with input shape {:?}: {}",
-                        input_dims, err
+                        "SwinTransformer backbone forward pass failed with input shape {input_dims:?}: {err}"
                     )
                 })
             }
@@ -188,7 +184,25 @@ impl<B: Backend> Backbone<B> for BackboneWrapper<B> {
     }
 }
 
-/// Factory function to create backbones
+/// Factory function to create backbone architectures.
+///
+/// # Arguments
+/// * `backbone_type` - The type and variant of backbone to create
+/// * `device` - The device on which to initialize the backbone
+///
+/// # Returns
+/// A wrapped backbone instance implementing the unified `Backbone` trait
+///
+/// # Panics
+/// * When Swin Transformer initialization fails due to invalid configuration parameters
+/// * When PvtV2 initialization fails due to invalid configuration parameters  
+/// * When the device is not compatible with the selected backend
+///
+/// # Examples
+/// ```ignore
+/// let backbone = create_backbone(BackboneType::ResNet(ResNetVariant::ResNet50), &device);
+/// let features = backbone.forward(input_tensor);
+/// ```
 pub fn create_backbone<B: Backend>(
     backbone_type: BackboneType,
     device: &Device<B>,
@@ -231,10 +245,7 @@ pub fn create_backbone<B: Backend>(
                     .with_num_heads([6, 12, 24, 48]),
             };
             let backbone = config.init(device).unwrap_or_else(|err| {
-                panic!(
-                    "Failed to initialize SwinTransformer with variant {:?}: {}",
-                    variant, err
-                )
+                panic!("Failed to initialize SwinTransformer with variant {variant:?}: {err}")
             });
             BackboneWrapper::SwinTransformer(backbone)
         }

@@ -8,7 +8,7 @@
 //!
 //! The PVTv2 consists of several key components:
 //! - **OverlapPatchEmbed**: Converts input images into overlapping patch embeddings.
-//! - **Attention**: Spatially-reductive attention mechanism.
+//! - **Attention**: Spatially reductive attention mechanism.
 //! - **Mlp**: Feed-forward network with a depth-wise convolution.
 //! - **Block**: The main transformer block combining attention and MLP.
 //! - **PyramidVisionTransformerImpr**: The full model with 4 stages.
@@ -233,7 +233,7 @@ impl<B: Backend> Attention<B> {
         Self {
             dim,
             num_heads,
-            scale: qk_scale.unwrap_or((head_dim as f64).powf(-0.5)),
+            scale: qk_scale.unwrap_or_else(|| (head_dim as f64).powf(-0.5)),
             q,
             kv,
             attn_drop: DropoutConfig::new(attn_drop).init(),
@@ -265,8 +265,8 @@ impl<B: Backend> Attention<B> {
                 .reshape([b, new_h * new_w, 2, self.num_heads, c / self.num_heads])
                 .permute([2, 0, 3, 1, 4]);
             (
-                kv.clone().slice([0..1]).squeeze(0),
-                kv.slice([1..2]).squeeze(0),
+                kv.clone().slice([0; 1]).squeeze(0),
+                kv.slice([1; 2]).squeeze(0),
             )
         } else {
             let kv = self
@@ -275,8 +275,8 @@ impl<B: Backend> Attention<B> {
                 .reshape([b, n, 2, self.num_heads, c / self.num_heads])
                 .permute([2, 0, 3, 1, 4]);
             (
-                kv.clone().slice([0..1]).squeeze(0),
-                kv.slice([1..2]).squeeze(0),
+                kv.clone().slice([0; 1]).squeeze(0),
+                kv.slice([1; 2]).squeeze(0),
             )
         };
 

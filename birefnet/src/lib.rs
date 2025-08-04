@@ -23,7 +23,6 @@
 mod config; // Now organized as a module with core.rs and enums.rs
 mod error;
 mod models;
-// mod special; // Moved to burn-extra-ops crate
 
 #[cfg(feature = "train")]
 mod dataset;
@@ -40,7 +39,12 @@ mod training;
 #[cfg(test)]
 mod tests;
 
-pub use config::*;
+// Re-export specific configuration types instead of wildcard
+pub use config::{
+    Backbone, BackboneConfig, DecAtt, DecBlk, DecChannelsInter, DecoderConfig, LatBlk, ModelConfig,
+    MulSclIpt, Optimizer, PathConfig, PreprocMethods, Prompt4loc, Refine, RefineConfig,
+    SqueezeBlock, Task, TaskConfig,
+};
 pub use error::{BiRefNetError, BiRefNetResult};
 pub use models::birefnet::{BiRefNet, BiRefNetConfig};
 
@@ -49,16 +53,18 @@ pub use dataset::{BiRefNetBatch, BiRefNetBatcher, BiRefNetDataset, BiRefNetItem}
 
 #[cfg(feature = "train")]
 pub use losses::{
-    ClsLoss, ClsLossConfig, CombinedLoss, CombinedLossConfig, ContourLoss, ContourLossConfig,
-    MaeLoss, MaeLossConfig, MseLoss, MseLossConfig, MultiScaleLoss, MultiScaleLossConfig,
-    PatchIoULoss, PatchIoULossConfig, SSIMLoss, SSIMLossConfig, StructureLoss, StructureLossConfig,
-    ThrRegLoss, ThrRegLossConfig,
+    BiRefNetLossConfig, ClsLoss, ClsLossConfig, CombinedLoss, CombinedLossConfig, ContourLoss,
+    ContourLossConfig, LossWeightsConfig, MaeLoss, MaeLossConfig, MseLoss, MseLossConfig,
+    MultiScaleLoss, MultiScaleLossConfig, PatchIoULoss, PatchIoULossConfig, PixLoss, PixLossConfig,
+    SSIMLoss, SSIMLossConfig, StructureLoss, StructureLossConfig, ThrRegLoss, ThrRegLossConfig,
 };
 
 #[cfg(feature = "train")]
 pub use metrics::{
-    calculate_all_metrics, calculate_f_measure, calculate_iou, calculate_mae, FMeasureMetric,
-    IoUMetric, LossMetric, MAEMetric, MetricsAggregator,
+    calculate_all_metrics, calculate_e_measure, calculate_f_measure, calculate_iou, calculate_mae,
+    calculate_mse, calculate_s_measure, calculate_weighted_f_measure, AllMetricsResult,
+    EMeasureMetric, FMeasureMetric, IoUMetric, LossMetric, MAEMetric, MSEMetric, MetricsAggregator,
+    SMeasureMetric, WeightedFMeasureMetric,
 };
 
 #[cfg(feature = "train")]

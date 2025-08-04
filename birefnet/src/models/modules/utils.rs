@@ -1,6 +1,5 @@
 use burn::{
     nn::{BatchNorm, BatchNormConfig, Gelu, LayerNorm, LayerNormConfig, Relu},
-    optim::{Adam, AdamW},
     prelude::*,
     tensor::activation::silu,
 };
@@ -11,11 +10,6 @@ use super::{
 };
 use crate::error::{BiRefNetError, BiRefNetResult};
 use burn_extra_ops::Identity;
-
-pub enum OptimizerEnum {
-    Adam(Adam),
-    AdamW(AdamW),
-}
 
 #[derive(Module, Debug)]
 pub enum DecAttEnum<B: Backend> {
@@ -41,6 +35,12 @@ pub enum NormLayerEnum<B: Backend> {
 #[derive(Module, Debug, Clone)]
 pub struct ChannelsFirst;
 
+impl Default for ChannelsFirst {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ChannelsFirst {
     pub const fn new() -> Self {
         Self {}
@@ -52,6 +52,12 @@ impl ChannelsFirst {
 
 #[derive(Module, Debug, Clone)]
 pub struct ChannelsLast;
+
+impl Default for ChannelsLast {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ChannelsLast {
     pub const fn new() -> Self {
@@ -98,7 +104,7 @@ pub fn build_norm_layer<B: Backend>(
             Ok(layer)
         }
         _ => Err(BiRefNetError::UnsupportedSqueezeBlock {
-            block_type: format!("Unsupported norm layer: {}", norm_layer),
+            block_type: format!("Unsupported norm layer: {norm_layer}"),
         }),
     }
 }
@@ -112,6 +118,12 @@ pub enum ActLayerEnum {
 
 #[derive(Module, Debug, Clone)]
 pub struct Silu;
+
+impl Default for Silu {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Silu {
     pub const fn new() -> Self {
@@ -128,7 +140,7 @@ pub fn build_act_layer(act_layer: &str) -> BiRefNetResult<ActLayerEnum> {
         "SiLU" => Ok(ActLayerEnum::SiLU(Silu::new())),
         "GELU" => Ok(ActLayerEnum::GELU(Gelu::new())),
         _ => Err(BiRefNetError::UnsupportedSqueezeBlock {
-            block_type: format!("Unsupported activation layer: {}", act_layer),
+            block_type: format!("Unsupported activation layer: {act_layer}"),
         }),
     }
 }

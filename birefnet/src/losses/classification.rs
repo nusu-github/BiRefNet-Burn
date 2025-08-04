@@ -3,7 +3,7 @@
 use burn::{
     nn::loss::{CrossEntropyLoss, CrossEntropyLossConfig},
     prelude::*,
-    tensor::{backend::Backend, Int, Tensor},
+    tensor::{backend::Backend, Tensor},
 };
 
 /// Configuration for Classification Loss.

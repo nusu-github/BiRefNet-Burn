@@ -43,7 +43,7 @@ use burn::{
         ops::{InterpolateMode, InterpolateOptions},
     },
 };
-use burn_extra_ops::{trunc_normal, DropPath, DropPathConfig, Slice};
+use burn_extra_ops::{trunc_normal, DropPath, DropPathConfig};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -333,7 +333,9 @@ impl WindowAttentionConfig {
             dim: self.dim,
             window_size: self.window_size,
             num_heads: self.num_heads,
-            scale: self.qk_scale.unwrap_or((head_dim as f64).powf(-0.5)),
+            scale: self
+                .qk_scale
+                .unwrap_or_else(|| (head_dim as f64).powf(-0.5)),
             relative_position_bias_table,
             relative_position_index,
             qkv,
@@ -390,7 +392,7 @@ impl<B: Backend> WindowAttention<B> {
     /// # Arguments
     /// - `x`: Input tensor of shape `[num_windows * batch_size, window_size * window_size, channels]`
     /// - `mask`: Optional attention mask of shape `[num_windows, window_size * window_size, window_size * window_size]`
-    ///          Used for shifted window attention to mask out invalid cross-window connections
+    ///   Used for shifted window attention to mask out invalid cross-window connections
     ///
     /// # Returns
     /// Output tensor of shape `[num_windows * batch_size, window_size * window_size, channels]`
@@ -929,39 +931,29 @@ impl<B: Backend> BasicLayer<B> {
         let wp = ((w as f64) / self.window_size as f64).ceil() as usize * self.window_size;
         let mut img_mask: Tensor<B, 4> = Tensor::zeros([1, hp, wp, 1], &device);
         let h_slices = [
-            Slice::new(Some(0), Some(-(self.window_size as isize))),
-            Slice::new(
-                Some(-(self.window_size as isize)),
-                Some(-(self.shift_size as isize)),
-            ),
-            Slice::new(Some(-(self.shift_size as isize)), None),
+            0..hp.saturating_sub(self.window_size),
+            hp.saturating_sub(self.window_size)..hp.saturating_sub(self.shift_size),
+            hp.saturating_sub(self.shift_size)..hp,
         ];
         let w_slices = [
-            Slice::new(Some(0), Some(-(self.window_size as isize))),
-            Slice::new(
-                Some(-(self.window_size as isize)),
-                Some(-(self.shift_size as isize)),
-            ),
-            Slice::new(Some(-(self.shift_size as isize)), None),
+            0..wp.saturating_sub(self.window_size),
+            wp.saturating_sub(self.window_size)..wp.saturating_sub(self.shift_size),
+            wp.saturating_sub(self.shift_size)..wp,
         ];
+
         let mut cnt = 0;
-        let [d1, d2, d3, d4] = img_mask.dims();
-        for h in &h_slices {
-            for w in &w_slices {
-                if h.slice_length(d2) > 0 && w.slice_length(d3) > 0 {
-                    img_mask = img_mask.slice_assign(
-                        [0..d1, h.to_range(d2), w.to_range(d3), 0..d4],
-                        Tensor::full(
-                            [d1, h.slice_length(d2), w.slice_length(d3), d4],
-                            cnt,
-                            &device,
-                        ),
-                    );
-                };
-                cnt += 1;
+        for h_range in &h_slices {
+            for w_range in &w_slices {
+                if !h_range.is_empty() && !w_range.is_empty() {
+                    // img_mask[:, h, w, :] = cnt
+                    let value_tensor =
+                        Tensor::<B, 4>::full([1, h_range.len(), w_range.len(), 1], cnt, &device);
+                    img_mask = img_mask
+                        .slice_assign([0..1, h_range.clone(), w_range.clone(), 0..1], value_tensor);
+                    cnt += 1;
+                }
             }
         }
-
         let mask_windows = window_partition(img_mask, self.window_size);
         let mask_num_windows = mask_windows.dims()[0];
         let mask_windows =
@@ -1234,10 +1226,7 @@ impl SwinTransformerConfig {
             .with_qk_scale(self.qk_scale)
             .with_drop(self.drop_rate)
             .with_attn_drop(self.attn_drop_rate)
-            .with_drop_path(
-                dpr[Slice::new(Some(start as isize), Some(end as isize)).to_range(dpr.len())]
-                    .to_owned(),
-            )
+            .with_drop_path(dpr[start..end].to_owned())
             .with_downsample(i_layer < num_layers - 1)
             .init(device);
             layers.push(layer);
@@ -1305,7 +1294,10 @@ impl<B: Backend> SwinTransformer<B> {
             }
         };
 
-        let mut outs = Vec::new();
+        // Pre-allocate output vector with known capacity
+        let output_layers = self.out_indices.len();
+        let mut outs = Vec::with_capacity(output_layers);
+
         let x: Tensor<B, 3> = x.flatten(2, 3).swap_dims(1, 2);
         let x = self.pos_drop.forward(x);
         let mut x = x;
@@ -1332,6 +1324,25 @@ impl<B: Backend> SwinTransformer<B> {
     }
 }
 
+/// Creates a Swin Transformer Tiny (Swin-T) model.
+///
+/// # Architecture Parameters
+/// * Embedding dimension: 96
+/// * Layer depths: [2, 2, 6, 2]
+/// * Number of attention heads: [3, 6, 12, 24]
+/// * Window size: 7x7
+///
+/// # Arguments
+/// * `device` - The device on which to initialize the model
+///
+/// # Returns
+/// A result containing the initialized Swin-T model or an error
+///
+/// # Errors  
+/// Returns `SwinTransformerError::ModelInitializationFailed` when:
+/// * Device memory allocation fails
+/// * Invalid tensor operations during weight initialization
+/// * Backend-specific initialization errors occur
 pub fn swin_v1_t<B: Backend>(device: &Device<B>) -> SwinTransformerResult<SwinTransformer<B>> {
     SwinTransformerConfig::new()
         .with_embed_dim(96)
@@ -1341,6 +1352,22 @@ pub fn swin_v1_t<B: Backend>(device: &Device<B>) -> SwinTransformerResult<SwinTr
         .init(device)
 }
 
+/// Creates a Swin Transformer Small (Swin-S) model.
+///
+/// # Architecture Parameters
+/// * Embedding dimension: 96
+/// * Layer depths: [2, 2, 18, 2] (deeper than Swin-T)
+/// * Number of attention heads: [3, 6, 12, 24]
+/// * Window size: 7x7
+///
+/// # Arguments
+/// * `device` - The device on which to initialize the model
+///
+/// # Returns
+/// A result containing the initialized Swin-S model or an error
+///
+/// # Errors  
+/// Returns `SwinTransformerError::ModelInitializationFailed` when initialization fails
 pub fn swin_v1_s<B: Backend>(device: &Device<B>) -> SwinTransformerResult<SwinTransformer<B>> {
     SwinTransformerConfig::new()
         .with_embed_dim(96)

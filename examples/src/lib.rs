@@ -41,17 +41,3 @@ pub use birefnet_burn::{
     calculate_all_metrics, calculate_f_measure, calculate_iou, calculate_mae, MetricsAggregator,
 };
 pub use config::{ConverterConfig, DatasetTestConfig, InferenceConfig, TrainingConfig};
-
-fn main() {
-    println!("BiRefNet Examples");
-    println!("=================");
-    println!();
-    println!("Available example binaries:");
-    println!("  - train: Training pipeline");
-    println!("  - inference: Model inference");
-    println!("  - dataset_test: Dataset testing");
-    println!("  - converter: Model conversion");
-    println!();
-    println!("Use `cargo run --bin <binary_name>` to run a specific example.");
-    println!("Use `cargo run --bin <binary_name> -- --help` for usage information.");
-}

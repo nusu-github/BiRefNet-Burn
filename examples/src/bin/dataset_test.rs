@@ -120,7 +120,7 @@ fn create_dataset(
     device: &SelectedDevice,
 ) -> Result<BiRefNetDataset<SelectedBackend>> {
     let mut model_config = ModelConfig::new();
-    model_config.path.data_root_dir = config.dataset_path.clone();
+    model_config.path.data_root_dir = config.dataset_path.to_string_lossy().to_string();
 
     let dataset = BiRefNetDataset::<SelectedBackend>::new(&model_config, split, device)
         .context("Failed to create dataset")?;
@@ -144,7 +144,7 @@ fn test_individual_samples(
     for i in 0..num_samples {
         let sample = dataset.get(i).context("Failed to get sample")?;
 
-        println!("Sample {}:", i);
+        println!("Sample {i}:");
         println!("  Image shape: {:?}", sample.image.dims());
         println!("  Mask shape: {:?}", sample.mask.dims());
 
@@ -194,7 +194,7 @@ fn test_batch_loading(
     for batch in dataloader.iter() {
         batch_count += 1;
 
-        println!("Batch {}:", batch_count);
+        println!("Batch {batch_count}:");
         println!("  Images shape: {:?}", batch.images.dims());
         println!("  Masks shape: {:?}", batch.masks.dims());
 
@@ -207,21 +207,15 @@ fn test_batch_loading(
         }
 
         if channels != 3 {
-            println!(
-                "  WARNING: Expected 3 channels for images, got {}",
-                channels
-            );
+            println!("  WARNING: Expected 3 channels for images, got {channels}");
         }
 
         if mask_channels != 1 {
-            println!(
-                "  WARNING: Expected 1 channel for masks, got {}",
-                mask_channels
-            );
+            println!("  WARNING: Expected 1 channel for masks, got {mask_channels}");
         }
 
         if height != width {
-            println!("  WARNING: Non-square images: {}x{}", height, width);
+            println!("  WARNING: Non-square images: {height}x{width}");
         }
 
         if batch_count >= max_batches {
@@ -229,10 +223,7 @@ fn test_batch_loading(
         }
     }
 
-    println!(
-        "Batch loading test completed ({} batches tested)",
-        batch_count
-    );
+    println!("Batch loading test completed ({batch_count} batches tested)");
     Ok(())
 }
 
@@ -258,7 +249,7 @@ fn test_data_statistics(
         mask_stats.add(mask_min, mask_max, mask_mean);
     }
 
-    println!("Image statistics across {} samples:", num_samples);
+    println!("Image statistics across {num_samples} samples:");
     println!(
         "  Min: {:.4} (avg: {:.4})",
         image_stats.min_val,
@@ -271,7 +262,7 @@ fn test_data_statistics(
     );
     println!("  Mean: avg={:.4}", image_stats.avg_mean());
 
-    println!("Mask statistics across {} samples:", num_samples);
+    println!("Mask statistics across {num_samples} samples:");
     println!(
         "  Min: {:.4} (avg: {:.4})",
         mask_stats.min_val,

@@ -5,7 +5,7 @@
 //! This approach avoids the inefficiencies of reading files multiple times and
 //! provides a clear framework for adding data augmentation.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use burn::data::{dataloader::batcher::Batcher, dataset::Dataset};
 use burn::tensor::{backend::Backend, Tensor, TensorData};
@@ -61,11 +61,18 @@ impl<B: Backend> BiRefNetBatcher<B> {
 
 impl<B: Backend> Batcher<B, BiRefNetItem<B>, BiRefNetBatch<B>> for BiRefNetBatcher<B> {
     fn batch(&self, items: Vec<BiRefNetItem<B>>, _device: &B::Device) -> BiRefNetBatch<B> {
-        // Extract and collect image tensors
-        let images: Vec<Tensor<B, 3>> = items.iter().map(|item| item.image.clone()).collect();
+        let batch_size = items.len();
 
-        // Extract and collect mask tensors
-        let masks: Vec<Tensor<B, 3>> = items.iter().map(|item| item.mask.clone()).collect();
+        // Pre-allocate vectors with known capacity to avoid reallocations
+        let mut images = Vec::with_capacity(batch_size);
+        let mut masks = Vec::with_capacity(batch_size);
+
+        // Extract tensors directly into pre-allocated vectors
+        // Using into_iter() to avoid cloning when possible
+        for item in items {
+            images.push(item.image);
+            masks.push(item.mask);
+        }
 
         // Stack tensors along the batch dimension (dim 0) to create [B, C, H, W] tensors
         let images = Tensor::stack(images, 0);
@@ -153,8 +160,14 @@ impl<B: Backend> BiRefNetDataset<B> {
             _ => split, // Use as-is for custom splits
         };
 
-        let image_root = dataset_root.join(task_name).join(split_dir).join("im");
-        let mask_root = dataset_root.join(task_name).join(split_dir).join("gt");
+        let image_root = Path::new(dataset_root)
+            .join(task_name)
+            .join(split_dir)
+            .join("im");
+        let mask_root = Path::new(dataset_root)
+            .join(task_name)
+            .join(split_dir)
+            .join("gt");
 
         // Check if directories exist
         if !image_root.exists() {
@@ -174,12 +187,12 @@ impl<B: Backend> BiRefNetDataset<B> {
         // Read image directory and find corresponding masks
         let image_dir =
             std::fs::read_dir(&image_root).map_err(|e| BiRefNetError::DatasetError {
-                message: format!("Failed to read image directory: {}", e),
+                message: format!("Failed to read image directory: {e}"),
             })?;
 
         for entry in image_dir {
             let entry = entry.map_err(|e| BiRefNetError::DatasetError {
-                message: format!("Failed to read directory entry: {}", e),
+                message: format!("Failed to read directory entry: {e}"),
             })?;
 
             let image_path = entry.path();
@@ -196,7 +209,7 @@ impl<B: Backend> BiRefNetDataset<B> {
                 let mut mask_found = false;
 
                 for ext in &valid_extensions {
-                    let mask_path = mask_root.join(format!("{}{}", stem, ext));
+                    let mask_path = mask_root.join(format!("{stem}{ext}"));
                     if mask_path.exists() {
                         items.push((image_path.clone(), mask_path));
                         mask_found = true;
@@ -319,9 +332,9 @@ mod tests {
 
     #[test]
     fn test_collect_dataset_items() {
-        // This test would need a mock dataset structure
+        // TODO: This test would need a mock dataset structure
         // For now, we'll just test the basic functionality
-        let config = ModelConfig::new();
+        let _config = ModelConfig::new();
         // This would fail without actual dataset files, but shows the structure
         // let items = BiRefNetDataset::<TestBackend>::collect_dataset_items(&config, "train");
         // assert!(items.is_ok());

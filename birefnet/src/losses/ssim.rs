@@ -4,7 +4,7 @@ use burn::{
     module::Param,
     nn::{conv::Conv2dConfig, PaddingConfig2d},
     prelude::*,
-    tensor::{backend::Backend, Tensor},
+    tensor::{backend::Backend, ElementConversion, Tensor},
 };
 
 /// Configuration for SSIM Loss function.
@@ -95,8 +95,8 @@ impl<B: Backend> SSIMLoss<B> {
         let window = self.create_window(channels, &device);
 
         // Constants for numerical stability
-        let c1 = 0.01_f32.powi(2);
-        let c2 = 0.03_f32.powi(2);
+        let c1 = 0.01_f32.powi(2).elem::<B::FloatElem>();
+        let c2 = 0.03_f32.powi(2).elem::<B::FloatElem>();
 
         let padding = self.window_size / 2;
 
@@ -111,22 +111,25 @@ impl<B: Backend> SSIMLoss<B> {
         let mu1 = conv.forward(img1.clone());
         let mu2 = conv.forward(img2.clone());
 
-        let mu1_sq = mu1.clone().powf_scalar(2.0);
-        let mu2_sq = mu2.clone().powf_scalar(2.0);
+        let mu1_sq = mu1.clone().powf_scalar(2.0.elem::<B::FloatElem>());
+        let mu2_sq = mu2.clone().powf_scalar(2.0.elem::<B::FloatElem>());
         let mu1_mu2 = mu1 * mu2;
 
-        let sigma1_sq = conv.forward(img1.clone().powf_scalar(2.0)) - mu1_sq.clone();
-        let sigma2_sq = conv.forward(img2.clone().powf_scalar(2.0)) - mu2_sq.clone();
+        let sigma1_sq =
+            conv.forward(img1.clone().powf_scalar(2.0.elem::<B::FloatElem>())) - mu1_sq.clone();
+        let sigma2_sq =
+            conv.forward(img2.clone().powf_scalar(2.0.elem::<B::FloatElem>())) - mu2_sq.clone();
         let sigma12 = conv.forward(img1 * img2) - mu1_mu2.clone();
 
         // SSIM calculation
-        let ssim_n = (mu1_mu2 * 2.0 + c1) * (sigma12 * 2.0 + c2);
+        let ssim_n = (mu1_mu2 * 2.0.elem::<B::FloatElem>() + c1)
+            * (sigma12 * 2.0.elem::<B::FloatElem>() + c2);
         let ssim_d = (mu1_sq + mu2_sq + c1) * (sigma1_sq + sigma2_sq + c2);
         let ssim = ssim_n / ssim_d;
 
         // Return 1 - SSIM as loss
         let one = Tensor::ones_like(&ssim);
-        let loss = one - (ssim + 1.0) / 2.0;
+        let loss = one - (ssim + 1.0.elem::<B::FloatElem>()) / 2.0.elem::<B::FloatElem>();
 
         if self.size_average {
             loss.mean()

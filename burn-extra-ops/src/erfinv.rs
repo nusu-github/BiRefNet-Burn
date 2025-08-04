@@ -9,12 +9,13 @@
 //! Newton's method to refine the result to full accuracy.
 
 use burn::prelude::*;
+use core::f64::consts::PI;
 
-const CENTRAL_RANGE: f32 = 0.7;
-const A: [f32; 4] = [0.886_226_9, -1.645_349_6, 0.914_624_87, -0.140_543_33];
-const B: [f32; 4] = [-2.118_377_7, 1.442_710_5, -0.329_097_5, 0.012_229_801];
-const C: [f32; 4] = [-1.970_840_5, -1.624_906_5, 3.429_567_8, 1.641_345_3];
-const D_COEFF: [f32; 2] = [3.543_889_3, 1.637_067_8];
+const CENTRAL_RANGE: f64 = 0.7;
+const A: [f64; 4] = [0.886226899, -1.645349621, 0.914624893, -0.140543331];
+const B: [f64; 4] = [-2.118377725, 1.442710462, -0.329097515, 0.012229801];
+const C: [f64; 4] = [-1.970840454, -1.624906493, 3.429567803, 1.641345311];
+const D_COEFF: [f64; 2] = [3.543889200, 1.637067800];
 
 /// A trait for calculating the inverse error function on a tensor.
 pub trait Erfinv {
@@ -31,28 +32,40 @@ impl<B: Backend, const D: usize> Erfinv for Tensor<B, D> {
 /// The core implementation of the inverse error function.
 fn erfinv_<B: Backend, const D: usize>(y: Tensor<B, D>) -> Tensor<B, D> {
     let y_abs = y.clone().abs();
-    let mut result = y.zeros_like() + f32::NAN;
+    let mut result = y.zeros_like();
 
-    // Handle edge cases
-    let mask = y_abs.clone().lower_equal_elem(1.0);
-    let inf_mask = y_abs.clone().equal_elem(1.0);
-    result = result.mask_fill(inf_mask, f32::INFINITY);
+    // Handle edge cases: |y| >= 1
+    let ge_one_mask = y_abs.clone().greater_equal_elem(1.0);
+    result = result.mask_fill(ge_one_mask, f64::INFINITY);
 
-    // Compute for central range
+    // Main computation for |y| < 1
+    let lt_one_mask = y_abs.clone().lower_elem(1.0);
+
+    // Compute for central range: |y| <= 0.7
     let central_mask = y_abs
         .clone()
         .lower_equal_elem(CENTRAL_RANGE)
-        .equal(mask.clone());
+        .equal(lt_one_mask.clone());
     let central_result = compute_central_range(y.clone());
     result = result.mask_where(central_mask, central_result);
 
-    // Compute for outer range
-    let outer_mask = y_abs.greater_elem(CENTRAL_RANGE).equal(mask);
+    // Compute for outer range: 0.7 < |y| < 1
+    let outer_mask = y_abs.clone().greater_elem(CENTRAL_RANGE).equal(lt_one_mask);
     let outer_result = compute_outer_range(y.clone());
     result = result.mask_where(outer_mask, outer_result);
 
-    // Apply Newton-Raphson correction
-    apply_newton_raphson(result, y)
+    // Apply Newton-Raphson correction only for |y| < 1
+    let lt_one_mask_for_newton = y_abs.lower_elem(1.0);
+    let y_lt_one = y
+        .clone()
+        .mask_where(lt_one_mask_for_newton.clone(), y.clone());
+    let result_lt_one = result
+        .clone()
+        .mask_where(lt_one_mask_for_newton.clone(), result.clone());
+    let corrected_result = apply_newton_raphson(result_lt_one, y_lt_one);
+    result = result.mask_where(lt_one_mask_for_newton, corrected_result);
+
+    result * y.sign()
 }
 
 /// Computes the inverse error function for the central range `|y| <= 0.7`.
@@ -76,7 +89,8 @@ fn compute_central_range<B: Backend, const D: usize>(y: Tensor<B, D>) -> Tensor<
 /// Computes the inverse error function for the outer range `0.7 < |y| < 1`.
 fn compute_outer_range<B: Backend, const D: usize>(y: Tensor<B, D>) -> Tensor<B, D> {
     let y_abs = y.clone().abs();
-    let z = (-(-y_abs - 1.0 / 2.0).log()).sqrt();
+    // Correct formula: sqrt(-log((1 - |y|) / 2))
+    let z = ((1.0_f64 - y_abs) / 2.0_f64).log().neg().sqrt();
     let num = z.clone() * C[3] + C[2];
     let num = (num * z.clone()) + C[1];
     let num = (num * z.clone()) + C[0];
@@ -90,7 +104,7 @@ fn apply_newton_raphson<B: Backend, const D: usize>(
     mut result: Tensor<B, D>,
     y: Tensor<B, D>,
 ) -> Tensor<B, D> {
-    let two_over_sqrt_pi = 2.0 / core::f32::consts::PI.sqrt();
+    let two_over_sqrt_pi = 2.0 / PI.sqrt();
     for _ in 0..2 {
         let correction = (result.clone().erf() - y.clone())
             / ((-result.clone().powf_scalar(2.0)).exp() * two_over_sqrt_pi);
@@ -115,10 +129,34 @@ mod tests {
     type TestBackend = Autodiff<NdArray<f32>>;
 
     #[test]
-    fn test_erfinv() {
+    fn erfinv_valid_input_returns_correct_dimensions() {
         let device = Default::default();
         let x = Tensor::<TestBackend, 1>::from_floats([0.0, 0.5, 0.9], &device);
         let result = erfinv(x);
         assert_eq!(result.dims(), [3]);
+    }
+
+    #[test]
+    fn erfinv_pytorch_values_matches_expected() {
+        let device = Default::default();
+
+        // Test values that match PyTorch's expected outputs
+        // torch.special.erfinv(torch.tensor([0.0, 0.5, -1.0, 0.9]))
+        // Expected: tensor([ 0.0000,  0.4769,    -inf,  1.1631])
+
+        let x = Tensor::<TestBackend, 1>::from_floats([0.0, 0.5, 0.9], &device);
+        let result = erfinv(x);
+        let data = result.to_data();
+
+        // Test zero value
+        assert!((data.iter::<f32>().next().unwrap() - 0.0).abs() < 1e-6);
+
+        // Test central range value (|y| <= 0.7)
+        let expected_half = 0.4769_f32; // Expected for erfinv(0.5)
+        assert!((data.iter::<f32>().nth(1).unwrap() - expected_half).abs() < 1e-3);
+
+        // Test outer range value (|y| > 0.7)
+        let expected_nine = 1.1631_f32; // Expected for erfinv(0.9)
+        assert!((data.iter::<f32>().nth(2).unwrap() - expected_nine).abs() < 1e-2);
     }
 }

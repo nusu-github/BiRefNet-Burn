@@ -383,14 +383,19 @@ mod tests {
     type TestBackend = NdArray<f32>;
 
     #[test]
-    fn test_vgg_config() {
+    fn vgg16_config_batch_norm_false() {
         let config = VggConfig::vgg16();
         assert!(!config.batch_norm);
+    }
+
+    #[test]
+    fn vgg16_config_num_classes_none() {
+        let config = VggConfig::vgg16();
         assert_eq!(config.num_classes, None);
     }
 
     #[test]
-    fn test_vgg_forward() {
+    fn vgg16_forward_returns_correct_feature_shapes() {
         let device = Default::default();
         let model = VGGBackbone::vgg16(&device);
 
@@ -409,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn test_vgg_bn_forward() {
+    fn vgg16_bn_forward_returns_correct_feature_shapes() {
         let device = Default::default();
         let model = VGGBackbone::vgg16_bn(&device);
 

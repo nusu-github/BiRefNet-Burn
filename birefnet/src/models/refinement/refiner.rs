@@ -141,7 +141,8 @@ impl RefinerDecoderConfig {
 impl<B: Backend> RefinerDecoder<B> {
     pub fn forward(&self, features: [Tensor<B, 4>; 5]) -> Vec<Tensor<B, 4>> {
         let [x, x1, x2, x3, x4] = features;
-        let mut outs = Vec::new();
+        // Pre-allocate output vector - max 4 outputs (3 ms_supervision + 1 final)
+        let mut outs = Vec::with_capacity(4);
 
         // Decoder block 4
         let p4 = self.decoder_block4.forward(x4);
@@ -591,7 +592,8 @@ impl RefUNetConfig {
 
 impl<B: Backend> RefUNet<B> {
     pub fn forward(&self, x: Vec<Tensor<B, 4>>) -> Vec<Tensor<B, 4>> {
-        let mut outs = Vec::new();
+        // Pre-allocate output vector - only 1 output expected
+        let mut outs = Vec::with_capacity(1);
 
         // Concatenate inputs if provided as a list
         let hx = if x.len() > 1 {

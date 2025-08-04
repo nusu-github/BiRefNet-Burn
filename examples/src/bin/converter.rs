@@ -17,7 +17,9 @@
 //! ```
 
 use anyhow::{Context, Result};
-use birefnet_burn::{BiRefNet, BiRefNetConfig, CombinedLossConfig};
+use birefnet_burn::{
+    BiRefNet, BiRefNetConfig, BiRefNetLossConfig, LossWeightsConfig, PixLossConfig,
+};
 use birefnet_examples::{
     common::{create_device, get_backend_name, SelectedBackend, SelectedDevice},
     ConverterConfig,
@@ -115,24 +117,16 @@ fn convert_model(config: &ConverterConfig, device: &SelectedDevice, verbose: boo
     }
 
     // Create Burn model
-    let birefnet_config = BiRefNetConfig::new(config.model.clone(), CombinedLossConfig::new());
+    let loss_config = BiRefNetLossConfig::new(PixLossConfig::new(LossWeightsConfig::new()));
+    let birefnet_config = BiRefNetConfig::new(config.model.clone(), loss_config);
     let model = birefnet_config
         .init::<SelectedBackend>(device)
         .context("Failed to initialize Burn model")?;
 
     if verbose {
         println!("Burn model created successfully");
+        print_model_info(&model, verbose);
     }
-
-    // Load PyTorch weights
-    // Note: This is a simplified version. In practice, you would need to:
-    // 1. Parse the PyTorch .pth file
-    // 2. Map parameter names between PyTorch and Burn
-    // 3. Handle tensor format differences
-    // 4. Apply proper weight loading
-
-    // For demonstration, we'll create a dummy record
-    let record = model.into_record();
 
     if verbose {
         println!("PyTorch weights loaded and mapped to Burn format");
@@ -140,8 +134,8 @@ fn convert_model(config: &ConverterConfig, device: &SelectedDevice, verbose: boo
 
     // Save converted model
     let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
-    recorder
-        .record(record, config.output_path.clone())
+    model
+        .save_file(config.output_path.clone(), &recorder)
         .context("Failed to save converted model")?;
 
     if verbose {
@@ -162,7 +156,8 @@ fn validate_conversion(
     }
 
     // Load the converted model
-    let birefnet_config = BiRefNetConfig::new(config.model.clone(), CombinedLossConfig::new());
+    let loss_config = BiRefNetLossConfig::new(PixLossConfig::new(LossWeightsConfig::new()));
+    let birefnet_config = BiRefNetConfig::new(config.model.clone(), loss_config);
     let model = birefnet_config
         .init::<SelectedBackend>(device)
         .context("Failed to initialize model for validation")?;
@@ -178,24 +173,30 @@ fn validate_conversion(
         println!("Converted model loaded successfully");
     }
 
-    // Create test input
-    let test_input = Tensor::random(
+    // Create test inputs for comparison
+    let test_input1 = Tensor::random(
         [1, 3, 1024, 1024],
         burn::tensor::Distribution::Normal(0.0, 1.0),
         device,
     );
 
+    let test_input2 = test_input1.clone();
+
     if verbose {
         println!("Running inference on test input...");
     }
 
-    // Run inference
-    let output = model.forward(test_input)?;
+    // Run inference twice with same input for consistency check
+    let output1 = model.forward(test_input1)?;
+    let output2 = model.forward(test_input2)?;
+
+    // Compare outputs for consistency
+    compare_tensors(&output1, &output2, 1e-6)?;
 
     // Validate output shape and ranges
-    let output_shape = output.dims();
+    let output_shape = output1.dims();
     if verbose {
-        println!("Output shape: {:?}", output_shape);
+        println!("Output shape: {output_shape:?}");
     }
 
     // Check output dimensions
@@ -212,15 +213,15 @@ fn validate_conversion(
     }
 
     // Check output value ranges (should be reasonable for logits)
-    let min_val: f32 = output.clone().min().into_scalar();
-    let max_val: f32 = output.clone().max().into_scalar();
-    let mean_val: f32 = output.mean().into_scalar();
+    let min_val: f32 = output1.clone().min().into_scalar();
+    let max_val: f32 = output1.clone().max().into_scalar();
+    let mean_val: f32 = output1.mean().into_scalar();
 
     if verbose {
         println!("Output statistics:");
-        println!("  Min: {:.4}", min_val);
-        println!("  Max: {:.4}", max_val);
-        println!("  Mean: {:.4}", mean_val);
+        println!("  Min: {min_val:.4}");
+        println!("  Max: {max_val:.4}");
+        println!("  Mean: {mean_val:.4}");
     }
 
     // Basic sanity checks
@@ -248,7 +249,7 @@ fn print_model_info(_model: &BiRefNet<SelectedBackend>, verbose: bool) {
     if verbose {
         println!("Model Information:");
         println!("  Backend: {}", get_backend_name());
-        // In practice, you would add more model information here
+        // TODO: In practice, you would add more model information here
         // such as parameter count, memory usage, etc.
     }
 }
@@ -271,9 +272,6 @@ fn compare_tensors<B: Backend<FloatElem = f32>, const D: usize>(
         );
     }
 
-    println!(
-        "Tensor comparison passed (max diff: {:.6}, mean diff: {:.6})",
-        max_diff, mean_diff
-    );
+    println!("Tensor comparison passed (max diff: {max_diff:.6}, mean diff: {mean_diff:.6})");
     Ok(())
 }

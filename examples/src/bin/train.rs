@@ -27,8 +27,9 @@
 
 use anyhow::{bail, ensure, Context, Result};
 use birefnet_burn::{
-    BiRefNetBatch, BiRefNetBatcher, BiRefNetConfig, BiRefNetDataset, CombinedLossConfig,
-    FMeasureMetric, IoUMetric, LossMetric, MAEMetric, ModelConfig,
+    BiRefNetBatch, BiRefNetBatcher, BiRefNetConfig, BiRefNetDataset, BiRefNetLossConfig,
+    FMeasureMetric, IoUMetric, LossMetric, LossWeightsConfig, MAEMetric, ModelConfig,
+    PixLossConfig,
 };
 use birefnet_examples::{
     common::{create_device, get_backend_name, SelectedBackend, SelectedDevice},
@@ -196,7 +197,8 @@ fn create_model(
     device: &SelectedDevice,
 ) -> Result<birefnet_burn::BiRefNet<Autodiff<SelectedBackend>>> {
     let base_config = ModelConfig::new();
-    let model_config = BiRefNetConfig::new(base_config, CombinedLossConfig::new());
+    let loss_config = BiRefNetLossConfig::new(PixLossConfig::new(LossWeightsConfig::new()));
+    let model_config = BiRefNetConfig::new(base_config, loss_config);
 
     let model = model_config
         .init::<Autodiff<SelectedBackend>>(device)
@@ -215,7 +217,8 @@ fn create_datasets(
 )> {
     println!("Loading training dataset...");
     let mut model_config_for_dataset = ModelConfig::new();
-    model_config_for_dataset.path.data_root_dir = config.train_dataset_path.clone();
+    model_config_for_dataset.path.data_root_dir =
+        config.train_dataset_path.to_string_lossy().to_string();
 
     let train_dataset = BiRefNetDataset::<Autodiff<SelectedBackend>>::new(
         &model_config_for_dataset,
@@ -230,7 +233,8 @@ fn create_datasets(
 
     println!("Loading validation dataset...");
     let mut model_config_for_valid = ModelConfig::new();
-    model_config_for_valid.path.data_root_dir = config.val_dataset_path.clone();
+    model_config_for_valid.path.data_root_dir =
+        config.val_dataset_path.to_string_lossy().to_string();
 
     let valid_dataset =
         BiRefNetDataset::<SelectedBackend>::new(&model_config_for_valid, "val", device)

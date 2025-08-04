@@ -13,19 +13,18 @@
 //!   deformable ASPP variant.
 //! - `lateral_blocks`: Defines simple lateral connection blocks (`BasicLatBlk`) used to
 //!   combine features from the encoder and decoder pathways.
-//! - `mlp`: (If present) Contains MLP-related structures.
 //! - `utils`: Utility functions and enums for building layers.
 
-mod aspp;
-mod decoder_blocks;
-mod deform_conv;
-mod lateral_blocks;
-mod mlp;
-mod simple_convs;
+pub mod aspp;
+pub mod decoder_blocks;
+pub mod deform_conv;
+pub mod lateral_blocks;
+pub mod simple_convs;
 pub mod utils;
 
-pub use aspp::*;
-pub use decoder_blocks::*;
-pub use deform_conv::*;
-pub use lateral_blocks::*;
-pub use simple_convs::*;
+// Re-export specific types from each module instead of using wildcards
+pub use aspp::{ASPPConfig, ASPPDeformable, ASPPDeformableConfig, ASPP};
+pub use decoder_blocks::{BasicDecBlk, BasicDecBlkConfig, ResBlk, ResBlkConfig};
+pub use deform_conv::DeformableConv2d;
+pub use lateral_blocks::{BasicLatBlk, BasicLatBlkConfig};
+pub use simple_convs::{SimpleConvs, SimpleConvsConfig};

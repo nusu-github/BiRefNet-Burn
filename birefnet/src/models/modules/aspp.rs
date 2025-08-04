@@ -204,6 +204,17 @@ pub struct ASPP<B: Backend> {
 }
 
 impl<B: Backend> ASPP<B> {
+    /// Forward pass through the ASPP module.
+    ///
+    /// # Shapes
+    /// * `x` - Input tensor: `[batch_size, channels, height, width]`
+    /// * Returns - Multi-scale feature tensor: `[batch_size, out_channels, height, width]`
+    ///
+    /// # Arguments
+    /// * `x` - Input feature map from the backbone encoder
+    ///
+    /// # Returns
+    /// Enhanced feature map combining multiple atrous convolution scales and global context
     pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         let x1 = self.aspp1.forward(x.clone());
         let x2 = self.aspp2.forward(x.clone());

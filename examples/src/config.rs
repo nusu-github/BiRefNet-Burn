@@ -50,8 +50,8 @@ impl Default for TrainingConfig {
 /// Configuration for inference examples.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferenceConfig {
-    /// Input image size (will be resized to this size).
-    pub image_size: u32,
+    /// Input image size (will be resized to this size). None means use original size.
+    pub image_size: Option<u32>,
     /// Output path for results.
     pub output_path: PathBuf,
     /// Whether to save only the mask (without composite).
@@ -60,16 +60,28 @@ pub struct InferenceConfig {
     pub threshold: Option<f32>,
     /// Whether to apply postprocessing.
     pub postprocess: bool,
+    /// Whether to preserve original resolution in output.
+    pub preserve_original_resolution: bool,
+    /// Multiple checkpoint paths to process.
+    pub checkpoint_paths: Vec<PathBuf>,
+    /// Multiple test sets to process (separated by '+').
+    pub testsets: Option<String>,
+    /// Mixed precision mode ("fp16", "bf16", or None).
+    pub mixed_precision: Option<String>,
 }
 
 impl Default for InferenceConfig {
     fn default() -> Self {
         Self {
-            image_size: 1024,
+            image_size: Some(1024),
             output_path: PathBuf::from("outputs"),
             save_mask_only: false,
             threshold: Some(0.5),
             postprocess: true,
+            preserve_original_resolution: false,
+            checkpoint_paths: Vec::new(),
+            testsets: None,
+            mixed_precision: None,
         }
     }
 }
