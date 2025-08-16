@@ -9,22 +9,22 @@
 
 This crate implements training capabilities for BiRefNet models:
 
-- `BiRefNetTrainer`: Main training engine
-- Dataset loading and batching for segmentation tasks
+- Dataset loading and batching for segmentation tasks (basic implementation)
+- Training infrastructure with DIS5K dataset support
+
+### Planned Features (Not Yet Implemented)
+
 - Data augmentation pipeline (geometric and photometric transforms)
 - Learning rate scheduling (cosine, polynomial, step)
 - Multi-GPU distributed training support
-- Checkpointing and model persistence
-- Training metrics and logging integration
+- Advanced checkpointing and model persistence
+- Comprehensive training metrics and logging integration
 
 ### Core Components
 
-- Training configuration and management
-- Dataset interfaces for segmentation data
-- Augmentation transforms and pipelines
-- Optimization and scheduling
-- Distributed training coordination
-- Checkpoint management and resuming
+- Dataset interfaces for DIS5K segmentation data
+- Basic data batching and loading
+- Foundation for training pipeline integration
 
 ## License
 

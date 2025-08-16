@@ -52,7 +52,7 @@ birefnet = { version = "0.1.0", features = ["wgpu", "inference"], default-featur
 birefnet info
 
 # Run inference
-birefnet infer --input image.jpg --output results/ --model model.mpk
+birefnet infer --input image.jpg --output results/ --model General
 
 # Train a model  
 birefnet train --config config.json --resume checkpoint.mpk

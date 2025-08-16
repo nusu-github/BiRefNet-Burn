@@ -27,7 +27,7 @@ This crate implements essential utilities for BiRefNet:
 - File path management
 - Data organization tools
 
-### Visualization
+### Planned Features (Not Yet Implemented)
 
 - Result overlay and comparison
 - Debug visualization tools
