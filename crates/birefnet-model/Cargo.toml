@@ -1,0 +1,26 @@
+[package]
+name = "birefnet-model"
+description = "Rust implementation of BiRefNet for high-resolution dichotomous image segmentation using Burn"
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[features]
+default = []
+
+# Training features
+train = ["burn/train", "birefnet-loss"]
+
+[dependencies]
+burn = { workspace = true }
+birefnet-backbones = { path = "../birefnet-backbones" }
+birefnet-extra-ops = { path = "../birefnet-extra-ops" }
+birefnet-loss = { path = "../birefnet-loss", optional = true }
+
+thiserror = { workspace = true }
+
+[dev-dependencies]
+burn = { workspace = true, features = ["ndarray", "train"] }
+birefnet-loss = { path = "../birefnet-loss" }

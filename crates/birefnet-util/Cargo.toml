@@ -1,0 +1,25 @@
+[package]
+name = "birefnet-util"
+description = "Utility functions and tools for BiRefNet models"
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+burn = { workspace = true }
+burn-import = { workspace = true, features = ["pytorch", "safetensors"] }
+birefnet-model = { path = "../birefnet-model" }
+
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+cfg-if = { workspace = true }
+image = { workspace = true, features = ["jpeg", "png"] }
+hf-hub = { workspace = true }
+
+[dev-dependencies]
+burn = { workspace = true, features = ["ndarray"] }

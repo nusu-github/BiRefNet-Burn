@@ -1,0 +1,24 @@
+[package]
+name = "birefnet-inference"
+description = "Inference engine for BiRefNet models"
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+burn = { workspace = true }
+birefnet-model = { path = "../birefnet-model" }
+birefnet-util = { path = "../birefnet-util" }
+
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+cfg-if = { workspace = true }
+image = { workspace = true }
+
+[dev-dependencies]
+burn = { workspace = true, features = ["ndarray"] }

@@ -1,0 +1,42 @@
+[package]
+name = "birefnet"
+description = "BiRefNet: Bilateral Reference Network for high-resolution dichotomous image segmentation"
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "birefnet"
+path = "src/bin/birefnet.rs"
+
+[features]
+default = ["ndarray", "inference"]
+
+# Backend features - only at the top level
+ndarray = ["burn/ndarray"]
+wgpu = ["burn/wgpu"]
+cuda = ["burn/cuda"]
+
+# Task features
+train = ["burn/train", "birefnet-model/train", "birefnet-train", "birefnet-loss", "birefnet-metric"]
+inference = ["birefnet-inference"]
+
+[dependencies]
+# Core BiRefNet crates
+birefnet-model = { path = "../birefnet-model", version = "0.1.0" }
+birefnet-inference = { path = "../birefnet-inference", version = "0.1.0", optional = true }
+birefnet-train = { path = "../birefnet-train", version = "0.1.0", optional = true }
+birefnet-loss = { path = "../birefnet-loss", version = "0.1.0", optional = true }
+birefnet-metric = { path = "../birefnet-metric", version = "0.1.0", optional = true }
+birefnet-util = { path = "../birefnet-util", version = "0.1.0" }
+
+# CLI dependencies
+burn = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+cfg-if = { workspace = true }
+
+[dev-dependencies]
+burn = { workspace = true, features = ["ndarray"] }

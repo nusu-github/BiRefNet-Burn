@@ -1,14 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-    "backbones",
-    "backbones/resnet",
-    "backbones/swin_transformer",
-    "backbones/vgg",
-    "burn-extra-ops",
-    "birefnet",
-    "examples",
-]
+members = ["crates/*"]
 
 [workspace.package]
 edition = "2021"
@@ -19,12 +11,33 @@ repository = "https://github.com/nusu-github/BiRefNet-Burn"
 homepage = "https://github.com/nusu-github/BiRefNet-Burn"
 
 [workspace.dependencies]
-burn = { version = "0.18.0", default-features = false }
+# Core Burn dependencies
+burn = { version = "0.18.0", features = ["std"], default-features = false }
 burn-import = { version = "0.18.0", default-features = false }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# CLI dependencies
+clap = { version = "4.5", features = ["derive", "cargo"] }
+
+# Serialization
 serde = { version = "1.0", features = ["derive"] }
+
+# Image processing
 image = { version = "0.25.6", default-features = false }
+
+# Utilities
 libm = "0.2.15"
 walkdir = "2.5.0"
+cfg-if = "1.0.1"
+
+# Testing and benchmarking
+rstest = "0.26.1"
+
+# Model hub integration
+hf-hub = { version = "0.4.3", default-features = false, features = ["ureq", "rustls-tls"] }
 
 [profile.dev.package.image]
 opt-level = 3
