@@ -36,7 +36,6 @@ pub struct BIoUMetric<B: Backend> {
 
 impl<B: Backend> BIoUMetric<B> {
     /// Creates a new BIoU metric.
-
     pub fn new() -> Self {
         Self {
             state: NumericMetricState::default(),
@@ -46,7 +45,6 @@ impl<B: Backend> BIoUMetric<B> {
     }
 
     /// Creates a new BIoU metric with custom configuration.
-
     pub fn with_config(config: BIoUMetricConfig) -> Self {
         Self {
             state: NumericMetricState::default(),

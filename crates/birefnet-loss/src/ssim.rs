@@ -39,7 +39,6 @@ pub struct SSIMLossConfig {
 
 impl SSIMLossConfig {
     /// Initialize [SSIM loss](SSIMLoss).
-
     pub fn init(&self) -> SSIMLoss {
         self.assertions();
         SSIMLoss {
@@ -117,7 +116,6 @@ impl ModuleDisplay for SSIMLoss {
 
 impl SSIMLoss {
     /// Create a new SSIM loss with default configuration.
-
     pub fn new() -> Self {
         SSIMLossConfig::new().init()
     }
@@ -156,7 +154,7 @@ impl SSIMLoss {
     ) -> Tensor<B, 1> {
         self.assertions(&predictions, &targets);
 
-        let [batch_size, channels, height, width] = predictions.dims();
+        let [_, channels, ..] = predictions.dims();
         let device = predictions.device();
 
         // Create Gaussian window
@@ -215,7 +213,7 @@ impl SSIMLoss {
         c1: f64,
         c2: f64,
     ) -> Tensor<B, 1> {
-        let [batch_size, channels, height, width] = img1.dims();
+        let [batch_size, channels, ..] = img1.dims();
         let device = img1.device();
         let padding = self.window_size / 2;
 

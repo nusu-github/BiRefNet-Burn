@@ -70,13 +70,11 @@ impl<B: Backend> Default for EMeasureMetric<B> {
 
 impl<B: Backend> EMeasureMetric<B> {
     /// Creates a new E-measure metric.
-
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Creates a new E-measure metric with custom configuration.
-
     pub fn with_config(config: EMeasureMetricConfig) -> Self {
         Self {
             state: EMeasureState::default(),
@@ -347,7 +345,6 @@ fn generate_parts_numel_combinations(
 }
 
 /// Gets the E-measure results.
-
 pub fn get_e_measure_results(state: &EMeasureState) -> (f64, Vec<f64>) {
     let adaptive_em = state.adaptive_ems.iter().sum::<f64>() / state.adaptive_ems.len() as f64;
 

@@ -21,7 +21,6 @@ pub struct MetricsAggregator<B: Backend> {
 
 impl<B: Backend> MetricsAggregator<B> {
     /// Create a new metrics aggregator.
-
     pub const fn new() -> Self {
         Self {
             iou_sum: 0.0,
@@ -43,7 +42,6 @@ impl<B: Backend> MetricsAggregator<B> {
     }
 
     /// Get the average metrics.
-
     pub fn get_averages(&self) -> (f64, f64, f64) {
         if self.count == 0 {
             return (0.0, 0.0, 0.0);

@@ -218,7 +218,7 @@ impl<B: Backend> StemLayer<B> {
             .init(device);
 
         let norm1 = build_norm_layer(inter_channels, norm_layer, true, true, 1e-5, device)?;
-        let act = Ignored(ActLayerEnum::GELU);
+        let act = Ignored(ActLayerEnum::Gelu);
 
         let conv2 = Conv2dConfig::new([inter_channels, out_channels], [3, 3])
             .with_stride([1, 1])
@@ -259,7 +259,7 @@ impl<B: Backend> StemLayer<B> {
         x = match &self.act.0 {
             ActLayerEnum::ReLU => activation::relu(x),
             ActLayerEnum::SiLU => activation::silu(x),
-            ActLayerEnum::GELU => activation::gelu(x),
+            ActLayerEnum::Gelu => activation::gelu(x),
         };
 
         x = self.conv2.forward(x);

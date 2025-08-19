@@ -48,13 +48,11 @@ impl<B: Backend> Default for WeightedFMeasureMetric<B> {
 
 impl<B: Backend> WeightedFMeasureMetric<B> {
     /// Creates a new Weighted F-measure metric.
-
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Creates a new Weighted F-measure metric with custom configuration.
-
     pub fn with_config(config: WeightedFMeasureMetricConfig) -> Self {
         Self {
             state: NumericMetricState::default(),

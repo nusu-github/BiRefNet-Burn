@@ -44,7 +44,6 @@ pub struct StructureLossConfig {
 
 impl StructureLossConfig {
     /// Initialize [Structure loss](StructureLoss).
-
     pub fn init(&self) -> StructureLoss {
         self.assertions();
 
@@ -130,7 +129,6 @@ impl ModuleDisplay for StructureLoss {
 
 impl StructureLoss {
     /// Create a new structure loss with default configuration.
-
     pub fn new() -> Self {
         StructureLossConfig::new().init()
     }

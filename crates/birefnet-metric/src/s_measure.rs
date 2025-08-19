@@ -66,13 +66,11 @@ impl<B: Backend> Default for SMeasureMetric<B> {
 
 impl<B: Backend> SMeasureMetric<B> {
     /// Creates a new S-measure metric.
-
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Creates a new S-measure metric with custom configuration.
-
     pub fn with_config(config: SMeasureMetricConfig) -> Self {
         Self {
             state: NumericMetricState::default(),

@@ -34,7 +34,6 @@ pub struct ContourLossConfig {
 
 impl ContourLossConfig {
     /// Initialize [Contour loss](ContourLoss).
-
     pub fn init(&self) -> ContourLoss {
         self.assertions();
         ContourLoss {
@@ -94,7 +93,6 @@ impl ModuleDisplay for ContourLoss {
 
 impl ContourLoss {
     /// Create a new contour loss with default configuration.
-
     pub fn new() -> Self {
         ContourLossConfig::new().init()
     }
@@ -133,8 +131,7 @@ impl ContourLoss {
     ) -> Tensor<B, 1> {
         self.assertions(&predictions, &targets);
 
-        let [batch_size, channels, height, width] = predictions.dims();
-        let device = predictions.device();
+        let [batch_size, _, height, width] = predictions.dims();
 
         // Need at least 3x3 input for gradient computation
         assert!(

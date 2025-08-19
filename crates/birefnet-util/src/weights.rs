@@ -1,4 +1,8 @@
-use std::{collections::HashMap, path::PathBuf, sync::LazyLock};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::LazyLock,
+};
 
 use birefnet_model::{
     Backbone, BackboneConfig, BiRefNetConfig, BiRefNetRecord, DecoderConfig, InterpolationStrategy,
@@ -440,7 +444,6 @@ impl ModelRecord for ManagedModel {
 
 impl ManagedModel {
     /// Create a new model record with the given name, config, and weight source.
-
     pub const fn new(
         name: ModelName,
         config: Option<BiRefNetConfig>,
@@ -623,16 +626,11 @@ impl ManagedModel {
     fn load_pytorch_model<B: Backend, M: Module<B>>(
         &self,
         model: M,
-        weights_path: &PathBuf,
+        weights_path: &Path,
         device: &B::Device,
     ) -> Result<M, WeightError> {
-        let load_args = PyTorchLoadArgs::new(weights_path.clone()).with_debug_print();
+        let load_args = PyTorchLoadArgs::new(weights_path.to_path_buf());
         let recorder = PyTorchFileRecorder::<FullPrecisionSettings>::default();
-        #[cfg(debug_assertions)]
-        {
-            let x = recorder.load(load_args, device).unwrap();
-            return Ok(model.load_record(x));
-        }
         let record = recorder
             .load(load_args, device)
             .map_err(|e| WeightError::ModelLoadError {
@@ -644,11 +642,10 @@ impl ManagedModel {
     fn load_safetensors_model<B: Backend, M: Module<B>>(
         &self,
         model: M,
-        weights_path: &PathBuf,
+        weights_path: &Path,
         device: &B::Device,
     ) -> Result<M, WeightError> {
-        let load_args = SafetensorsLoadArgs::new(weights_path.clone())
-            .with_debug_print()
+        let load_args = SafetensorsLoadArgs::new(weights_path.to_path_buf())
             .with_key_remap("decoder\\.conv_out1\\.0\\.(.+)", "decoder.conv_out1.$1")
             .with_key_remap(
                 "decoder\\.gdt_convs_attn_([2-4])\\.0\\.(.+)",
@@ -678,11 +675,6 @@ impl ManagedModel {
             );
 
         let recorder = SafetensorsFileRecorder::<FullPrecisionSettings>::default();
-        #[cfg(debug_assertions)]
-        {
-            let x = recorder.load(load_args, device).unwrap();
-            return Ok(model.load_record(x));
-        }
         let record = recorder
             .load(load_args, device)
             .map_err(|e| WeightError::ModelLoadError {
@@ -695,7 +687,7 @@ impl ManagedModel {
     fn load_messagepack_model<B: Backend, M: Module<B>>(
         &self,
         model: M,
-        weights_path: &PathBuf,
+        weights_path: &Path,
         device: &B::Device,
     ) -> Result<M, WeightError> {
         let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
@@ -710,7 +702,7 @@ impl ManagedModel {
     fn load_binary_model<B: Backend, M: Module<B>>(
         &self,
         model: M,
-        weights_path: &PathBuf,
+        weights_path: &Path,
         device: &B::Device,
     ) -> Result<M, WeightError> {
         let recorder = BinFileRecorder::<FullPrecisionSettings>::new();
@@ -723,16 +715,11 @@ impl ManagedModel {
 
     fn load_pytorch_record<B: Backend>(
         &self,
-        weights_path: &PathBuf,
+        weights_path: &Path,
         device: &B::Device,
     ) -> Result<BiRefNetRecord<B>, WeightError> {
-        let load_args = PyTorchLoadArgs::new(weights_path.clone()).with_debug_print();
+        let load_args = PyTorchLoadArgs::new(weights_path.to_path_buf());
         let recorder = PyTorchFileRecorder::<FullPrecisionSettings>::default();
-        #[cfg(debug_assertions)]
-        {
-            let x = recorder.load(load_args, device).unwrap();
-            return Ok(x);
-        }
         recorder
             .load(load_args, device)
             .map_err(|e| WeightError::RecordLoadError {
@@ -742,16 +729,11 @@ impl ManagedModel {
 
     fn load_safetensors_record<B: Backend>(
         &self,
-        weights_path: &PathBuf,
+        weights_path: &Path,
         device: &B::Device,
     ) -> Result<BiRefNetRecord<B>, WeightError> {
-        let load_args = SafetensorsLoadArgs::new(weights_path.clone()).with_debug_print();
+        let load_args = SafetensorsLoadArgs::new(weights_path.to_path_buf());
         let recorder = SafetensorsFileRecorder::<FullPrecisionSettings>::default();
-        #[cfg(debug_assertions)]
-        {
-            let x = recorder.load(load_args, device).unwrap();
-            return Ok(x);
-        }
         recorder
             .load(load_args, device)
             .map_err(|e| WeightError::RecordLoadError {
@@ -762,12 +744,12 @@ impl ManagedModel {
     /// Load MessagePack record
     fn load_messagepack_record<B: Backend>(
         &self,
-        weights_path: &PathBuf,
+        weights_path: &Path,
         device: &B::Device,
     ) -> Result<BiRefNetRecord<B>, WeightError> {
         let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
         recorder
-            .load(weights_path.clone(), device)
+            .load(weights_path.to_path_buf(), device)
             .map_err(|e| WeightError::RecordLoadError {
                 reason: format!("MessagePack record loading failed: {}", e),
             })
@@ -776,12 +758,12 @@ impl ManagedModel {
     /// Load Binary record
     fn load_binary_record<B: Backend>(
         &self,
-        weights_path: &PathBuf,
+        weights_path: &Path,
         device: &B::Device,
     ) -> Result<BiRefNetRecord<B>, WeightError> {
         let recorder = BinFileRecorder::<FullPrecisionSettings>::new();
         recorder
-            .load(weights_path.clone(), device)
+            .load(weights_path.to_path_buf(), device)
             .map_err(|e| WeightError::RecordLoadError {
                 reason: format!("Binary record loading failed: {}", e),
             })
@@ -838,8 +820,6 @@ pub trait BiRefNetWeightLoading<B: Backend> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use burn::backend::NdArray;
 
     use super::*;

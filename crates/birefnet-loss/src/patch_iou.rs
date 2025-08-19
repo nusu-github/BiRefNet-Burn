@@ -40,7 +40,6 @@ pub struct PatchIoULossConfig {
 
 impl PatchIoULossConfig {
     /// Initialize [Patch IoU loss](PatchIoULoss).
-
     pub fn init(&self) -> PatchIoULoss {
         self.assertions();
         PatchIoULoss {
@@ -110,7 +109,6 @@ impl ModuleDisplay for PatchIoULoss {
 
 impl PatchIoULoss {
     /// Create a new patch IoU loss with default configuration.
-
     pub fn new() -> Self {
         PatchIoULossConfig::new().init()
     }

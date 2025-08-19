@@ -12,7 +12,6 @@ pub struct Identity<B: Backend> {
 
 impl<B: Backend> Identity<B> {
     /// Create new Identity module
-
     pub const fn new() -> Self {
         Self {
             _phantom: PhantomData,

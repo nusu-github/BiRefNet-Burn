@@ -41,7 +41,6 @@ pub struct FMeasureMetric<B: Backend> {
 
 impl<B: Backend> FMeasureMetric<B> {
     /// Creates a new F-measure metric with default beta=0.3.
-
     pub fn new() -> Self {
         Self {
             state: NumericMetricState::default(),
@@ -55,7 +54,6 @@ impl<B: Backend> FMeasureMetric<B> {
     }
 
     /// Creates a new F-measure metric with custom beta parameter.
-
     pub fn with_beta(beta: f64) -> Self {
         Self {
             state: NumericMetricState::default(),

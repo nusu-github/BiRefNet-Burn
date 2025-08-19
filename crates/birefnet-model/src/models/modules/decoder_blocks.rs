@@ -165,7 +165,7 @@ impl<B: Backend> BasicDecBlk<B> {
 /// An enum to wrap different types of squeeze blocks used within a `ResBlk`.
 #[derive(Module, Debug)]
 enum ResBlkSqueezeBlockModule<B: Backend> {
-    ASPP(ASPP<B>),
+    Aspp(ASPP<B>),
     ASPPDeformable(ASPPDeformable<B>),
 }
 
@@ -215,7 +215,7 @@ impl ResBlkConfig {
 
         // Initialize attention module based on dec_att
         let dec_att = match self.dec_att {
-            DecoderAttention::ASPP => Some(ResBlkSqueezeBlockModule::ASPP(
+            DecoderAttention::ASPP => Some(ResBlkSqueezeBlockModule::Aspp(
                 ASPPConfig::new(self.interpolation.clone())
                     .with_in_channels(inter_channels)
                     .init(device),
@@ -288,7 +288,7 @@ impl<B: Backend> ResBlk<B> {
         // Optional attention/squeeze block
         let x = match &self.dec_att {
             Some(dec_att) => match dec_att {
-                ResBlkSqueezeBlockModule::ASPP(aspp) => aspp.forward(x),
+                ResBlkSqueezeBlockModule::Aspp(aspp) => aspp.forward(x),
                 ResBlkSqueezeBlockModule::ASPPDeformable(aspp_def) => aspp_def.forward(x),
             },
             None => x,

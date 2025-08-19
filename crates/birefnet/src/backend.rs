@@ -33,8 +33,6 @@ pub mod burn_backend_types {
     use super::*;
     pub type InferenceBackend = Cuda<ElemType>;
     pub type InferenceDevice = CudaDevice;
-    pub const INFERENCE_DEVICE: std::sync::LazyLock<CudaDevice> =
-        std::sync::LazyLock::new(|| CudaDevice::default());
     pub const NAME: &str = "cuda";
 }
 
@@ -47,8 +45,6 @@ pub mod burn_backend_types {
     use super::*;
     pub type InferenceBackend = Rocm<ElemType>;
     pub type InferenceDevice = RocmDevice;
-    pub const INFERENCE_DEVICE: std::sync::LazyLock<RocmDevice> =
-        std::sync::LazyLock::new(|| RocmDevice::default());
     pub const NAME: &str = "rocm";
 }
 
@@ -63,7 +59,6 @@ pub mod burn_backend_types {
 
     pub type InferenceBackend = NdArray<ElemType>;
     pub type InferenceDevice = NdArrayDevice;
-    pub const INFERENCE_DEVICE: InferenceDevice = NdArrayDevice::Cpu;
     pub const NAME: &str = "ndarray";
 }
 
@@ -76,7 +71,6 @@ pub mod burn_backend_types {
     use super::*;
     pub type InferenceBackend = Wgpu<ElemType>;
     pub type InferenceDevice = WgpuDevice;
-    pub const INFERENCE_DEVICE: InferenceDevice = WgpuDevice::DefaultDevice;
     #[cfg(all(feature = "wgpu", not(feature = "vulkan"), not(feature = "metal")))]
     pub const NAME: &str = "wgpu";
     #[cfg(feature = "vulkan")]
@@ -92,6 +86,5 @@ pub mod burn_backend_types {
     use super::*;
     pub type InferenceBackend = Wgpu<ElemType>;
     pub type InferenceDevice = WgpuDevice;
-    pub const INFERENCE_DEVICE: InferenceDevice = WgpuDevice::Cpu;
     pub const NAME: &str = "wgpu-cpu";
 }

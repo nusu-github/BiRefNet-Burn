@@ -46,10 +46,10 @@ pub fn calculate_all_metrics<B: Backend>(
 
     // For metrics that need 2D tensors, process batch
     let mut mse_sum = 0.0;
-    let s_measure_sum = 0.0;
-    let e_measure_adaptive_sum = 0.0;
+    let _s_measure_sum = 0.0;
+    let _e_measure_adaptive_sum = 0.0;
     let mut weighted_f_measure_sum = 0.0;
-    let e_measure_curves: Vec<Vec<f64>> = Vec::new();
+    let _e_measure_curves: Vec<Vec<f64>> = Vec::new();
 
     for b in 0..batch_size {
         let pred_2d: Tensor<B, 2> = predictions

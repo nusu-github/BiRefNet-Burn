@@ -103,7 +103,7 @@ pub fn build_norm_layer<B: Backend>(
 pub enum ActLayerEnum {
     ReLU,
     SiLU,
-    GELU,
+    Gelu,
 }
 
 /// Intelligent interpolation helper that automatically chooses the appropriate interpolation mode

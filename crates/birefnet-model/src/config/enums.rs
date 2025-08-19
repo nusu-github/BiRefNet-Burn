@@ -90,7 +90,6 @@ pub enum SqueezeBlock {
 
 impl SqueezeBlock {
     /// Returns the number of blocks configured for the squeeze module.
-
     pub const fn count(&self) -> usize {
         match self {
             Self::None => 0,

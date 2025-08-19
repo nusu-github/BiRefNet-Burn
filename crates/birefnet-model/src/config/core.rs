@@ -200,7 +200,6 @@ impl ModelConfig {
     ///
     /// The number of channels depends on the chosen backbone and whether multi-scale
     /// inputs are concatenated (`MultiScaleInput::Cat`).
-
     pub fn lateral_channels_in_collection(&self) -> [usize; 4] {
         let channels = match self.backbone.backbone {
             Backbone::Vgg16 | Backbone::Vgg16bn => [512, 256, 128, 64],
@@ -247,7 +246,6 @@ impl ModelConfig {
 
 impl BackboneConfig {
     /// Get lateral channels for the backbone network.
-
     pub const fn lateral_channels_in_collection(&self) -> [usize; 4] {
         match self.backbone {
             Backbone::Vgg16 | Backbone::Vgg16bn => [512, 256, 128, 64],

@@ -12,6 +12,7 @@ default = []
 
 # Training features
 train = ["burn/train", "birefnet-loss"]
+ndarray = ["burn/ndarray"]
 
 [dependencies]
 burn = { workspace = true }

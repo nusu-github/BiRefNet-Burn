@@ -26,7 +26,6 @@ pub struct IoULossConfig {
 
 impl IoULossConfig {
     /// Initialize [IoU loss](IoULoss).
-
     pub fn init(&self) -> IoULoss {
         self.assertions();
         IoULoss { eps: self.eps }
@@ -72,7 +71,6 @@ impl ModuleDisplay for IoULoss {
 
 impl IoULoss {
     /// Create a new IoU loss with default configuration.
-
     pub fn new() -> Self {
         IoULossConfig::new().init()
     }
@@ -113,7 +111,6 @@ impl IoULoss {
 
         let targets_float = targets.float();
         let [batch_size, ..] = predictions.dims();
-        let device = predictions.device();
 
         // Vectorized computation for all batch elements
         let eps = self.eps;

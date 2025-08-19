@@ -31,13 +31,11 @@ pub struct MSEMetric<B: Backend> {
 
 impl<B: Backend> MSEMetric<B> {
     /// Creates a new MSE metric.
-
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Creates a new MSE metric with a custom name.
-
     pub fn with_name(name: String) -> Self {
         Self {
             state: NumericMetricState::default(),

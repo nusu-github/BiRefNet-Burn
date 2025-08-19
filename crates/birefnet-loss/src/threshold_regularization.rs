@@ -28,7 +28,6 @@ pub struct ThresholdRegularizationLossConfig {
 
 impl ThresholdRegularizationLossConfig {
     /// Initialize [Threshold Regularization loss](ThresholdRegularizationLoss).
-
     pub fn init(&self) -> ThresholdRegularizationLoss {
         self.assertions();
         ThresholdRegularizationLoss {
@@ -77,7 +76,6 @@ impl ModuleDisplay for ThresholdRegularizationLoss {
 
 impl ThresholdRegularizationLoss {
     /// Create a new threshold regularization loss with default configuration.
-
     pub fn new() -> Self {
         ThresholdRegularizationLossConfig::new().init()
     }

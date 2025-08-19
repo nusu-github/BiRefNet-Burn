@@ -28,7 +28,6 @@ pub struct MaeLossConfig {
 
 impl MaeLossConfig {
     /// Initialize [Mean Absolute Error loss](MaeLoss).
-
     pub fn init(&self) -> MaeLoss {
         self.assertions();
         MaeLoss {
@@ -76,7 +75,6 @@ impl ModuleDisplay for MaeLoss {
 
 impl MaeLoss {
     /// Create a new MAE loss with default configuration.
-
     pub fn new() -> Self {
         MaeLossConfig::new().init()
     }

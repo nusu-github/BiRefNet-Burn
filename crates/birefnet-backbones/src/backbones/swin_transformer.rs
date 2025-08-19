@@ -30,6 +30,8 @@
 //! - Paper: https://arxiv.org/pdf/2103.14030
 //! - Original PyTorch implementation: Microsoft Research
 
+use std::ops::Range;
+
 use birefnet_extra_ops::{trunc_normal, DropPath, DropPathConfig};
 use burn::{
     module::Param,
@@ -58,12 +60,12 @@ pub type SwinTransformerResult<T> = Result<T, SwinTransformerError>;
 
 /// Configuration for a Multi-Layer Perceptron (MLP) used in Swin Transformer blocks.
 ///
-/// The MLP consists of two linear transformations with a GELU activation function
+/// The MLP consists of two linear transformations with a Gelu activation function
 /// and dropout applied between them. This follows the standard transformer FFN design.
 ///
 /// # Architecture
 /// ```text
-/// Input -> Linear -> GELU -> Dropout -> Linear -> Dropout -> Output
+/// Input -> Linear -> Gelu -> Dropout -> Linear -> Dropout -> Output
 /// ```
 ///
 /// # Arguments
@@ -104,11 +106,11 @@ impl MlpConfig {
 /// Multi-Layer Perceptron (MLP) module for Swin Transformer blocks.
 ///
 /// This is the feed-forward network component used in each Swin Transformer block.
-/// It applies two linear transformations with GELU activation and dropout.
+/// It applies two linear transformations with Gelu activation and dropout.
 ///
 /// # Components
 /// - `fc1`: First linear transformation (input -> hidden)
-/// - `act`: GELU activation function
+/// - `act`: Gelu activation function
 /// - `fc2`: Second linear transformation (hidden -> output)  
 /// - `drop`: Dropout layer applied after both linear layers
 #[derive(Module, Debug)]
@@ -122,7 +124,7 @@ pub struct Mlp<B: Backend> {
 impl<B: Backend> Mlp<B> {
     /// Forward pass through the MLP.
     ///
-    /// Applies the sequence: Linear -> GELU -> Dropout -> Linear -> Dropout
+    /// Applies the sequence: Linear -> Gelu -> Dropout -> Linear -> Dropout
     ///
     /// # Arguments
     /// - `x`: Input tensor of shape `[batch_size, sequence_length, features]`
@@ -434,22 +436,17 @@ impl<B: Backend> WindowAttention<B> {
             .permute([2, 0, 1]);
 
         // Add relative position bias with proper broadcasting
-        let [bias_heads, bias_h, bias_w] = relative_position_bias.dims();
-        let bias_expanded = relative_position_bias.reshape([1, bias_heads, bias_h, bias_w]);
+        let bias_expanded = relative_position_bias.unsqueeze();
         let attn = attn + bias_expanded;
 
         let attn = {
             match mask {
                 Some(mask) => {
                     let [nw, mask_h, mask_w] = mask.dims();
-                    // Reshape attention for mask application
-                    let attn_reshaped = attn.reshape([b / nw, nw, self.num_heads, n, n]);
-
-                    // Expand mask dimensions properly using reshape instead of unsqueeze
-                    let mask_expanded = mask.reshape([1, nw, 1, mask_h, mask_w]);
-
-                    let attn_masked = attn_reshaped + mask_expanded;
-                    attn_masked.reshape([b, self.num_heads, n, n])
+                    let attn = attn.reshape([b / nw, nw, self.num_heads, n, n]);
+                    let mask = mask.reshape([1, nw, 1, mask_h, mask_w]);
+                    let attn = attn + mask;
+                    attn.reshape([b, self.num_heads, n, n])
                 }
                 None => attn,
             }
@@ -924,23 +921,50 @@ impl<B: Backend> BasicLayer<B> {
         let wp = ((w as f64) / self.window_size as f64).ceil() as usize * self.window_size;
         let mut img_mask: Tensor<B, 4> = Tensor::zeros([1, hp, wp, 1], &device);
 
-        // Only create attention mask if shift_size > 0 and dimensions are large enough
-        let h_slices = [
-            0..-(self.window_size as isize),
-            -(self.window_size as isize)..-(self.shift_size as isize),
-            -(self.shift_size as isize)..(hp as isize),
+        // Convert Python-style negative slices to positive ranges, matching PyTorch behavior
+        let convert_negative = |idx: isize, size: usize| -> usize {
+            if idx < 0 {
+                (size as isize + idx).max(0) as usize
+            } else {
+                (idx as usize).min(size)
+            }
+        };
+
+        // Create slice ranges exactly as Python does, then filter out empty ones
+        let h_candidates = vec![
+            (0, convert_negative(-(self.window_size as isize), hp)),
+            (
+                convert_negative(-(self.window_size as isize), hp),
+                convert_negative(-(self.shift_size as isize), hp),
+            ),
+            (convert_negative(-(self.shift_size as isize), hp), hp),
         ];
-        let w_slices = [
-            0..-(self.window_size as isize),
-            -(self.window_size as isize)..-(self.shift_size as isize),
-            -(self.shift_size as isize)..(wp as isize),
+        let w_candidates = vec![
+            (0, convert_negative(-(self.window_size as isize), wp)),
+            (
+                convert_negative(-(self.window_size as isize), wp),
+                convert_negative(-(self.shift_size as isize), wp),
+            ),
+            (convert_negative(-(self.shift_size as isize), wp), wp),
         ];
 
+        // Filter out empty ranges (where start >= end)
+        let h_ranges: Vec<Range<usize>> = h_candidates
+            .into_iter()
+            .map(|(start, end)| start..end)
+            .filter(|range| range.start < range.end)
+            .collect();
+        let w_ranges: Vec<Range<usize>> = w_candidates
+            .into_iter()
+            .map(|(start, end)| start..end)
+            .filter(|range| range.start < range.end)
+            .collect();
+
         let mut cnt = 0;
-        for h_slice in h_slices {
-            for w_slice in w_slices.clone() {
+        for h_range in &h_ranges {
+            for w_range in &w_ranges {
                 img_mask = img_mask.slice_fill(
-                    s![.., h_slice.clone(), w_slice, ..],
+                    s![.., h_range.clone(), w_range.clone(), ..],
                     B::FloatElem::from_elem(cnt as f64),
                 );
                 cnt += 1;
@@ -1283,7 +1307,7 @@ impl<B: Backend> SwinTransformer<B> {
         let output_layers = self.out_indices.len();
         let mut outs = Vec::with_capacity(output_layers);
 
-        let x: Tensor<B, 3> = x.flatten(2, 3).swap_dims(1, 2);
+        let x = x.flatten(2, 3).swap_dims(1, 2);
         let x = self.pos_drop.forward(x);
         let mut x = x;
         let mut wh = wh;
@@ -1307,77 +1331,6 @@ impl<B: Backend> SwinTransformer<B> {
                 operation: "Failed to convert outputs to array".to_string(),
             })
     }
-}
-
-/// Creates a Swin Transformer Tiny (Swin-T) model.
-///
-/// # Architecture Parameters
-/// * Embedding dimension: 96
-/// * Layer depths: [2, 2, 6, 2]
-/// * Number of attention heads: [3, 6, 12, 24]
-/// * Window size: 7x7
-///
-/// # Arguments
-/// * `device` - The device on which to initialize the model
-///
-/// # Returns
-/// A result containing the initialized Swin-T model or an error
-///
-/// # Errors  
-/// Returns `SwinTransformerError::ModelInitializationFailed` when:
-/// * Device memory allocation fails
-/// * Invalid tensor operations during weight initialization
-/// * Backend-specific initialization errors occur
-pub fn swin_v1_t<B: Backend>(device: &Device<B>) -> SwinTransformerResult<SwinTransformer<B>> {
-    SwinTransformerConfig::new()
-        .with_embed_dim(96)
-        .with_depths([2, 2, 6, 2])
-        .with_num_heads([3, 6, 12, 24])
-        .with_window_size(7)
-        .init(device)
-}
-
-/// Creates a Swin Transformer Small (Swin-S) model.
-///
-/// # Architecture Parameters
-/// * Embedding dimension: 96
-/// * Layer depths: [2, 2, 18, 2] (deeper than Swin-T)
-/// * Number of attention heads: [3, 6, 12, 24]
-/// * Window size: 7x7
-///
-/// # Arguments
-/// * `device` - The device on which to initialize the model
-///
-/// # Returns
-/// A result containing the initialized Swin-S model or an error
-///
-/// # Errors  
-/// Returns `SwinTransformerError::ModelInitializationFailed` when initialization fails
-pub fn swin_v1_s<B: Backend>(device: &Device<B>) -> SwinTransformerResult<SwinTransformer<B>> {
-    SwinTransformerConfig::new()
-        .with_embed_dim(96)
-        .with_depths([2, 2, 18, 2])
-        .with_num_heads([3, 6, 12, 24])
-        .with_window_size(7)
-        .init(device)
-}
-
-pub fn swin_v1_b<B: Backend>(device: &Device<B>) -> SwinTransformerResult<SwinTransformer<B>> {
-    SwinTransformerConfig::new()
-        .with_embed_dim(128)
-        .with_depths([2, 2, 18, 2])
-        .with_num_heads([4, 8, 16, 32])
-        .with_window_size(12)
-        .init(device)
-}
-
-pub fn swin_v1_l<B: Backend>(device: &Device<B>) -> SwinTransformerResult<SwinTransformer<B>> {
-    SwinTransformerConfig::new()
-        .with_embed_dim(192)
-        .with_depths([2, 2, 18, 2])
-        .with_num_heads([6, 12, 24, 48])
-        .with_window_size(12)
-        .init(device)
 }
 
 #[cfg(test)]
@@ -1828,5 +1781,41 @@ mod tests {
                 outputs[stage].shape().dims[1]
             );
         }
+    }
+
+    fn swin_v1_t<B: Backend>(device: &Device<B>) -> SwinTransformerResult<SwinTransformer<B>> {
+        SwinTransformerConfig::new()
+            .with_embed_dim(96)
+            .with_depths([2, 2, 6, 2])
+            .with_num_heads([3, 6, 12, 24])
+            .with_window_size(7)
+            .init(device)
+    }
+
+    fn swin_v1_s<B: Backend>(device: &Device<B>) -> SwinTransformerResult<SwinTransformer<B>> {
+        SwinTransformerConfig::new()
+            .with_embed_dim(96)
+            .with_depths([2, 2, 18, 2])
+            .with_num_heads([3, 6, 12, 24])
+            .with_window_size(7)
+            .init(device)
+    }
+
+    fn swin_v1_b<B: Backend>(device: &Device<B>) -> SwinTransformerResult<SwinTransformer<B>> {
+        SwinTransformerConfig::new()
+            .with_embed_dim(128)
+            .with_depths([2, 2, 18, 2])
+            .with_num_heads([4, 8, 16, 32])
+            .with_window_size(12)
+            .init(device)
+    }
+
+    fn swin_v1_l<B: Backend>(device: &Device<B>) -> SwinTransformerResult<SwinTransformer<B>> {
+        SwinTransformerConfig::new()
+            .with_embed_dim(192)
+            .with_depths([2, 2, 18, 2])
+            .with_num_heads([6, 12, 24, 48])
+            .with_window_size(12)
+            .init(device)
     }
 }

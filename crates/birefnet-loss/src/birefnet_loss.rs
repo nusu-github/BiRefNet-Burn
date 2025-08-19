@@ -82,7 +82,6 @@ fn default_pixel_weights() -> LossWeightsConfig {
 
 impl BiRefNetLossConfig {
     /// Create a configuration optimized for DIS (Dichotomous Image Segmentation) tasks.
-
     pub fn dis_optimized() -> Self {
         Self::new().with_pixel_weights(
             LossWeightsConfig::new()
@@ -94,7 +93,6 @@ impl BiRefNetLossConfig {
     }
 
     /// Create a configuration optimized for General segmentation tasks.
-
     pub fn general_optimized() -> Self {
         Self::new().with_pixel_weights(
             LossWeightsConfig::new()
@@ -106,7 +104,6 @@ impl BiRefNetLossConfig {
     }
 
     /// Create a configuration optimized for Matting tasks.
-
     pub fn matting_optimized() -> Self {
         Self::new().with_pixel_weights(
             LossWeightsConfig::new()
@@ -118,35 +115,30 @@ impl BiRefNetLossConfig {
     }
 
     /// Builder method to set BCE weight
-
     pub const fn with_bce_weight(mut self, weight: f64) -> Self {
         self.pixel_weights.bce = weight;
         self
     }
 
     /// Builder method to set IoU weight
-
     pub const fn with_iou_weight(mut self, weight: f64) -> Self {
         self.pixel_weights.iou = weight;
         self
     }
 
     /// Builder method to set MAE weight
-
     pub const fn with_mae_weight(mut self, weight: f64) -> Self {
         self.pixel_weights.mae = weight;
         self
     }
 
     /// Builder method to set SSIM weight
-
     pub const fn with_ssim_weight(mut self, weight: f64) -> Self {
         self.pixel_weights.ssim = weight;
         self
     }
 
     /// Builder method to disable classification loss
-
     pub const fn without_classification(mut self) -> Self {
         self.classification_weight = 0.0;
         self
@@ -192,7 +184,6 @@ impl BiRefNetLossConfig {
 
 impl<B: Backend> BiRefNetLoss<B> {
     /// Create a new BiRefNet loss with default configuration.
-
     pub fn new(config: BiRefNetLossConfig) -> Self {
         let device = &B::Device::default();
         config.init(device)

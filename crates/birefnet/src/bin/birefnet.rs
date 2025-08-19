@@ -4,16 +4,19 @@ use std::{
 };
 
 use anyhow::Result;
+use birefnet::burn_backend_types::{InferenceBackend, InferenceDevice, NAME};
 #[cfg(feature = "inference")]
 use birefnet_util::ImageUtils;
-use birefnet_util::{BiRefNetWeightLoading, ManagedModel, ModelLoader, ModelName, WeightSource};
+use birefnet_util::{
+    refine_foreground_core, BiRefNetWeightLoading, ManagedModel, ModelLoader, ModelName,
+    WeightSource,
+};
 use burn::tensor::{
+    activation::sigmoid,
     module::interpolate,
     ops::{InterpolateMode, InterpolateOptions},
 };
 use clap::{Parser, Subcommand};
-
-use crate::burn_backend_types::{InferenceBackend, InferenceDevice, NAME};
 
 #[derive(Parser)]
 #[command(name = "birefnet")]
@@ -191,10 +194,11 @@ fn process_single_image(
     );
 
     // Run inference
-    let output = model.forward(image_tensor)?;
+    let mask = model.forward(image_tensor)?;
+    let mask = sigmoid(mask);
 
-    let output = interpolate(
-        output,
+    let mask = interpolate(
+        mask,
         [h, w],
         InterpolateOptions::new(InterpolateMode::Bicubic),
     );
@@ -206,8 +210,9 @@ fn process_single_image(
         .unwrap_or("output");
     let output_path = Path::new(output_dir).join(format!("{}_mask.png", file_stem));
 
-    // Convert tensor to image and save (output is a mask, so is_mask = true)
-    let output = ImageUtils::apply_mask(image, output)?;
+    // Convert tensor to image and save
+    let output = refine_foreground_core(image, mask.clone(), 90);
+    let output = ImageUtils::apply_mask(output, mask)?;
     let output_image = ImageUtils::tensor_to_dynamic_image(output, false)?;
     output_image.save(&output_path)?;
 
