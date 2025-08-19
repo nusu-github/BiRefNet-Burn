@@ -199,19 +199,16 @@ impl BiRefNetDataset {
         let valid_extensions = Self::get_supported_image_extensions();
 
         // Read image directory and find corresponding masks
-        let image_dir = fs::read_dir(&image_root).map_err(|e| {
-            DatasetError::DirectoryReadFailed {
+        let image_dir =
+            fs::read_dir(&image_root).map_err(|e| DatasetError::DirectoryReadFailed {
                 path: image_root.clone(),
                 source: e,
-            }
-        })?;
+            })?;
 
         for entry in image_dir {
-            let entry = entry.map_err(|e| {
-                DatasetError::DirectoryReadFailed {
-                    path: image_root.clone(),
-                    source: e,
-                }
+            let entry = entry.map_err(|e| DatasetError::DirectoryReadFailed {
+                path: image_root.clone(),
+                source: e,
             })?;
 
             let image_path = entry.path();
@@ -219,16 +216,12 @@ impl BiRefNetDataset {
                 // Safe handling of file name extraction
                 let file_name = image_path
                     .file_name()
-                    .ok_or_else(|| {
-                        DatasetError::NoFileName {
-                            path: image_path.clone(),
-                        }
+                    .ok_or_else(|| DatasetError::NoFileName {
+                        path: image_path.clone(),
                     })?
                     .to_str()
-                    .ok_or_else(|| {
-                        DatasetError::InvalidUtf8Path {
-                            path: image_path.clone(),
-                        }
+                    .ok_or_else(|| DatasetError::InvalidUtf8Path {
+                        path: image_path.clone(),
                     })?;
 
                 // Check if file has valid extension
@@ -239,16 +232,12 @@ impl BiRefNetDataset {
                 // Safe handling of file stem extraction
                 let stem = image_path
                     .file_stem()
-                    .ok_or_else(|| {
-                        DatasetError::NoFileStem {
-                            path: image_path.clone(),
-                        }
+                    .ok_or_else(|| DatasetError::NoFileStem {
+                        path: image_path.clone(),
                     })?
                     .to_str()
-                    .ok_or_else(|| {
-                        DatasetError::InvalidUtf8Path {
-                            path: image_path.clone(),
-                        }
+                    .ok_or_else(|| DatasetError::InvalidUtf8Path {
+                        path: image_path.clone(),
                     })?;
 
                 let mut mask_found = false;

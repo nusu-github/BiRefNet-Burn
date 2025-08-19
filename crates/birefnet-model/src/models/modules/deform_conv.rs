@@ -51,41 +51,36 @@ impl DeformableConv2dConfig {
         offset_conv.bias = Some(Param::from_tensor(
             offset_conv
                 .bias
-                .ok_or_else(|| {
-                    BiRefNetError::ModelInitializationFailed {
-                        reason: "Offset conv bias parameter is missing".to_owned(),
-                    }
+                .ok_or_else(|| BiRefNetError::ModelInitializationFailed {
+                    reason: "Offset conv bias parameter is missing".to_owned(),
                 })?
                 .val()
                 .zeros_like(),
         ));
 
-        let mut modulator_conv =
-            Conv2dConfig::new([self.in_channels, self.kernel_size * self.kernel_size], [
-                self.kernel_size,
-                self.kernel_size,
-            ])
-            .with_stride([self.stride, self.stride])
-            .with_padding(PaddingConfig2d::Explicit(self.padding, self.padding))
-            .init(device);
+        let mut modulator_conv = Conv2dConfig::new(
+            [self.in_channels, self.kernel_size * self.kernel_size],
+            [self.kernel_size, self.kernel_size],
+        )
+        .with_stride([self.stride, self.stride])
+        .with_padding(PaddingConfig2d::Explicit(self.padding, self.padding))
+        .init(device);
 
         modulator_conv.weight = Param::from_tensor(modulator_conv.weight.val().zeros_like());
         modulator_conv.bias = Some(Param::from_tensor(
             modulator_conv
                 .bias
-                .ok_or_else(|| {
-                    BiRefNetError::ModelInitializationFailed {
-                        reason: "Modulator conv bias parameter is missing".to_owned(),
-                    }
+                .ok_or_else(|| BiRefNetError::ModelInitializationFailed {
+                    reason: "Modulator conv bias parameter is missing".to_owned(),
                 })?
                 .val()
                 .zeros_like(),
         ));
 
-        let regular_conv = Conv2dConfig::new([self.in_channels, self.out_channels], [
-            self.kernel_size,
-            self.kernel_size,
-        ])
+        let regular_conv = Conv2dConfig::new(
+            [self.in_channels, self.out_channels],
+            [self.kernel_size, self.kernel_size],
+        )
         .with_stride([self.stride, self.stride])
         .with_padding(PaddingConfig2d::Explicit(self.padding, self.padding))
         .with_bias(self.bias)

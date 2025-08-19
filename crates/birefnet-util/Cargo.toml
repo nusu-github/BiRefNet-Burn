@@ -15,10 +15,8 @@ burn = { workspace = true }
 burn-import = { workspace = true, features = ["pytorch", "safetensors"] }
 birefnet-model = { path = "../birefnet-model" }
 
-anyhow = { workspace = true }
 thiserror = { workspace = true }
-cfg-if = { workspace = true }
-image = { workspace = true, features = ["jpeg", "png"] }
+image = { workspace = true, features = ["jpeg", "png", "tiff", "bmp", "webp"] }
 hf-hub = { workspace = true }
 
 [dev-dependencies]

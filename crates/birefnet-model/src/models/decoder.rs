@@ -217,11 +217,11 @@ impl DecoderConfig {
         }
 
         // Convert Vec to array safely
-        blocks.try_into().map_err(|_| {
-            crate::error::BiRefNetError::ModelInitializationFailed {
+        blocks
+            .try_into()
+            .map_err(|_| crate::error::BiRefNetError::ModelInitializationFailed {
                 reason: "Failed to create decoder blocks".to_string(),
-            }
-        })
+            })
     }
 
     /// Creates lateral blocks with reduced duplication.
@@ -321,22 +321,18 @@ impl DecoderConfig {
         device: &Device<B>,
     ) -> BiRefNetResult<DecoderBlockModule<B>> {
         match self.config.decoder.dec_blk {
-            DecBlk::BasicDecBlk => {
-                Ok(DecoderBlockModule::BasicDecBlk(
-                    BasicDecBlkConfig::new(SqueezeBlock::ASPPDeformable(0), interpolation_strategy)
-                        .with_in_channels(in_channels)
-                        .with_out_channels(out_channels)
-                        .init(device)?,
-                ))
-            }
-            DecBlk::ResBlk => {
-                Ok(DecoderBlockModule::ResBlk(
-                    ResBlkConfig::new(interpolation_strategy)
-                        .with_in_channels(in_channels)
-                        .with_out_channels(Some(out_channels))
-                        .init(device)?,
-                ))
-            }
+            DecBlk::BasicDecBlk => Ok(DecoderBlockModule::BasicDecBlk(
+                BasicDecBlkConfig::new(SqueezeBlock::ASPPDeformable(0), interpolation_strategy)
+                    .with_in_channels(in_channels)
+                    .with_out_channels(out_channels)
+                    .init(device)?,
+            )),
+            DecBlk::ResBlk => Ok(DecoderBlockModule::ResBlk(
+                ResBlkConfig::new(interpolation_strategy)
+                    .with_in_channels(in_channels)
+                    .with_out_channels(Some(out_channels))
+                    .init(device)?,
+            )),
         }
     }
 
@@ -347,14 +343,12 @@ impl DecoderConfig {
         device: &Device<B>,
     ) -> LateralBlockModule<B> {
         match self.config.decoder.lat_blk {
-            LateralBlock::BasicLatBlk => {
-                LateralBlockModule::BasicLatBlk(
-                    BasicLatBlkConfig::new()
-                        .with_in_channels(in_channels)
-                        .with_out_channels(out_channels)
-                        .init(device),
-                )
-            }
+            LateralBlock::BasicLatBlk => LateralBlockModule::BasicLatBlk(
+                BasicLatBlkConfig::new()
+                    .with_in_channels(in_channels)
+                    .with_out_channels(out_channels)
+                    .init(device),
+            ),
         }
     }
 }

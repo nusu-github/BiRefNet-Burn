@@ -88,20 +88,16 @@ impl BasicDecBlkConfig {
             .init(device);
         let relu_in = Relu::new();
         let dec_att = match self.dec_att {
-            SqueezeBlock::ASPP(_) => {
-                Some(BasicDecSqueezeBlockModule::ASPP(
-                    ASPPConfig::new(self.interpolation.clone())
-                        .with_in_channels(self.inter_channels)
-                        .init(device),
-                ))
-            }
-            SqueezeBlock::ASPPDeformable(_) => {
-                Some(BasicDecSqueezeBlockModule::ASPPDeformable(
-                    ASPPDeformableConfig::new(self.interpolation.clone())
-                        .with_in_channels(self.inter_channels)
-                        .init(device)?,
-                ))
-            }
+            SqueezeBlock::ASPP(_) => Some(BasicDecSqueezeBlockModule::ASPP(
+                ASPPConfig::new(self.interpolation.clone())
+                    .with_in_channels(self.inter_channels)
+                    .init(device),
+            )),
+            SqueezeBlock::ASPPDeformable(_) => Some(BasicDecSqueezeBlockModule::ASPPDeformable(
+                ASPPDeformableConfig::new(self.interpolation.clone())
+                    .with_in_channels(self.inter_channels)
+                    .init(device)?,
+            )),
             _ => None,
         };
         let conv_out = Conv2dConfig::new([self.inter_channels, self.out_channels], [3, 3])
@@ -153,12 +149,10 @@ impl<B: Backend> BasicDecBlk<B> {
 
         // Optional attention/squeeze block
         let x = match &self.dec_att {
-            Some(dec_att) => {
-                match dec_att {
-                    BasicDecSqueezeBlockModule::ASPP(aspp) => aspp.forward(x),
-                    BasicDecSqueezeBlockModule::ASPPDeformable(aspp_def) => aspp_def.forward(x),
-                }
-            }
+            Some(dec_att) => match dec_att {
+                BasicDecSqueezeBlockModule::ASPP(aspp) => aspp.forward(x),
+                BasicDecSqueezeBlockModule::ASPPDeformable(aspp_def) => aspp_def.forward(x),
+            },
             None => x,
         };
 
@@ -221,20 +215,16 @@ impl ResBlkConfig {
 
         // Initialize attention module based on dec_att
         let dec_att = match self.dec_att {
-            DecoderAttention::ASPP => {
-                Some(ResBlkSqueezeBlockModule::ASPP(
-                    ASPPConfig::new(self.interpolation.clone())
-                        .with_in_channels(inter_channels)
-                        .init(device),
-                ))
-            }
-            DecoderAttention::ASPPDeformable => {
-                Some(ResBlkSqueezeBlockModule::ASPPDeformable(
-                    ASPPDeformableConfig::new(self.interpolation.clone())
-                        .with_in_channels(inter_channels)
-                        .init(device)?,
-                ))
-            }
+            DecoderAttention::ASPP => Some(ResBlkSqueezeBlockModule::ASPP(
+                ASPPConfig::new(self.interpolation.clone())
+                    .with_in_channels(inter_channels)
+                    .init(device),
+            )),
+            DecoderAttention::ASPPDeformable => Some(ResBlkSqueezeBlockModule::ASPPDeformable(
+                ASPPDeformableConfig::new(self.interpolation.clone())
+                    .with_in_channels(inter_channels)
+                    .init(device)?,
+            )),
             DecoderAttention::None => None,
         };
 
@@ -297,12 +287,10 @@ impl<B: Backend> ResBlk<B> {
 
         // Optional attention/squeeze block
         let x = match &self.dec_att {
-            Some(dec_att) => {
-                match dec_att {
-                    ResBlkSqueezeBlockModule::ASPP(aspp) => aspp.forward(x),
-                    ResBlkSqueezeBlockModule::ASPPDeformable(aspp_def) => aspp_def.forward(x),
-                }
-            }
+            Some(dec_att) => match dec_att {
+                ResBlkSqueezeBlockModule::ASPP(aspp) => aspp.forward(x),
+                ResBlkSqueezeBlockModule::ASPPDeformable(aspp_def) => aspp_def.forward(x),
+            },
             None => x,
         };
 

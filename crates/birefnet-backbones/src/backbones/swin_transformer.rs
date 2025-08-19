@@ -628,9 +628,10 @@ impl<B: Backend> SwinTransformerBlock<B> {
 
         let (shifted_x, attn_mask) = {
             if self.shift_size > 0 {
-                let shifted_x = x.roll(&[-(self.shift_size as i64), -(self.shift_size as i64)], &[
-                    1, 2,
-                ]);
+                let shifted_x = x.roll(
+                    &[-(self.shift_size as i64), -(self.shift_size as i64)],
+                    &[1, 2],
+                );
                 let attn_mask = mask_matrix;
                 (shifted_x, Some(attn_mask))
             } else {
@@ -1004,10 +1005,10 @@ pub struct PatchEmbedConfig {
 
 impl PatchEmbedConfig {
     pub fn init<B: Backend>(&self, device: &Device<B>) -> PatchEmbed<B> {
-        let proj = Conv2dConfig::new([self.in_channels, self.embed_dim], [
-            self.patch_size,
-            self.patch_size,
-        ])
+        let proj = Conv2dConfig::new(
+            [self.in_channels, self.embed_dim],
+            [self.patch_size, self.patch_size],
+        )
         .with_stride([self.patch_size, self.patch_size])
         .init(device);
         let norm = self
@@ -1301,11 +1302,10 @@ impl<B: Backend> SwinTransformer<B> {
                 outs.push(out);
             }
         }
-        outs.try_into().map_err(|_| {
-            SwinTransformerError::TensorOperationFailed {
+        outs.try_into()
+            .map_err(|_| SwinTransformerError::TensorOperationFailed {
                 operation: "Failed to convert outputs to array".to_string(),
-            }
-        })
+            })
     }
 }
 
@@ -1438,12 +1438,15 @@ mod tests {
         // Test window partition
         let windows = window_partition(input.clone(), window_size);
         let expected_num_windows = (h / window_size) * (w / window_size);
-        assert_eq!(windows.shape().dims, [
-            batch_size * expected_num_windows,
-            window_size,
-            window_size,
-            channels
-        ]);
+        assert_eq!(
+            windows.shape().dims,
+            [
+                batch_size * expected_num_windows,
+                window_size,
+                window_size,
+                channels
+            ]
+        );
 
         // Test window reverse
         let reversed = window_reverse(windows, window_size, h, w);
@@ -1535,9 +1538,10 @@ mod tests {
         let output_h = (height + patch_size - 1) / patch_size; // Ceiling division for padding
         let output_w = (width + patch_size - 1) / patch_size;
 
-        assert_eq!(output.shape().dims, [
-            batch_size, embed_dim, output_h, output_w
-        ]);
+        assert_eq!(
+            output.shape().dims,
+            [batch_size, embed_dim, output_h, output_w]
+        );
 
         // Verify that the output dimensions make sense
         assert!(
@@ -1575,11 +1579,10 @@ mod tests {
         let expected_w = (w + 1) / 2; // Ceiling division
         let expected_channels = 2 * input_dim;
 
-        assert_eq!(output.shape().dims, [
-            batch_size,
-            expected_h * expected_w,
-            expected_channels
-        ]);
+        assert_eq!(
+            output.shape().dims,
+            [batch_size, expected_h * expected_w, expected_channels]
+        );
 
         // Verify spatial reduction and channel doubling
         assert!(
@@ -1683,11 +1686,10 @@ mod tests {
             // After downsampling - spatial dims halved, channels doubled
             let expected_h = (h + 1) / 2; // Ceiling division
             let expected_w = (w + 1) / 2; // Ceiling division
-            assert_eq!(x_down.shape().dims, [
-                batch_size,
-                expected_h * expected_w,
-                2 * dim
-            ]);
+            assert_eq!(
+                x_down.shape().dims,
+                [batch_size, expected_h * expected_w, 2 * dim]
+            );
             assert_eq!(h_down, expected_h);
             assert_eq!(w_down, expected_w);
         } else {

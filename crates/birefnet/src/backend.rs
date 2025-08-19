@@ -2,61 +2,96 @@
 //!
 //! This module provides a centralized way to handle backend selection
 //! based on feature flags for the main BiRefNet crate.
+//! https://github.com/tracel-ai/burn-lm/blob/main/crates/burn-lm-inference/src/backends.rs
 
-use cfg_if::cfg_if;
-
-cfg_if! {
-    if #[cfg(feature = "cuda")] {
-        use burn::backend::cuda::{Cuda, CudaDevice};
-
-        /// Selected backend type
-        pub type SelectedBackend = Cuda;
-        /// Selected device type
-        pub type SelectedDevice = CudaDevice;
-
-        /// Creates the appropriate device for the selected backend
-        pub fn create_device() -> SelectedDevice {
-            CudaDevice::default()
+mod elems {
+    cfg_if::cfg_if! {
+        // NOTE: f16/bf16 is not always supported on wgpu depending on the hardware
+        // https://github.com/gfx-rs/wgpu/issues/7468
+        if #[cfg(all(feature = "f16", any(feature = "cuda", feature = "wgpu", feature = "vulkan", feature = "metal", feature = "rocm")))]{
+            pub type ElemType = burn::tensor::f16;
+            pub const DTYPE_NAME: &str = "f16";
         }
-
-        /// Gets the backend name for logging purposes
-        pub const fn get_backend_name() -> &'static str {
-            "CUDA (NVIDIA GPU)"
-        }
-    } else if #[cfg(feature = "wgpu")] {
-        use burn::backend::wgpu::{Wgpu, WgpuDevice};
-
-        /// Selected backend type
-        pub type SelectedBackend = Wgpu;
-        /// Selected device type
-        pub type SelectedDevice = WgpuDevice;
-
-        /// Creates the appropriate device for the selected backend
-        pub fn create_device() -> SelectedDevice {
-            WgpuDevice::default()
-        }
-
-        /// Gets the backend name for logging purposes
-        pub const fn get_backend_name() -> &'static str {
-            "WGPU (GPU)"
-        }
-    } else {
-        // Default to ndarray backend
-        use burn::backend::ndarray::{NdArray, NdArrayDevice};
-
-        /// Selected backend type
-        pub type SelectedBackend = NdArray;
-        /// Selected device type
-        pub type SelectedDevice = NdArrayDevice;
-
-        /// Creates the appropriate device for the selected backend
-         pub fn create_device() -> SelectedDevice {
-            NdArrayDevice::default()
-        }
-
-        /// Gets the backend name for logging purposes
-         pub const fn get_backend_name() -> &'static str {
-            "NdArray (CPU)"
+        else if #[cfg(all(feature = "f16", any(feature = "cuda", feature = "wgpu", feature = "vulkan", feature = "metal", feature = "rocm")))]{
+            pub type ElemType = burn::tensor::bf16;
+            pub const DTYPE_NAME: &str = "bf16";
+        } else {
+            pub type ElemType = f32;
+            pub const DTYPE_NAME: &str = "f32";
         }
     }
+}
+
+pub use elems::*;
+
+// Cuda ----------------------------------------------------------------------
+
+#[cfg(feature = "cuda")]
+pub mod burn_backend_types {
+    use burn::backend::cuda::{Cuda, CudaDevice};
+
+    use super::*;
+    pub type InferenceBackend = Cuda<ElemType>;
+    pub type InferenceDevice = CudaDevice;
+    pub const INFERENCE_DEVICE: std::sync::LazyLock<CudaDevice> =
+        std::sync::LazyLock::new(|| CudaDevice::default());
+    pub const NAME: &str = "cuda";
+}
+
+// ROCm ----------------------------------------------------------------------
+
+#[cfg(feature = "rocm")]
+pub mod burn_backend_types {
+    use burn::backend::rocm::{Rocm, RocmDevice};
+
+    use super::*;
+    pub type InferenceBackend = Rocm<ElemType>;
+    pub type InferenceDevice = RocmDevice;
+    pub const INFERENCE_DEVICE: std::sync::LazyLock<RocmDevice> =
+        std::sync::LazyLock::new(|| RocmDevice::default());
+    pub const NAME: &str = "rocm";
+}
+
+// ndarray -------------------------------------------------------------------
+// This backend is used for testing and by default when no backend is selected.
+
+#[cfg(feature = "ndarray")]
+pub mod burn_backend_types {
+    use burn::backend::ndarray::{NdArray, NdArrayDevice};
+
+    use super::*;
+
+    pub type InferenceBackend = NdArray<ElemType>;
+    pub type InferenceDevice = NdArrayDevice;
+    pub const INFERENCE_DEVICE: InferenceDevice = NdArrayDevice::Cpu;
+    pub const NAME: &str = "ndarray";
+}
+
+// WebGPU --------------------------------------------------------------------
+
+#[cfg(any(feature = "wgpu", feature = "vulkan", feature = "metal"))]
+pub mod burn_backend_types {
+    use burn::backend::wgpu::{Wgpu, WgpuDevice};
+
+    use super::*;
+    pub type InferenceBackend = Wgpu<ElemType>;
+    pub type InferenceDevice = WgpuDevice;
+    pub const INFERENCE_DEVICE: InferenceDevice = WgpuDevice::DefaultDevice;
+    #[cfg(all(feature = "wgpu", not(feature = "vulkan"), not(feature = "metal")))]
+    pub const NAME: &str = "wgpu";
+    #[cfg(feature = "vulkan")]
+    pub const NAME: &str = "vulkan";
+    #[cfg(feature = "metal")]
+    pub const NAME: &str = "metal";
+}
+
+#[cfg(feature = "wgpu-cpu")]
+pub mod burn_backend_types {
+    use burn::backend::wgpu::{Wgpu, WgpuDevice};
+
+    use super::*;
+    pub type InferenceBackend = Wgpu<ElemType>;
+    pub type InferenceDevice = WgpuDevice;
+    pub const INFERENCE_DEVICE: InferenceDevice = WgpuDevice::Cpu;
+    pub const NAME: &str = "wgpu-cpu";
 }

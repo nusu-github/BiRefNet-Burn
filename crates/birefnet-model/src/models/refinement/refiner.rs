@@ -318,10 +318,10 @@ impl RefinerPVTInChannels4Config {
             DecoderAttention::ASPPDeformable => SqueezeBlock::ASPPDeformable(0),
         };
 
-        let squeeze_module = BasicDecBlkConfig::new(squeeze_block,self.config.interpolation.clone())
-            .with_in_channels(channels[3]) // Use highest resolution features
-            .with_out_channels(channels[3])
-            .init(device)?;
+        let squeeze_module = BasicDecBlkConfig::new(squeeze_block, self.config.interpolation.clone())
+                .with_in_channels(channels[3]) // Use highest resolution features
+                .with_out_channels(channels[3])
+                .init(device)?;
 
         let decoder = RefinerDecoderConfig::new(
             self.config.clone(),
@@ -416,10 +416,10 @@ impl RefinerConfig {
             DecoderAttention::ASPPDeformable => SqueezeBlock::ASPPDeformable(0),
         };
 
-        let squeeze_module = BasicDecBlkConfig::new(squeeze_block,self.config.interpolation.clone())
-            .with_in_channels(channels[3]) // Use highest resolution features
-            .with_out_channels(channels[3])
-            .init(device)?;
+        let squeeze_module = BasicDecBlkConfig::new(squeeze_block, self.config.interpolation.clone())
+                .with_in_channels(channels[3]) // Use highest resolution features
+                .with_out_channels(channels[3])
+                .init(device)?;
 
         let decoder = RefinerDecoderConfig::new(
             self.config.clone(),

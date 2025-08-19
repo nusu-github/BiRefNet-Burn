@@ -230,34 +230,26 @@ pub fn create_backbone<B: Backend>(
         }
         BackboneType::SwinTransformer(variant) => {
             let config = match variant {
-                SwinVariant::SwinT => {
-                    SwinTransformerConfig::new()
-                        .with_embed_dim(96)
-                        .with_depths([2, 2, 6, 2])
-                        .with_num_heads([3, 6, 12, 24])
-                        .with_window_size(7)
-                }
-                SwinVariant::SwinS => {
-                    SwinTransformerConfig::new()
-                        .with_embed_dim(96)
-                        .with_depths([2, 2, 18, 2])
-                        .with_num_heads([3, 6, 12, 24])
-                        .with_window_size(7)
-                }
-                SwinVariant::SwinB => {
-                    SwinTransformerConfig::new()
-                        .with_embed_dim(128)
-                        .with_depths([2, 2, 18, 2])
-                        .with_num_heads([4, 8, 16, 32])
-                        .with_window_size(12)
-                }
-                SwinVariant::SwinL => {
-                    SwinTransformerConfig::new()
-                        .with_embed_dim(192)
-                        .with_depths([2, 2, 18, 2])
-                        .with_num_heads([6, 12, 24, 48])
-                        .with_window_size(12)
-                }
+                SwinVariant::SwinT => SwinTransformerConfig::new()
+                    .with_embed_dim(96)
+                    .with_depths([2, 2, 6, 2])
+                    .with_num_heads([3, 6, 12, 24])
+                    .with_window_size(7),
+                SwinVariant::SwinS => SwinTransformerConfig::new()
+                    .with_embed_dim(96)
+                    .with_depths([2, 2, 18, 2])
+                    .with_num_heads([3, 6, 12, 24])
+                    .with_window_size(7),
+                SwinVariant::SwinB => SwinTransformerConfig::new()
+                    .with_embed_dim(128)
+                    .with_depths([2, 2, 18, 2])
+                    .with_num_heads([4, 8, 16, 32])
+                    .with_window_size(12),
+                SwinVariant::SwinL => SwinTransformerConfig::new()
+                    .with_embed_dim(192)
+                    .with_depths([2, 2, 18, 2])
+                    .with_num_heads([6, 12, 24, 48])
+                    .with_window_size(12),
             };
             let backbone = config.init(device).unwrap_or_else(|err| {
                 panic!("Failed to initialize SwinTransformer with variant {variant:?}: {err}")

@@ -104,11 +104,9 @@ impl ImageUtils {
         device: &B::Device,
     ) -> ImageResult<Tensor<B, 4>> {
         let path_str = path.as_ref().display().to_string();
-        let img = image::open(&path).map_err(|source| {
-            ImageError::ImageLoadError {
-                path: path_str,
-                source,
-            }
+        let img = image::open(&path).map_err(|source| ImageError::ImageLoadError {
+            path: path_str,
+            source,
         })?;
 
         Self::dynamic_image_to_tensor(img, device)
@@ -126,8 +124,7 @@ impl ImageUtils {
         let rgb_img = img.into_rgb32f();
         let buf = rgb_img.into_raw();
 
-        let data =
-            TensorData::new(buf, [height as usize, width as usize, 3]).convert::<B::FloatElem>();
+        let data = TensorData::new(buf, [height as usize, width as usize, 3]);
         let tensor = Tensor::from_data(data, device);
 
         // Permute to [channels, height, width] and add batch dimension
@@ -165,10 +162,8 @@ impl ImageUtils {
             .into_data()
             .convert_dtype(DType::F32)
             .to_vec::<f32>()
-            .map_err(|e| {
-                ImageError::TensorConversionError {
-                    reason: format!("{:#?}", e),
-                }
+            .map_err(|e| ImageError::TensorConversionError {
+                reason: format!("{:#?}", e),
             })?;
 
         // Create f64 ImageBuffer first, then convert to u8 using ConvertBuffer trait
@@ -176,10 +171,8 @@ impl ImageUtils {
             (true, 1) => {
                 let f64_buffer =
                     ImageBuffer::<Luma<f32>, _>::from_raw(width as u32, height as u32, data)
-                        .ok_or_else(|| {
-                            ImageError::BufferCreationError {
-                                reason: "Failed to create grayscale f32 image buffer".to_string(),
-                            }
+                        .ok_or_else(|| ImageError::BufferCreationError {
+                            reason: "Failed to create grayscale f32 image buffer".to_string(),
                         })?;
                 let u8_buffer: ImageBuffer<Luma<u8>, Vec<u8>> = f64_buffer.convert();
                 DynamicImage::ImageLuma8(u8_buffer)
@@ -187,10 +180,8 @@ impl ImageUtils {
             (false, 3) => {
                 let f64_buffer =
                     ImageBuffer::<Rgb<f32>, _>::from_raw(width as u32, height as u32, data)
-                        .ok_or_else(|| {
-                            ImageError::BufferCreationError {
-                                reason: "Failed to create RGB f32 image buffer".to_string(),
-                            }
+                        .ok_or_else(|| ImageError::BufferCreationError {
+                            reason: "Failed to create RGB f32 image buffer".to_string(),
                         })?;
                 let u8_buffer: ImageBuffer<Rgb<u8>, Vec<u8>> = f64_buffer.convert();
                 DynamicImage::ImageRgb8(u8_buffer)
@@ -198,10 +189,8 @@ impl ImageUtils {
             (false, 4) => {
                 let f64_buffer =
                     ImageBuffer::<Rgba<f32>, _>::from_raw(width as u32, height as u32, data)
-                        .ok_or_else(|| {
-                            ImageError::BufferCreationError {
-                                reason: "Failed to create RGBA f32 image buffer".to_string(),
-                            }
+                        .ok_or_else(|| ImageError::BufferCreationError {
+                            reason: "Failed to create RGBA f32 image buffer".to_string(),
                         })?;
                 let u8_buffer: ImageBuffer<Rgba<u8>, Vec<u8>> = f64_buffer.convert();
                 DynamicImage::ImageRgba8(u8_buffer)
@@ -283,11 +272,9 @@ impl ImageUtils {
         device: &B::Device,
     ) -> ImageResult<Tensor<B, 4>> {
         let path_str = path.as_ref().display().to_string();
-        let img = image::open(&path).map_err(|source| {
-            ImageError::ImageLoadError {
-                path: path_str,
-                source,
-            }
+        let img = image::open(&path).map_err(|source| ImageError::ImageLoadError {
+            path: path_str,
+            source,
         })?;
 
         let resized = img.resize_exact(target_size.0, target_size.1, filter);
@@ -383,13 +370,12 @@ impl ImageUtils {
         }
 
         // Load first image to get expected dimensions
-        let first_tensor = Self::load_image(&paths[0], device).map_err(|e| {
-            ImageError::BatchLoadError {
+        let first_tensor =
+            Self::load_image(&paths[0], device).map_err(|e| ImageError::BatchLoadError {
                 index: 0,
                 path: paths[0].as_ref().display().to_string(),
                 source: Box::new(e),
-            }
-        })?;
+            })?;
         let [_, _, expected_height, expected_width] = first_tensor.dims();
 
         let mut tensors = Vec::with_capacity(paths.len());
@@ -397,13 +383,12 @@ impl ImageUtils {
 
         // Process remaining images
         for (i, path) in paths.iter().enumerate().skip(1) {
-            let tensor = Self::load_image(path, device).map_err(|e| {
-                ImageError::BatchLoadError {
+            let tensor =
+                Self::load_image(path, device).map_err(|e| ImageError::BatchLoadError {
                     index: i,
                     path: path.as_ref().display().to_string(),
                     source: Box::new(e),
-                }
-            })?;
+                })?;
 
             let [_, _, height, width] = tensor.dims();
             if height != expected_height || width != expected_width {

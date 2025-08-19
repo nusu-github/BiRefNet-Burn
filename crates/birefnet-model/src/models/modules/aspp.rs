@@ -35,10 +35,10 @@ pub struct _ASPPModuleConfig {
 impl _ASPPModuleConfig {
     /// Creates a new `_ASPPModule` following Burn conventions.
     pub fn init<B: Backend>(&self, device: &Device<B>) -> _ASPPModule<B> {
-        let atrous_conv = Conv2dConfig::new([self.in_channels, self.planes], [
-            self.kernel_size,
-            self.kernel_size,
-        ])
+        let atrous_conv = Conv2dConfig::new(
+            [self.in_channels, self.planes],
+            [self.kernel_size, self.kernel_size],
+        )
         .with_stride([1, 1])
         .with_padding(PaddingConfig2d::Explicit(self.padding, self.padding))
         .with_dilation([self.dilation, self.dilation])

@@ -93,11 +93,9 @@ pub fn build_norm_layer<B: Backend>(
             }
             Ok(layer)
         }
-        _ => {
-            Err(BiRefNetError::UnsupportedSqueezeBlock {
-                block_type: format!("Unsupported norm layer: {norm_layer}"),
-            })
-        }
+        _ => Err(BiRefNetError::UnsupportedSqueezeBlock {
+            block_type: format!("Unsupported norm layer: {norm_layer}"),
+        }),
     }
 }
 
@@ -135,23 +133,4 @@ pub fn intelligent_interpolate<B: Backend>(
     };
 
     interpolate(tensor, size, InterpolateOptions::new(interpolate_mode))
-}
-
-/// Convenience function for interpolating tensors to match another tensor's spatial dimensions.
-///
-/// # Arguments
-/// * `tensor` - Input tensor to interpolate
-/// * `target` - Target tensor whose spatial dimensions to match
-/// * `strategy` - Interpolation strategy configuration
-/// * `is_training` - Whether the model is currently in training mode
-///
-/// # Returns
-/// Interpolated tensor with spatial dimensions matching the target tensor
-pub fn intelligent_interpolate_like<B: Backend>(
-    tensor: Tensor<B, 4>,
-    target: &Tensor<B, 4>,
-    strategy: &InterpolationStrategy,
-) -> Tensor<B, 4> {
-    let [_, _, h, w] = target.dims();
-    intelligent_interpolate(tensor, [h, w], strategy)
 }

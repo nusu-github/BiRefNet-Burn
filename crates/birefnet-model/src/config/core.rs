@@ -236,10 +236,8 @@ impl ModelConfig {
                 .collect();
             reversed[reversed.len().saturating_sub(self.decoder.cxt_num)..]
                 .try_into()
-                .map_err(|_| {
-                    BiRefNetError::InvalidConfiguration {
-                        reason: format!("Invalid context number: {}", self.decoder.cxt_num),
-                    }
+                .map_err(|_| BiRefNetError::InvalidConfiguration {
+                    reason: format!("Invalid context number: {}", self.decoder.cxt_num),
                 })
         } else {
             Ok([0, 0, 0])
@@ -270,10 +268,8 @@ impl DecoderConfig {
             let reversed: Vec<usize> = lateral_channels[1..].iter().rev().copied().collect();
             reversed[reversed.len().saturating_sub(self.cxt_num)..]
                 .try_into()
-                .map_err(|_| {
-                    BiRefNetError::InvalidConfiguration {
-                        reason: format!("Invalid context number: {}", self.cxt_num),
-                    }
+                .map_err(|_| BiRefNetError::InvalidConfiguration {
+                    reason: format!("Invalid context number: {}", self.cxt_num),
                 })
         } else {
             Ok([0, 0, 0])

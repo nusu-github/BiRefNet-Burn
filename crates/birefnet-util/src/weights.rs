@@ -42,7 +42,7 @@ pub enum WeightError {
     #[error("failed to load model weights: {reason}")]
     ModelLoadError { reason: String },
 
-    /// Record loading errors  
+    /// Record loading errors
     #[error("failed to load model record: {reason}")]
     RecordLoadError { reason: String },
 
@@ -80,186 +80,231 @@ static MODEL_SPECS: LazyLock<HashMap<String, ModelSpec>> = LazyLock::new(|| {
 
     // Define all models in one place
     let models = [
-        ("General", ModelSpec {
-            hf_model_id: "BiRefNet",
-            default_resolution: (1024, 1024),
-            supports_dynamic_resolution: false,
-            config_builder: || {
-                create_config(
-                    Task::General,
-                    Backbone::SwinV1L,
-                    Some(InterpolationStrategy::Bilinear),
-                )
+        (
+            "General",
+            ModelSpec {
+                hf_model_id: "BiRefNet",
+                default_resolution: (1024, 1024),
+                supports_dynamic_resolution: false,
+                config_builder: || {
+                    create_config(
+                        Task::General,
+                        Backbone::SwinV1L,
+                        Some(InterpolationStrategy::Bilinear),
+                    )
+                },
             },
-        }),
-        ("General-HR", ModelSpec {
-            hf_model_id: "BiRefNet_HR",
-            default_resolution: (2048, 2048),
-            supports_dynamic_resolution: false,
-            config_builder: || {
-                create_config(
-                    Task::General2k,
-                    Backbone::SwinV1L,
-                    Some(InterpolationStrategy::Bilinear),
-                )
+        ),
+        (
+            "General-HR",
+            ModelSpec {
+                hf_model_id: "BiRefNet_HR",
+                default_resolution: (2048, 2048),
+                supports_dynamic_resolution: false,
+                config_builder: || {
+                    create_config(
+                        Task::General2k,
+                        Backbone::SwinV1L,
+                        Some(InterpolationStrategy::Bilinear),
+                    )
+                },
             },
-        }),
-        ("Matting-HR", ModelSpec {
-            hf_model_id: "BiRefNet_HR-matting",
-            default_resolution: (2048, 2048),
-            supports_dynamic_resolution: false,
-            config_builder: || {
-                create_config(
-                    Task::Matting,
-                    Backbone::SwinV1L,
-                    Some(InterpolationStrategy::Bilinear),
-                )
+        ),
+        (
+            "Matting-HR",
+            ModelSpec {
+                hf_model_id: "BiRefNet_HR-matting",
+                default_resolution: (2048, 2048),
+                supports_dynamic_resolution: false,
+                config_builder: || {
+                    create_config(
+                        Task::Matting,
+                        Backbone::SwinV1L,
+                        Some(InterpolationStrategy::Bilinear),
+                    )
+                },
             },
-        }),
-        ("Matting", ModelSpec {
-            hf_model_id: "BiRefNet-matting",
-            default_resolution: (1024, 1024),
-            supports_dynamic_resolution: false,
-            config_builder: || {
-                create_config(
-                    Task::Matting,
-                    Backbone::SwinV1L,
-                    Some(InterpolationStrategy::Bilinear),
-                )
+        ),
+        (
+            "Matting",
+            ModelSpec {
+                hf_model_id: "BiRefNet-matting",
+                default_resolution: (1024, 1024),
+                supports_dynamic_resolution: false,
+                config_builder: || {
+                    create_config(
+                        Task::Matting,
+                        Backbone::SwinV1L,
+                        Some(InterpolationStrategy::Bilinear),
+                    )
+                },
             },
-        }),
-        ("Portrait", ModelSpec {
-            hf_model_id: "BiRefNet-portrait",
-            default_resolution: (1024, 1024),
-            supports_dynamic_resolution: false,
-            config_builder: || {
-                create_config(
-                    Task::Matting,
-                    Backbone::SwinV1L,
-                    Some(InterpolationStrategy::Bilinear),
-                )
+        ),
+        (
+            "Portrait",
+            ModelSpec {
+                hf_model_id: "BiRefNet-portrait",
+                default_resolution: (1024, 1024),
+                supports_dynamic_resolution: false,
+                config_builder: || {
+                    create_config(
+                        Task::Matting,
+                        Backbone::SwinV1L,
+                        Some(InterpolationStrategy::Bilinear),
+                    )
+                },
             },
-        }),
-        ("General-reso_512", ModelSpec {
-            hf_model_id: "BiRefNet_512x512",
-            default_resolution: (512, 512),
-            supports_dynamic_resolution: false,
-            config_builder: || {
-                create_config(
-                    Task::General,
-                    Backbone::SwinV1T,
-                    Some(InterpolationStrategy::Bilinear),
-                )
+        ),
+        (
+            "General-reso_512",
+            ModelSpec {
+                hf_model_id: "BiRefNet_512x512",
+                default_resolution: (512, 512),
+                supports_dynamic_resolution: false,
+                config_builder: || {
+                    create_config(
+                        Task::General,
+                        Backbone::SwinV1T,
+                        Some(InterpolationStrategy::Bilinear),
+                    )
+                },
             },
-        }),
-        ("General-Lite", ModelSpec {
-            hf_model_id: "BiRefNet_lite",
-            default_resolution: (1024, 1024),
-            supports_dynamic_resolution: false,
-            config_builder: || {
-                create_config(
-                    Task::General,
-                    Backbone::SwinV1T,
-                    Some(InterpolationStrategy::Bilinear),
-                )
+        ),
+        (
+            "General-Lite",
+            ModelSpec {
+                hf_model_id: "BiRefNet_lite",
+                default_resolution: (1024, 1024),
+                supports_dynamic_resolution: false,
+                config_builder: || {
+                    create_config(
+                        Task::General,
+                        Backbone::SwinV1T,
+                        Some(InterpolationStrategy::Bilinear),
+                    )
+                },
             },
-        }),
-        ("General-Lite-2K", ModelSpec {
-            hf_model_id: "BiRefNet_lite-2K",
-            default_resolution: (2048, 2048),
-            supports_dynamic_resolution: false,
-            config_builder: || {
-                create_config(
-                    Task::General2k,
-                    Backbone::SwinV1T,
-                    Some(InterpolationStrategy::Bilinear),
-                )
+        ),
+        (
+            "General-Lite-2K",
+            ModelSpec {
+                hf_model_id: "BiRefNet_lite-2K",
+                default_resolution: (2048, 2048),
+                supports_dynamic_resolution: false,
+                config_builder: || {
+                    create_config(
+                        Task::General2k,
+                        Backbone::SwinV1T,
+                        Some(InterpolationStrategy::Bilinear),
+                    )
+                },
             },
-        }),
-        ("DIS", ModelSpec {
-            hf_model_id: "BiRefNet-DIS5K",
-            default_resolution: (1024, 1024),
-            supports_dynamic_resolution: false,
-            config_builder: || {
-                create_config(
-                    Task::DIS5K,
-                    Backbone::SwinV1L,
-                    Some(InterpolationStrategy::Bilinear),
-                )
+        ),
+        (
+            "DIS",
+            ModelSpec {
+                hf_model_id: "BiRefNet-DIS5K",
+                default_resolution: (1024, 1024),
+                supports_dynamic_resolution: false,
+                config_builder: || {
+                    create_config(
+                        Task::DIS5K,
+                        Backbone::SwinV1L,
+                        Some(InterpolationStrategy::Bilinear),
+                    )
+                },
             },
-        }),
-        ("HRSOD", ModelSpec {
-            hf_model_id: "BiRefNet-HRSOD",
-            default_resolution: (1024, 1024),
-            supports_dynamic_resolution: false,
-            config_builder: || {
-                create_config(
-                    Task::HRSOD,
-                    Backbone::SwinV1L,
-                    Some(InterpolationStrategy::Bilinear),
-                )
+        ),
+        (
+            "HRSOD",
+            ModelSpec {
+                hf_model_id: "BiRefNet-HRSOD",
+                default_resolution: (1024, 1024),
+                supports_dynamic_resolution: false,
+                config_builder: || {
+                    create_config(
+                        Task::HRSOD,
+                        Backbone::SwinV1L,
+                        Some(InterpolationStrategy::Bilinear),
+                    )
+                },
             },
-        }),
-        ("COD", ModelSpec {
-            hf_model_id: "BiRefNet-COD",
-            default_resolution: (1024, 1024),
-            supports_dynamic_resolution: false,
-            config_builder: || {
-                create_config(
-                    Task::COD,
-                    Backbone::SwinV1L,
-                    Some(InterpolationStrategy::Bilinear),
-                )
+        ),
+        (
+            "COD",
+            ModelSpec {
+                hf_model_id: "BiRefNet-COD",
+                default_resolution: (1024, 1024),
+                supports_dynamic_resolution: false,
+                config_builder: || {
+                    create_config(
+                        Task::COD,
+                        Backbone::SwinV1L,
+                        Some(InterpolationStrategy::Bilinear),
+                    )
+                },
             },
-        }),
-        ("DIS-TR_TEs", ModelSpec {
-            hf_model_id: "BiRefNet-DIS5K-TR_TEs",
-            default_resolution: (1024, 1024),
-            supports_dynamic_resolution: false,
-            config_builder: || {
-                create_config(
-                    Task::DIS5K,
-                    Backbone::SwinV1L,
-                    Some(InterpolationStrategy::Bilinear),
-                )
+        ),
+        (
+            "DIS-TR_TEs",
+            ModelSpec {
+                hf_model_id: "BiRefNet-DIS5K-TR_TEs",
+                default_resolution: (1024, 1024),
+                supports_dynamic_resolution: false,
+                config_builder: || {
+                    create_config(
+                        Task::DIS5K,
+                        Backbone::SwinV1L,
+                        Some(InterpolationStrategy::Bilinear),
+                    )
+                },
             },
-        }),
-        ("General-legacy", ModelSpec {
-            hf_model_id: "BiRefNet-legacy",
-            default_resolution: (1024, 1024),
-            supports_dynamic_resolution: false,
-            config_builder: || {
-                create_config(
-                    Task::General,
-                    Backbone::SwinV1L,
-                    Some(InterpolationStrategy::Bilinear),
-                )
+        ),
+        (
+            "General-legacy",
+            ModelSpec {
+                hf_model_id: "BiRefNet-legacy",
+                default_resolution: (1024, 1024),
+                supports_dynamic_resolution: false,
+                config_builder: || {
+                    create_config(
+                        Task::General,
+                        Backbone::SwinV1L,
+                        Some(InterpolationStrategy::Bilinear),
+                    )
+                },
             },
-        }),
-        ("General-dynamic", ModelSpec {
-            hf_model_id: "BiRefNet_dynamic",
-            default_resolution: (1024, 1024),
-            supports_dynamic_resolution: true,
-            config_builder: || {
-                create_config(
-                    Task::General,
-                    Backbone::SwinV1L,
-                    Some(InterpolationStrategy::Bilinear),
-                )
+        ),
+        (
+            "General-dynamic",
+            ModelSpec {
+                hf_model_id: "BiRefNet_dynamic",
+                default_resolution: (1024, 1024),
+                supports_dynamic_resolution: true,
+                config_builder: || {
+                    create_config(
+                        Task::General,
+                        Backbone::SwinV1L,
+                        Some(InterpolationStrategy::Bilinear),
+                    )
+                },
             },
-        }),
-        ("Matting-dynamic", ModelSpec {
-            hf_model_id: "BiRefNet_dynamic-matting",
-            default_resolution: (1024, 1024),
-            supports_dynamic_resolution: true,
-            config_builder: || {
-                create_config(
-                    Task::Matting,
-                    Backbone::SwinV1L,
-                    Some(InterpolationStrategy::Bilinear),
-                )
+        ),
+        (
+            "Matting-dynamic",
+            ModelSpec {
+                hf_model_id: "BiRefNet_dynamic-matting",
+                default_resolution: (1024, 1024),
+                supports_dynamic_resolution: true,
+                config_builder: || {
+                    create_config(
+                        Task::Matting,
+                        Backbone::SwinV1L,
+                        Some(InterpolationStrategy::Bilinear),
+                    )
+                },
             },
-        }),
+        ),
     ];
 
     for (name, spec) in models {
@@ -356,7 +401,7 @@ pub trait ModelLoader<B: Backend> {
 pub enum WeightFormat {
     /// PyTorch .pt or .pth files
     PyTorch,
-    /// PyTorch SafeTensors .safetensors files  
+    /// PyTorch SafeTensors .safetensors files
     SafeTensors,
     /// Burn MessagePack .mpk files
     MessagePack,
@@ -445,13 +490,11 @@ impl ManagedModel {
 
     pub fn get_weights_path(&self) -> Option<PathBuf> {
         match &self.weights {
-            WeightSource::Remote { repo_id, filename } => {
-                sync::Api::new().map_or(None, |api| {
-                    api.repo(Repo::new(repo_id.clone(), RepoType::Model))
-                        .get(filename)
-                        .ok()
-                })
-            }
+            WeightSource::Remote { repo_id, filename } => sync::Api::new().map_or(None, |api| {
+                api.repo(Repo::new(repo_id.clone(), RepoType::Model))
+                    .get(filename)
+                    .ok()
+            }),
             WeightSource::Local { path } => Some(path.clone()),
         }
     }
@@ -492,11 +535,11 @@ impl ManagedModel {
 
 impl<B: Backend> ModelLoader<B> for ManagedModel {
     fn load_model<M: Module<B>>(&self, model: M, device: &B::Device) -> Result<M, WeightError> {
-        let weights_path = self.get_weights_path().ok_or_else(|| {
-            WeightError::FileSystemError {
+        let weights_path = self
+            .get_weights_path()
+            .ok_or_else(|| WeightError::FileSystemError {
                 reason: "Failed to resolve weights path".to_string(),
-            }
-        })?;
+            })?;
 
         if !weights_path.exists() {
             return Err(WeightError::FileSystemError {
@@ -531,11 +574,11 @@ impl<B: Backend> ModelLoader<B> for ManagedModel {
     }
 
     fn load_record(&self, device: &B::Device) -> Result<BiRefNetRecord<B>, WeightError> {
-        let weights_path = self.get_weights_path().ok_or_else(|| {
-            WeightError::FileSystemError {
+        let weights_path = self
+            .get_weights_path()
+            .ok_or_else(|| WeightError::FileSystemError {
                 reason: "Failed to resolve weights path".to_string(),
-            }
-        })?;
+            })?;
 
         if !weights_path.exists() {
             return Err(WeightError::FileSystemError {
@@ -590,11 +633,11 @@ impl ManagedModel {
             let x = recorder.load(load_args, device).unwrap();
             return Ok(model.load_record(x));
         }
-        let record = recorder.load(load_args, device).map_err(|e| {
-            WeightError::ModelLoadError {
+        let record = recorder
+            .load(load_args, device)
+            .map_err(|e| WeightError::ModelLoadError {
                 reason: format!("PyTorch model loading failed: {}", e),
-            }
-        })?;
+            })?;
         Ok(model.load_record(record))
     }
 
@@ -604,7 +647,8 @@ impl ManagedModel {
         weights_path: &PathBuf,
         device: &B::Device,
     ) -> Result<M, WeightError> {
-        let load_args = SafetensorsLoadArgs::new(weights_path.clone()).with_debug_print()
+        let load_args = SafetensorsLoadArgs::new(weights_path.clone())
+            .with_debug_print()
             .with_key_remap("decoder\\.conv_out1\\.0\\.(.+)", "decoder.conv_out1.$1")
             .with_key_remap(
                 "decoder\\.gdt_convs_attn_([2-4])\\.0\\.(.+)",
@@ -624,8 +668,14 @@ impl ManagedModel {
                 "(.+?)\\.gdt_convs_([2-4])\\.1\\.(.+)",
                 "$1.gdt_convs_$2.bn.$3",
             )
-            .with_key_remap("(.+)\\.global_avg_pool\\.1\\.(.+)", "$1.global_avg_pool.conv.$2")
-            .with_key_remap("(.+)\\.global_avg_pool\\.2\\.(.+)", "$1.global_avg_pool.bn.$2");
+            .with_key_remap(
+                "(.+)\\.global_avg_pool\\.1\\.(.+)",
+                "$1.global_avg_pool.conv.$2",
+            )
+            .with_key_remap(
+                "(.+)\\.global_avg_pool\\.2\\.(.+)",
+                "$1.global_avg_pool.bn.$2",
+            );
 
         let recorder = SafetensorsFileRecorder::<FullPrecisionSettings>::default();
         #[cfg(debug_assertions)]
@@ -633,11 +683,11 @@ impl ManagedModel {
             let x = recorder.load(load_args, device).unwrap();
             return Ok(model.load_record(x));
         }
-        let record = recorder.load(load_args, device).map_err(|e| {
-            WeightError::ModelLoadError {
+        let record = recorder
+            .load(load_args, device)
+            .map_err(|e| WeightError::ModelLoadError {
                 reason: format!("Safetensors model loading failed: {}", e),
-            }
-        })?;
+            })?;
         Ok(model.load_record(record))
     }
 
@@ -651,10 +701,8 @@ impl ManagedModel {
         let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
         model
             .load_file(weights_path, &recorder, device)
-            .map_err(|e| {
-                WeightError::ModelLoadError {
-                    reason: format!("MessagePack model loading failed: {}", e),
-                }
+            .map_err(|e| WeightError::ModelLoadError {
+                reason: format!("MessagePack model loading failed: {}", e),
             })
     }
 
@@ -668,10 +716,8 @@ impl ManagedModel {
         let recorder = BinFileRecorder::<FullPrecisionSettings>::new();
         model
             .load_file(weights_path, &recorder, device)
-            .map_err(|e| {
-                WeightError::ModelLoadError {
-                    reason: format!("Binary model loading failed: {}", e),
-                }
+            .map_err(|e| WeightError::ModelLoadError {
+                reason: format!("Binary model loading failed: {}", e),
             })
     }
 
@@ -687,11 +733,11 @@ impl ManagedModel {
             let x = recorder.load(load_args, device).unwrap();
             return Ok(x);
         }
-        recorder.load(load_args, device).map_err(|e| {
-            WeightError::RecordLoadError {
+        recorder
+            .load(load_args, device)
+            .map_err(|e| WeightError::RecordLoadError {
                 reason: format!("PyTorch record loading failed: {}", e),
-            }
-        })
+            })
     }
 
     fn load_safetensors_record<B: Backend>(
@@ -706,11 +752,11 @@ impl ManagedModel {
             let x = recorder.load(load_args, device).unwrap();
             return Ok(x);
         }
-        recorder.load(load_args, device).map_err(|e| {
-            WeightError::RecordLoadError {
+        recorder
+            .load(load_args, device)
+            .map_err(|e| WeightError::RecordLoadError {
                 reason: format!("Safetensors record loading failed: {}", e),
-            }
-        })
+            })
     }
 
     /// Load MessagePack record
@@ -720,11 +766,11 @@ impl ManagedModel {
         device: &B::Device,
     ) -> Result<BiRefNetRecord<B>, WeightError> {
         let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
-        recorder.load(weights_path.clone(), device).map_err(|e| {
-            WeightError::RecordLoadError {
+        recorder
+            .load(weights_path.clone(), device)
+            .map_err(|e| WeightError::RecordLoadError {
                 reason: format!("MessagePack record loading failed: {}", e),
-            }
-        })
+            })
     }
 
     /// Load Binary record
@@ -734,11 +780,11 @@ impl ManagedModel {
         device: &B::Device,
     ) -> Result<BiRefNetRecord<B>, WeightError> {
         let recorder = BinFileRecorder::<FullPrecisionSettings>::new();
-        recorder.load(weights_path.clone(), device).map_err(|e| {
-            WeightError::RecordLoadError {
+        recorder
+            .load(weights_path.clone(), device)
+            .map_err(|e| WeightError::RecordLoadError {
                 reason: format!("Binary record loading failed: {}", e),
-            }
-        })
+            })
     }
 }
 
@@ -924,11 +970,11 @@ impl<B: Backend> BiRefNetWeightLoading<B> for birefnet_model::BiRefNet<B> {
         };
 
         // Initialize a model with the configuration
-        let model = config.init(device).map_err(|e| {
-            WeightError::ModelLoadError {
+        let model = config
+            .init(device)
+            .map_err(|e| WeightError::ModelLoadError {
                 reason: format!("Failed to initialize model: {}", e),
-            }
-        })?;
+            })?;
 
         // Load weights into the model
         managed_model.load_model(model, device)

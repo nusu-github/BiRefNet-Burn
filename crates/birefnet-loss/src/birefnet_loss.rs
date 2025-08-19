@@ -68,15 +68,15 @@ pub struct BiRefNetLossConfig {
 /// These values are derived from the original PyTorch implementation.
 fn default_pixel_weights() -> LossWeightsConfig {
     LossWeightsConfig::new()
-        .with_bce(30.0)      // Binary Cross Entropy - primary pixel loss
-        .with_iou(0.5)       // Intersection over Union - shape awareness
+        .with_bce(30.0) // Binary Cross Entropy - primary pixel loss
+        .with_iou(0.5) // Intersection over Union - shape awareness
         .with_iou_patch(0.0) // Patch IoU - disabled by default for performance
-        .with_mae(100.0)     // Mean Absolute Error - pixel accuracy
-        .with_mse(0.0)       // Mean Squared Error - disabled by default
-        .with_triplet(0.0)   // Triplet loss - disabled by default
-        .with_reg(0.0)       // Threshold regularization - disabled by default
-        .with_ssim(10.0)     // Structural Similarity - perceptual quality
-        .with_cnt(0.0)       // Contour loss - disabled by default
+        .with_mae(100.0) // Mean Absolute Error - pixel accuracy
+        .with_mse(0.0) // Mean Squared Error - disabled by default
+        .with_triplet(0.0) // Triplet loss - disabled by default
+        .with_reg(0.0) // Threshold regularization - disabled by default
+        .with_ssim(10.0) // Structural Similarity - perceptual quality
+        .with_cnt(0.0) // Contour loss - disabled by default
         .with_structure(0.0) // Structure loss - disabled by default
 }
 
@@ -88,7 +88,7 @@ impl BiRefNetLossConfig {
             LossWeightsConfig::new()
                 .with_bce(30.0)
                 .with_iou(0.5)
-                .with_mae(0.0)        // Disabled for DIS
+                .with_mae(0.0) // Disabled for DIS
                 .with_ssim(10.0),
         )
     }
@@ -111,7 +111,7 @@ impl BiRefNetLossConfig {
         Self::new().with_pixel_weights(
             LossWeightsConfig::new()
                 .with_bce(30.0)
-                .with_iou(0.0)        // Disabled for matting
+                .with_iou(0.0) // Disabled for matting
                 .with_mae(100.0)
                 .with_ssim(10.0),
         )

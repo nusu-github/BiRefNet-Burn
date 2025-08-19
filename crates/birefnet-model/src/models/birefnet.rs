@@ -459,10 +459,8 @@ impl<B: Backend> BiRefNet<B> {
 
         let loss = loss
             .forward(vec![prediction.clone()], batch.masks.clone())
-            .map_err(|e| {
-                BiRefNetError::General {
-                    message: format!("Loss computation failed: {e}"),
-                }
+            .map_err(|e| BiRefNetError::General {
+                message: format!("Loss computation failed: {e}"),
             })?;
 
         // 4. Create output item

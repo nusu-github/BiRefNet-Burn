@@ -297,11 +297,8 @@ impl<B: Backend> VGGConvLayer<B> {
     }
 }
 
-/// Legacy alias for backwards compatibility
-pub type Vgg<B> = VGGBackbone<B>;
-
 /// VGG configuration
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct VggConfig {
     /// VGG variant (16 or 19)
     pub variant: VggVariant,

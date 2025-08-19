@@ -7,7 +7,7 @@ pub mod backend;
 
 // Re-export core modules
 // Re-export backend types for convenience
-pub use backend::{create_device, get_backend_name, SelectedBackend, SelectedDevice};
+pub use backend::burn_backend_types;
 #[cfg(feature = "inference")]
 pub use birefnet_inference as inference;
 #[cfg(feature = "train")]

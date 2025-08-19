@@ -12,12 +12,20 @@ name = "birefnet"
 path = "src/bin/birefnet.rs"
 
 [features]
-default = ["ndarray", "inference"]
+default = ["inference"]
 
 # Backend features - only at the top level
+cuda = ["burn/cuda", "burn/compilation-cache"]
+rocm = ["burn/rocm", "burn/compilation-cache"]
+metal = ["burn/metal"]
 ndarray = ["burn/ndarray"]
 wgpu = ["burn/wgpu"]
-cuda = ["burn/cuda"]
+vulkan = ["burn/vulkan"]
+wgpu-cpu = ["burn/wgpu"]
+
+f16 = []
+bf16 = []
+f32 = []
 
 # Task features
 train = ["burn/train", "birefnet-model/train", "birefnet-train", "birefnet-loss", "birefnet-metric"]
@@ -25,18 +33,19 @@ inference = ["birefnet-inference"]
 
 [dependencies]
 # Core BiRefNet crates
-birefnet-model = { path = "../birefnet-model", version = "0.1.0" }
 birefnet-inference = { path = "../birefnet-inference", version = "0.1.0", optional = true }
-birefnet-train = { path = "../birefnet-train", version = "0.1.0", optional = true }
 birefnet-loss = { path = "../birefnet-loss", version = "0.1.0", optional = true }
 birefnet-metric = { path = "../birefnet-metric", version = "0.1.0", optional = true }
+birefnet-model = { path = "../birefnet-model", version = "0.1.0" }
+birefnet-train = { path = "../birefnet-train", version = "0.1.0", optional = true }
 birefnet-util = { path = "../birefnet-util", version = "0.1.0" }
 
 # CLI dependencies
-burn = { workspace = true }
-clap = { workspace = true }
 anyhow = { workspace = true }
+burn = { workspace = true }
 cfg-if = { workspace = true }
+clap = { workspace = true }
+stacker = { workspace = true }
 
 [dev-dependencies]
 burn = { workspace = true, features = ["ndarray"] }

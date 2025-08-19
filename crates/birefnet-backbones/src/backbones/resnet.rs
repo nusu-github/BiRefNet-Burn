@@ -196,11 +196,8 @@ impl<B: Backend> Conv1Block<B> {
     }
 }
 
-/// Legacy alias for backwards compatibility
-pub type ResNet<B> = ResNetBackbone<B>;
-
 /// ResNet configuration
-#[derive(Config)]
+#[derive(Config, Debug)]
 pub struct ResNetConfig {
     /// Number of layers in each block [3, 4, 6, 3] for ResNet50
     pub layers: Vec<usize>,
@@ -252,11 +249,9 @@ impl ResNetConfig {
         match self.layers.as_slice() {
             [3, 4, 6, 3] => Ok(ResNetBackbone::resnet50(device)),
             [3, 4, 23, 3] => Ok(ResNetBackbone::resnet101(device)),
-            _ => {
-                Err(ResNetError::UnsupportedConfiguration {
-                    layers: self.layers.clone(),
-                })
-            }
+            _ => Err(ResNetError::UnsupportedConfiguration {
+                layers: self.layers.clone(),
+            }),
         }
     }
 }

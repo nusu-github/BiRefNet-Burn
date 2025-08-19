@@ -1,7 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Result;
-use birefnet::{create_device, get_backend_name, SelectedBackend};
 #[cfg(feature = "inference")]
 use birefnet_util::ImageUtils;
 use birefnet_util::{BiRefNetWeightLoading, ManagedModel, ModelLoader, ModelName, WeightSource};
@@ -10,6 +12,8 @@ use burn::tensor::{
     ops::{InterpolateMode, InterpolateOptions},
 };
 use clap::{Parser, Subcommand};
+
+use crate::burn_backend_types::{InferenceBackend, InferenceDevice, NAME};
 
 #[derive(Parser)]
 #[command(name = "birefnet")]
@@ -63,8 +67,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Initialize device
-    let device = create_device();
-    println!("Using backend: {}", get_backend_name());
+    let device = InferenceDevice::default();
+    println!("Using backend: {}", NAME);
 
     match cli.command {
         #[cfg(feature = "inference")]
@@ -87,7 +91,11 @@ fn main() -> Result<()> {
             println!("  Output: {output}");
             println!("  Model: {model}");
 
-            run_inference(&input, &output, &model, device)?;
+            // Stack overflow error workaround
+            // Windows stack size is too small for large models
+            stacker::grow(4096 * 1024, || {
+                run_inference(&input, &output, &model, device)
+            })?;
             Ok(())
         }
 
@@ -104,7 +112,7 @@ fn main() -> Result<()> {
 
         Commands::Info => {
             println!("BiRefNet Information:");
-            println!("  Backend: {}", get_backend_name());
+            println!("  Backend: {}", NAME);
             println!("  Device: {device:?}");
             Ok(())
         }
@@ -116,7 +124,7 @@ fn run_inference(
     input_path: &str,
     output_path: &str,
     model_spec: &str,
-    device: birefnet::SelectedDevice,
+    device: InferenceDevice,
 ) -> Result<()> {
     use birefnet_model::BiRefNet;
 
@@ -134,19 +142,19 @@ fn run_inference(
     };
 
     // Check if weights are available
-    if !<ManagedModel as ModelLoader<SelectedBackend>>::is_available(&managed_model) {
+    if !<ManagedModel as ModelLoader<InferenceBackend>>::is_available(&managed_model) {
         anyhow::bail!("Model weights are not available. Please check your model specification.");
     }
 
     println!("Loading model...");
 
     // Load the model with weights
-    let model: BiRefNet<SelectedBackend> = BiRefNet::from_managed_model(&managed_model, &device)?;
+    let model: BiRefNet<InferenceBackend> = BiRefNet::from_managed_model(&managed_model, &device)?;
 
     println!("Model loaded successfully!");
 
     // Create output directory if it doesn't exist
-    std::fs::create_dir_all(output_path)?;
+    fs::create_dir_all(output_path)?;
 
     let input_path = Path::new(input_path);
     if input_path.is_file() {
@@ -165,24 +173,31 @@ fn run_inference(
 
 #[cfg(feature = "inference")]
 fn process_single_image(
-    model: &birefnet_model::BiRefNet<SelectedBackend>,
+    model: &birefnet_model::BiRefNet<InferenceBackend>,
     input_path: &Path,
     output_dir: &str,
-    device: &birefnet::SelectedDevice,
+    device: &InferenceDevice,
 ) -> Result<()> {
     println!("Processing: {}", input_path.display());
 
     // Load and preprocess image
-    let image_tensor = ImageUtils::load_image(input_path, device)?;
+    let image = ImageUtils::load_image(input_path, device)?;
+    let [_, _, h, w] = image.dims();
 
     let image_tensor = interpolate(
-        image_tensor,
+        image.clone(),
         [1024, 1024],
         InterpolateOptions::new(InterpolateMode::Bicubic),
     );
 
     // Run inference
     let output = model.forward(image_tensor)?;
+
+    let output = interpolate(
+        output,
+        [h, w],
+        InterpolateOptions::new(InterpolateMode::Bicubic),
+    );
 
     // Get the output file name
     let file_stem = input_path
@@ -192,7 +207,8 @@ fn process_single_image(
     let output_path = Path::new(output_dir).join(format!("{}_mask.png", file_stem));
 
     // Convert tensor to image and save (output is a mask, so is_mask = true)
-    let output_image = ImageUtils::tensor_to_dynamic_image(output, true)?;
+    let output = ImageUtils::apply_mask(image, output)?;
+    let output_image = ImageUtils::tensor_to_dynamic_image(output, false)?;
     output_image.save(&output_path)?;
 
     println!("Saved: {}", output_path.display());
@@ -201,14 +217,14 @@ fn process_single_image(
 
 #[cfg(feature = "inference")]
 fn process_directory(
-    model: &birefnet_model::BiRefNet<SelectedBackend>,
+    model: &birefnet_model::BiRefNet<InferenceBackend>,
     input_dir: &Path,
     output_dir: &str,
-    device: &birefnet::SelectedDevice,
+    device: &InferenceDevice,
 ) -> Result<()> {
     let supported_extensions = ["jpg", "jpeg", "png", "bmp", "tiff", "webp"];
 
-    for entry in std::fs::read_dir(input_dir)? {
+    for entry in fs::read_dir(input_dir)? {
         let entry = entry?;
         let path = entry.path();
 
