@@ -25,7 +25,7 @@ mod error;
 mod models;
 
 #[cfg(feature = "train")]
-mod training;
+pub mod training;
 
 // Re-export specific configuration types instead of wildcard
 pub use config::{

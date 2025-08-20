@@ -21,3 +21,5 @@ hf-hub = { workspace = true }
 
 [dev-dependencies]
 burn = { workspace = true, features = ["ndarray"] }
+rstest = { workspace = true }
+approx = { workspace = true }

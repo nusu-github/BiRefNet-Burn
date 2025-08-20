@@ -5,9 +5,10 @@
 
 use core::marker::PhantomData;
 
+use birefnet_util::{euclidean_distance_transform_simple, gaussian_filter_matlab};
 use burn::{
     config::Config,
-    tensor::{backend::Backend, cast::ToElement, s, Bool, Int, Tensor},
+    tensor::{backend::Backend, cast::ToElement, s, Bool, Tensor},
     train::metric::{
         state::{FormatOptions, NumericMetricState},
         Metric, MetricEntry, MetricMetadata, Numeric,
@@ -232,63 +233,16 @@ fn prepare_data<B: Backend>(pred: Tensor<B, 3>, gt: Tensor<B, 3>) -> (Tensor<B, 
     (pred_final, gt_binary)
 }
 
-/// TODO: Implement proper Euclidean distance transform for accurate weighted F-measure.
-/// Current implementation uses simplified approximation.
-/// Should implement: Fast marching method or chamfer distance transform
-/// for accurate boundary distance calculation as per weighted F-measure paper.
+/// Proper Euclidean distance transform using birefnet-util implementation.
 fn distance_transform<B: Backend>(gt: Tensor<B, 2, Bool>) -> Tensor<B, 2> {
-    let [height, width] = gt.dims();
-    let device = gt.device();
+    // Convert bool tensor to float and reshape to 4D for distance transform
+    let binary_image = gt.bool_not().float().unsqueeze::<4>(); // Add batch and channel dims
 
-    // Create coordinate grids
-    let y_coords: Tensor<B, 2> = Tensor::<B, 1, Int>::arange(0..height as i64, &device)
-        .float()
-        .unsqueeze_dim(1);
-    let x_coords: Tensor<B, 2> = Tensor::<B, 1, Int>::arange(0..width as i64, &device)
-        .float()
-        .unsqueeze_dim(0);
+    // Apply Euclidean distance transform
+    let distance = euclidean_distance_transform_simple(binary_image);
 
-    let y_grid = y_coords.expand([height, width]);
-    let x_grid = x_coords.expand([height, width]);
-
-    // TODO: Implement proper boundary detection using morphological operations
-    // Current: Using simple dilation-based approximation
-    // Should implement: Sobel edge detection or proper contour finding
-    let kernel = Tensor::<B, 2>::ones([3, 3], &device);
-    let dilated = conv2d_simple(
-        gt.clone().float().unsqueeze_dims(&[0, 0]),
-        kernel.unsqueeze_dims(&[0, 0]),
-        1,
-    );
-    let _boundary = dilated
-        .squeeze_dims(&[0, 0])
-        .greater_elem(0.0)
-        .bool_and(gt.clone().bool_not());
-
-    // TODO: Replace with proper distance transform algorithm
-    // Current: Using center-of-mass approximation which is inaccurate
-    // Should implement: Fast marching method, chamfer distance, or EDT
-    // for pixel-wise accurate distance computation
-    let _bg_mask = gt.clone().bool_not();
-    let _max_dist = ((height * height + width * width) as f64).sqrt();
-
-    // Simple approximation: use distance from center of mass of foreground
-    let fg_y_scalar = (y_grid.clone() * gt.clone().float())
-        .sum()
-        .div_scalar((gt.clone().float().sum() + 1e-8).into_scalar().to_f64())
-        .into_scalar()
-        .to_f64();
-    let fg_x_scalar = (x_grid.clone() * gt.clone().float())
-        .sum()
-        .div_scalar((gt.clone().float().sum() + 1e-8).into_scalar().to_f64())
-        .into_scalar()
-        .to_f64();
-
-    let dist_y = y_grid - fg_y_scalar;
-    let dist_x = x_grid - fg_x_scalar;
-    let dist = (dist_y.powf_scalar(2.0) + dist_x.powf_scalar(2.0)).sqrt();
-
-    dist.clone().mask_where(gt, dist.zeros_like())
+    // Squeeze back to 2D
+    distance.squeeze::<2>(0).squeeze::<2>(0)
 }
 
 /// Apply error dependency transformation.
@@ -311,55 +265,20 @@ fn apply_error_dependency<B: Backend>(
     et
 }
 
-/// Apply Gaussian filter for smoothing.
+/// Apply MATLAB-style Gaussian filter for smoothing.
 fn gaussian_filter<B: Backend>(
     tensor: Tensor<B, 2>,
     kernel_size: usize,
     sigma: f64,
 ) -> Tensor<B, 2> {
-    let device = tensor.device();
+    // Convert to 4D for filtering
+    let input_4d = tensor.unsqueeze::<4>();
 
-    // Create Gaussian kernel
-    let half_size = (kernel_size as i32 - 1) / 2;
-    let mut kernel_data = vec![0.0_f64; kernel_size * kernel_size];
+    // Apply MATLAB-compatible Gaussian filtering
+    let filtered_4d = gaussian_filter_matlab(input_4d, (kernel_size, kernel_size), sigma);
 
-    let mut sum = 0.0;
-    for i in 0..kernel_size {
-        for j in 0..kernel_size {
-            let x = f64::from(i as i32 - half_size);
-            let y = f64::from(j as i32 - half_size);
-            let value = (-x.mul_add(x, y * y) / (2.0 * sigma * sigma)).exp();
-            kernel_data[i * kernel_size + j] = value;
-            sum += value;
-        }
-    }
-
-    // Normalize kernel
-    for val in &mut kernel_data {
-        *val /= sum;
-    }
-
-    let kernel = Tensor::<B, 2>::from_data(kernel_data.as_slice(), &device)
-        .reshape([kernel_size, kernel_size]);
-
-    // Apply convolution
-    conv2d_simple(
-        tensor.unsqueeze_dims(&[0, 0]),
-        kernel.unsqueeze_dims(&[0, 0]),
-        half_size as usize,
-    )
-    .squeeze_dims(&[0, 0])
-}
-
-/// TODO: Simple 2D convolution (for demonstration - in practice, use proper conv2d).
-fn conv2d_simple<B: Backend>(
-    input: Tensor<B, 4>,
-    _kernel: Tensor<B, 4>,
-    _padding: usize,
-) -> Tensor<B, 4> {
-    // This is a placeholder for actual convolution
-    // In practice, you would use burn's conv2d module
-    input
+    // Convert back to 2D
+    filtered_4d.squeeze::<2>(0).squeeze::<2>(0)
 }
 
 /// Calculate minimum error between original and smoothed versions.

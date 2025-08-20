@@ -11,14 +11,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use birefnet_model::{ModelConfig, Task};
+use birefnet_model::{training::BiRefNetBatch, ModelConfig, Task};
+use birefnet_util::ImageUtils;
 use burn::{
     data::{dataloader::batcher::Batcher, dataset::Dataset},
     tensor::{backend::Backend, Tensor, TensorData},
 };
-use image::{imageops::FilterType, DynamicImage, ImageFormat};
+use image::{DynamicImage, ImageFormat};
 
-use crate::error::{DatasetError, DatasetResult};
+use crate::{
+    augmentation::{AugmentationConfig, ImageAugmentor},
+    error::{DatasetError, DatasetResult},
+};
 
 /// Represents a single preprocessed data item from the BiRefNet dataset.
 ///
@@ -35,18 +39,6 @@ pub struct BiRefNetItem {
     pub height: usize,
     /// Image width in pixels  
     pub width: usize,
-}
-
-/// Represents a batch of preprocessed data items from the BiRefNet dataset.
-///
-/// This struct contains batched image and mask tensors suitable for training
-/// and validation with the Burn framework.
-#[derive(Debug, Clone)]
-pub struct BiRefNetBatch<B: Backend> {
-    /// Batched input image tensor with shape [B, C, H, W] where B=batch_size, C=3 for RGB
-    pub images: Tensor<B, 4>,
-    /// Batched segmentation mask tensor with shape [B, C, H, W] where B=batch_size, C=1 for binary masks
-    pub masks: Tensor<B, 4>,
 }
 
 /// Batcher implementation for converting vectors of BiRefNetItem into BiRefNetBatch.
@@ -84,6 +76,13 @@ impl<B: Backend> Batcher<B, BiRefNetItem, BiRefNetBatch<B>> for BiRefNetBatcher<
             )
             .permute([2, 0, 1]); // HWC to CHW
 
+            // Apply ImageNet normalization: add batch dimension, normalize, then remove batch dimension
+            let image_tensor_with_batch = image_tensor.unsqueeze::<4>(); // [C, H, W] -> [1, C, H, W]
+            let normalized_tensor =
+                ImageUtils::apply_imagenet_normalization(image_tensor_with_batch)
+                    .expect("Failed to apply ImageNet normalization")
+                    .squeeze::<3>(0); // [1, C, H, W] -> [C, H, W]
+
             // Convert mask data to tensor [1, H, W]
             let mask_tensor = Tensor::<B, 2>::from_data(
                 TensorData::new(item.mask, [item.height, item.width]),
@@ -91,7 +90,7 @@ impl<B: Backend> Batcher<B, BiRefNetItem, BiRefNetBatch<B>> for BiRefNetBatcher<
             )
             .unsqueeze::<3>(); // Add channel dimension
 
-            images.push(image_tensor);
+            images.push(normalized_tensor);
             masks.push(mask_tensor);
         }
 
@@ -99,7 +98,7 @@ impl<B: Backend> Batcher<B, BiRefNetItem, BiRefNetBatch<B>> for BiRefNetBatcher<
         let images = Tensor::stack(images, 0);
         let masks = Tensor::stack(masks, 0);
 
-        BiRefNetBatch { images, masks }
+        BiRefNetBatch::new(images, masks)
     }
 }
 
@@ -111,8 +110,7 @@ pub struct BiRefNetDataset {
     items: Vec<(PathBuf, PathBuf)>,
     is_train: bool,
     target_size: (u32, u32),
-    norm_mean: [f64; 3],
-    norm_std: [f64; 3],
+    augmentor: ImageAugmentor,
 }
 
 impl BiRefNetDataset {
@@ -133,16 +131,44 @@ impl BiRefNetDataset {
         // Use fixed target size for image preprocessing
         let target_size = (1024, 1024);
 
-        // ImageNet normalization parameters (same as PyTorch implementation)
-        let norm_mean = [0.485, 0.456, 0.406];
-        let norm_std = [0.229, 0.224, 0.225];
+        // Create default reinforcement settings
+        let augmentation_config = AugmentationConfig::default();
+        let augmentor = ImageAugmentor::new(augmentation_config);
 
         Ok(Self {
             items,
             is_train,
             target_size,
-            norm_mean,
-            norm_std,
+            augmentor,
+        })
+    }
+
+    /// Create a new BiRefNet dataset with custom augmentation configuration.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Model configuration containing dataset paths and task settings
+    /// * `split` - Dataset split ("train", "val", "test")
+    /// * `augmentation_config` - Custom augmentation configuration
+    ///
+    /// # Returns
+    ///
+    /// A new dataset instance or an error if the dataset cannot be loaded.
+    pub fn new_with_augmentation(
+        config: &ModelConfig,
+        split: &str,
+        augmentation_config: AugmentationConfig,
+    ) -> DatasetResult<Self> {
+        let items = Self::collect_dataset_items(config, split)?;
+        let is_train = split == "train";
+        let target_size = augmentation_config.target_size;
+        let augmentor = ImageAugmentor::new(augmentation_config);
+
+        Ok(Self {
+            items,
+            is_train,
+            target_size,
+            augmentor,
         })
     }
 
@@ -294,21 +320,14 @@ impl BiRefNetDataset {
         extensions
     }
 
-    /// Convert an image to normalized float array.
+    /// Convert an image to raw float array without normalization.
+    /// Normalization will be applied later in the batcher for backend compatibility.
     fn image_to_array(&self, img: DynamicImage) -> Vec<f32> {
-        let img = img.to_rgb32f();
-        let raw_data = img.into_raw();
+        // Convert to RGB and get raw pixel data
+        let rgb_img = img.to_rgb32f();
 
-        // Apply normalization
-        let mut normalized = Vec::with_capacity(raw_data.len());
-        for (i, &pixel) in raw_data.iter().enumerate() {
-            let channel = i % 3;
-            let normalized_pixel =
-                (pixel - self.norm_mean[channel] as f32) / self.norm_std[channel] as f32;
-            normalized.push(normalized_pixel);
-        }
-
-        normalized
+        // The image crate already provides data in HWC format, so we can use it directly
+        rgb_img.into_raw()
     }
 
     /// Convert a mask to normalized float array.
@@ -318,15 +337,9 @@ impl BiRefNetDataset {
     }
 
     /// Apply augmentations to an image and its mask.
-    /// This is the place to add more complex data augmentation logic.
+    /// Uses the comprehensive data augmentation system implemented in the augmentation module.
     fn augment(&self, image: DynamicImage, mask: DynamicImage) -> (DynamicImage, DynamicImage) {
-        // Apply random data augmentations during training phase
-        // For now, we just resize to the target size.
-        let image =
-            image.resize_exact(self.target_size.0, self.target_size.1, FilterType::Lanczos3);
-        let mask = mask.resize_exact(self.target_size.0, self.target_size.1, FilterType::Nearest);
-
-        (image, mask)
+        self.augmentor.augment(image, mask, self.is_train)
     }
 }
 
@@ -352,16 +365,8 @@ impl Dataset<BiRefNetItem> for BiRefNetDataset {
             }
         };
 
-        let (image, mask) = if self.is_train {
-            self.augment(image, mask)
-        } else {
-            // For validation/testing, just resize without other augmentations
-            let image =
-                image.resize_exact(self.target_size.0, self.target_size.1, FilterType::Lanczos3);
-            let mask =
-                mask.resize_exact(self.target_size.0, self.target_size.1, FilterType::Nearest);
-            (image, mask)
-        };
+        // Apply data augmentation (full augmentation only during training, resizing only during validation)
+        let (image, mask) = self.augment(image, mask);
 
         let height = image.height() as usize;
         let width = image.width() as usize;

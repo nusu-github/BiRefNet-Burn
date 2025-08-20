@@ -5,41 +5,94 @@
 
 **Backbone network implementations for BiRefNet using the Burn deep learning framework**
 
-## Implementation
+## Implemented Features
 
-This crate implements feature extraction backbone networks:
+- ✅ **Swin Transformer v1**: Complete hierarchical vision transformer implementation
+  - Variants: Tiny, Small, Base, Large
+  - Shifted windows attention mechanism
+  - Multi-scale feature extraction
+  - PyTorch weight compatibility
 
-### Swin Transformer
+- ✅ **ResNet**: Residual convolutional neural network
+  - ResNet-50 implementation
+  - Bottleneck blocks with skip connections
+  - Batch normalization and ReLU activation
 
-- Hierarchical vision transformer with shifted windows
-- Variants: Tiny, Small, Base, Large
-- Multi-scale feature extraction
+- ✅ **VGG**: Traditional CNN architecture
+  - VGG-16 implementation
+  - Sequential convolutional layers
+  - Max pooling operations
 
-### PVT v2 (Pyramid Vision Transformer)
+- ✅ **PVT v2**: Pyramid Vision Transformer v2
+  - Variants: B0, B1, B2, B5
+  - Spatial reduction attention
+  - Overlapping patch embedding
 
-- Pyramid structure with spatial reduction attention
-- Variants: B0, B1, B2, B5
-- Overlapping patch embedding
+## Core Components
 
-### ResNet
+### Backbone Trait
 
-- Residual convolutional neural network
-- Variant: ResNet-50
-- Bottleneck blocks with skip connections
+```rust
+pub trait Backbone<B: Backend> {
+    fn forward(&self, x: Tensor<B, 4>) -> Vec<Tensor<B, 4>>;
+}
+```
 
-### VGG
+### Implemented Backbones
 
-- Traditional CNN architecture
-- Variant: VGG-16
-- Sequential convolutional layers with max pooling
+- **`SwinTransformer`**: Full Swin Transformer implementation with all variants
+- **`ResNetBackbone`**: ResNet-50 with multi-scale feature extraction
+- **`VGGBackbone`**: VGG-16 with feature layer extraction
+- **`PyramidVisionTransformerImpr`**: PVT v2 with all variants
 
-### Core Components
+### Factory Function
 
-- `SwinTransformer`: Swin transformer implementation
-- `PVTv2`: Pyramid Vision Transformer v2
-- `ResNet`: ResNet backbone
-- `VGG`: VGG backbone
-- Feature extraction interfaces for multi-scale outputs
+- **`create_backbone`**: Type-safe backbone creation from configuration
+
+## Usage
+
+```rust
+use birefnet_backbones::{create_backbone, BackboneType, SwinVariant};
+
+// Create Swin Transformer backbone
+let backbone_type = BackboneType::SwinV1(SwinVariant::Tiny);
+let backbone = create_backbone(backbone_type, &device);
+
+// Forward pass - returns multi-scale features
+let features = backbone.forward(input_tensor);
+// features[0]: 1/4 resolution
+// features[1]: 1/8 resolution  
+// features[2]: 1/16 resolution
+// features[3]: 1/32 resolution
+```
+
+## Supported Variants
+
+### Swin Transformer v1
+
+- **Tiny**: 28M parameters, suitable for mobile/edge deployment
+- **Small**: 50M parameters, balanced performance
+- **Base**: 88M parameters, high accuracy
+- **Large**: 197M parameters, maximum accuracy
+
+### PVT v2
+
+- **B0**: Ultra-lightweight variant
+- **B1**: Mobile-friendly variant
+- **B2**: Standard variant
+- **B5**: Large variant
+
+### ResNet & VGG
+
+- **ResNet-50**: Industry standard CNN backbone
+- **VGG-16**: Classic CNN architecture
+
+## Features
+
+- **Multi-scale output**: All backbones output 4 different resolution levels
+- **PyTorch weight loading**: Direct weight loading from official PyTorch models
+- **Tensor operations**: Built on Burn framework tensor operations
+- **Type safety**: Compile-time backbone selection and validation
 
 ## License
 

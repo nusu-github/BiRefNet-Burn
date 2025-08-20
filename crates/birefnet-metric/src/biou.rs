@@ -5,6 +5,7 @@
 
 use core::marker::PhantomData;
 
+use birefnet_util::{erosion, StructuringElement};
 use burn::{
     prelude::*,
     tensor::{backend::Backend, cast::ToElement, Tensor},
@@ -114,9 +115,9 @@ impl<B: Backend> Numeric for BIoUMetric<B> {
 ///
 /// # Returns
 /// Vector of IoU values across thresholds (256 values).
-fn calculate_biou_curve<B: Backend, const D: usize>(
-    predictions: Tensor<B, D>,
-    targets: Tensor<B, D>,
+fn calculate_biou_curve<B: Backend>(
+    predictions: Tensor<B, 3>,
+    targets: Tensor<B, 3>,
     dilation_ratio: f64,
 ) -> Vec<f64> {
     // Prepare data following Python _prepare_data function
@@ -131,10 +132,7 @@ fn calculate_biou_curve<B: Backend, const D: usize>(
 }
 
 /// Prepares prediction and ground truth data following Python _prepare_data logic.
-fn prepare_data<B: Backend, const D: usize>(
-    pred: Tensor<B, D>,
-    gt: Tensor<B, D>,
-) -> (Tensor<B, D>, Tensor<B, D>) {
+fn prepare_data<B: Backend>(pred: Tensor<B, 3>, gt: Tensor<B, 3>) -> (Tensor<B, 3>, Tensor<B, 3>) {
     // gt = gt > 128 (binary ground truth)
     let gt_binary = gt.greater_elem(128).float();
 
@@ -163,53 +161,31 @@ fn prepare_data<B: Backend, const D: usize>(
 ///
 /// Implements mask_to_boundary function from Python BiRefNet:
 /// 1. Calculate dilation based on image diagonal and dilation_ratio
-/// 2. Pad image to handle border effects
-/// 3. Apply erosion to get inner mask
-/// 4. Subtract to get boundary
-fn mask_to_boundary<B: Backend, const D: usize>(
-    mask: Tensor<B, D>,
-    dilation_ratio: f64,
-) -> Tensor<B, D> {
-    let shape = mask.dims();
+/// 2. Apply erosion to get inner mask
+/// 3. Subtract to get boundary
+fn mask_to_boundary<B: Backend>(mask: Tensor<B, 3>, dilation_ratio: f64) -> Tensor<B, 3> {
+    let [_c, h, w] = mask.dims();
     let device = mask.device();
 
     // Calculate dilation based on image diagonal
-    let h = shape[shape.len() - 2] as f64;
-    let w = shape[shape.len() - 1] as f64;
-    let img_diag = h.hypot(w);
+    let img_diag = (h as f64).hypot(w as f64);
     let dilation = (dilation_ratio * img_diag).round() as usize;
     let dilation = dilation.max(1);
 
-    // TODO: Implement proper morphological operations for boundary extraction
-    // Current: Simplified implementation using convolution approximation
-    // Should implement: Proper erosion with disk kernel as in Python version
+    // Convert to 4D tensor for morphology operations [batch, channel, height, width]
+    let mask_4d = mask.clone().unsqueeze_dim(0);
 
-    // For now, use a simple approximation
-    // Create a kernel for erosion (approximating disk kernel)
-    let kernel_size = (dilation * 2 + 1).min(7); // Limit kernel size
-    let kernel_data: Vec<f64> = (0..kernel_size * kernel_size).map(|_| 1.0).collect();
-    let kernel_norm = 1.0 / (kernel_size * kernel_size) as f64;
+    // Create disk structuring element
+    let disk_kernel = StructuringElement::disk(dilation, &device);
 
-    let kernel: Vec<f64> = kernel_data.iter().map(|&x| x * kernel_norm).collect();
-    let kernel_tensor =
-        Tensor::<B, 2>::from_data(kernel.as_slice(), &device).reshape([kernel_size, kernel_size]);
+    // Apply erosion
+    let eroded_4d = erosion(mask_4d, &disk_kernel);
 
-    // Apply erosion approximation using convolution
-    let eroded = approximate_erosion(mask.clone(), kernel_tensor, dilation);
+    // Convert back to 3D
+    let eroded = eroded_4d.squeeze::<3>(0);
 
     // Boundary = original - eroded
     mask - eroded
-}
-
-/// Approximates erosion using convolution (placeholder implementation).
-fn approximate_erosion<B: Backend, const D: usize>(
-    input: Tensor<B, D>,
-    _kernel: Tensor<B, 2>,
-    _iterations: usize,
-) -> Tensor<B, D> {
-    // TODO: Implement proper erosion
-    // For now, just return a slightly smaller version by applying a threshold
-    input.mul_scalar(0.95)
 }
 
 /// Calculates BIoU histogram curves across 256 thresholds.
@@ -218,9 +194,9 @@ fn approximate_erosion<B: Backend, const D: usize>(
 /// - Create 256 threshold bins from 0 to 255
 /// - Calculate true positives and false positives for each threshold
 /// - Compute IoU = TP / (T + FP) where T is total ground truth positives
-fn calculate_biou_histogram_curves<B: Backend, const D: usize>(
-    pred_boundary: Tensor<B, D>,
-    gt_boundary: Tensor<B, D>,
+fn calculate_biou_histogram_curves<B: Backend>(
+    pred_boundary: Tensor<B, 3>,
+    gt_boundary: Tensor<B, 3>,
 ) -> Vec<f64> {
     // Convert to uint8 range for histogram calculation
     let pred_u8 = pred_boundary.mul_scalar(255.0).clamp(0.0, 255.0);
@@ -279,6 +255,10 @@ pub fn calculate_biou<B: Backend>(
     targets: Tensor<B, 2>,
     dilation_ratio: f64,
 ) -> f64 {
-    let curve = calculate_biou_curve(predictions, targets, dilation_ratio);
+    // Convert 2D to 3D for internal processing
+    let pred_3d = predictions.unsqueeze_dim(0);
+    let gt_3d = targets.unsqueeze_dim(0);
+
+    let curve = calculate_biou_curve(pred_3d, gt_3d, dilation_ratio);
     curve.iter().sum::<f64>() / curve.len() as f64
 }

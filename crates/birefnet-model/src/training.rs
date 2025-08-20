@@ -5,7 +5,7 @@
 //! maintaining clear separation of concerns.
 
 #[cfg(feature = "train")]
-use burn::train::metric::ItemLazy;
+use burn::train::metric::{Adaptor, ItemLazy, LossInput};
 use burn::{prelude::*, tensor::backend::Backend};
 
 /// Represents a batch of preprocessed data items from the BiRefNet dataset.
@@ -39,7 +39,7 @@ impl<B: Backend> ItemLazy for BiRefNetOutput<B> {
     type ItemSync = BiRefNetOutput<burn::backend::ndarray::NdArray<f32>>;
 
     fn sync(self) -> Self::ItemSync {
-        let [loss, output, targets] = Transaction::default()
+        let [loss, output, targets] = burn::tensor::Transaction::default()
             .register(self.loss)
             .register(self.output)
             .register(self.targets)
@@ -95,6 +95,14 @@ impl<B: Backend> BiRefNetOutput<B> {
             output,
             targets,
         }
+    }
+}
+
+/// Adapter for Loss metric integration
+#[cfg(feature = "train")]
+impl<B: Backend> Adaptor<LossInput<B>> for BiRefNetOutput<B> {
+    fn adapt(&self) -> LossInput<B> {
+        LossInput::new(self.loss.clone())
     }
 }
 

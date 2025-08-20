@@ -40,15 +40,17 @@ framework to provide enhanced performance, memory safety, and cross-platform dep
 - **Cross-Platform Inference**: WebGPU, ndarray, and other Burn backends
 - **Basic Inference Pipeline**: Single and batch image processing capabilities
 - **Runtime Model Conversion**: PyTorch weight loading and on-the-fly conversion to Burn format
-- **Dataset Support**: DIS5K dataset loading and basic resizing (data augmentation not yet implemented)
+- **Dataset Support**: DIS5K dataset loading with comprehensive data augmentation
+- **Data Augmentation**: Full implementation with geometric transforms (flip, rotate, crop) and photometric transforms (color enhancement, pepper noise)
 - **Configuration System**: Type-safe, hierarchical configuration with validation
 - **Multiple Backends**: CPU (ndarray), GPU (WebGPU), and extensible backend system
 - **Comprehensive Loss System**: BCE, IoU, SSIM, MAE, Structure Loss, Contour Loss, Threshold Regularization, Patch IoU, and auxiliary classification losses with PyTorch-optimized weights
-- **Evaluation Metrics**: F-measure, MAE, BIoU for model assessment
+- **Basic Evaluation Metrics**: Core metrics implemented (MSE, BIoU, Weighted F-measure), with advanced metrics partially implemented
 
 ### 🚧 Partially Implemented
 
-- **Training Infrastructure**: Basic dataset handling and CLI structure, but training logic is not yet implemented
+- **Post-processing Pipeline**: Basic threshold and resizing implemented, but advanced morphological operations (Gaussian blur, erosion/dilation, connected components, hole filling) are placeholder implementations
+- **Advanced Evaluation Metrics**: Core metrics (MSE, BIoU, Weighted F-measure) work correctly, but IoU, F-measure, MAE, S-measure, and E-measure calculations contain placeholder implementations
 - **Memory Efficiency**: Basic tensor operations optimization, further improvements needed
 
 ### 🔧 Core Components
@@ -57,13 +59,14 @@ framework to provide enhanced performance, memory safety, and cross-platform dep
 - **ASPP Module**: Atrous Spatial Pyramid Pooling for multi-scale feature extraction
 - **Decoder Blocks**: Progressive refinement with attention mechanisms
 - **Comprehensive Loss System**: BCE, IoU, SSIM, MAE, Structure Loss, Contour Loss, Threshold Regularization, Patch IoU, and auxiliary classification losses with PyTorch-optimized weights
-- **Evaluation Metrics**: F-measure, MAE, BIoU for model assessment
-- **Data Pipeline**: Basic dataset loading, resizing, and batching (DIS5K dataset support)
+- **Evaluation Metrics**: Core metrics (MSE, BIoU, Weighted F-measure) with advanced metrics partially implemented
+- **Data Pipeline**: Complete dataset loading with comprehensive augmentation (DIS5K dataset support)
 
 ### ❌ Not Yet Implemented
 
-- **Training Loop**: Complete training execution logic
-- **Data Augmentation**: Geometric transforms (flip, rotate, crop) and photometric transforms (color, brightness adjustments)
+- **Training Loop**: Complete training execution logic (only CLI structure and data handling exist)
+- **Advanced Post-processing**: Morphological operations, connected component analysis, hole filling, and Gaussian blur
+- **Complete Evaluation Suite**: Full implementation of IoU, F-measure, MAE, S-measure, and E-measure calculations
 - **Comprehensive Examples**: Code examples and tutorials
 - **Advanced Optimizations**: Production-grade performance tuning
 - **Standalone Converter Tool**: Dedicated CLI tool for batch model conversion
@@ -118,18 +121,21 @@ cargo run --release --bin birefnet --features wgpu --no-default-features -- infe
 
 ### Training
 
-Train BiRefNet models with custom datasets:
+**Note**: Training functionality is currently not implemented. The CLI interface exists for future development, but the actual training loop is not yet available.
 
 ```bash
-# Train with default settings (ndarray backend)
+# Training commands (NOT YET FUNCTIONAL - placeholder for future implementation)
 cargo run --release --bin birefnet --features train -- train --config path/to/config.json
-
-# Train with GPU backend
-cargo run --release --bin birefnet --features "train,wgpu" --no-default-features -- train --config path/to/config.json
-
-# Resume training from checkpoint
-cargo run --release --bin birefnet --features train -- train --config path/to/config.json --resume path/to/checkpoint.mpk
 ```
+
+Current training infrastructure includes:
+
+- Dataset loading and augmentation pipeline
+- Loss function implementations
+- CLI command structure
+- Configuration system
+
+**Missing**: The core training loop, optimizer integration, and checkpoint management.
 
 ### Backend Information
 
@@ -194,11 +200,20 @@ While this project aims to provide a comprehensive Rust implementation of BiRefN
 ### 🚧 Missing Features
 
 - **`BiRefNetC2F` Model**: The coarse-to-fine model (`BiRefNetC2F`) from the Python implementation is not yet available.
-- **Full Data Augmentation**: While basic resizing is implemented, advanced data augmentation techniques (e.g., random flip, crop, rotate, color enhance, pepper noise) are not fully integrated into the dataset pipeline.
+- **Complete Training System**: While dataset handling and CLI structure exist, the actual training loop implementation is not yet available.
+- **Advanced Post-processing Operations**: Key post-processing functions are placeholder implementations:
+  - Gaussian blur convolution
+  - Morphological operations (erosion, dilation, opening, closing)
+  - Connected component analysis and filtering
+  - Hole filling using morphological reconstruction
 - **Gradient-based Auxiliary Loss**: Boundary gradient supervision (`out_ref` mode) from the original implementation is not yet implemented.
-- **Advanced Evaluation Metrics**: Metrics such as Human Correction Efforts (HCE) and Mean Boundary Accuracy (MBA) are not yet implemented. The Weighted F-measure (WFM) and Boundary IoU (BIoU) require more robust morphological operations for full PyTorch parity.
+- **Complete Evaluation Metrics**: Several metrics contain placeholder implementations:
+  - IoU calculation (returns 0.0)
+  - F-measure calculation (returns 0.0)
+  - MAE calculation (returns 0.0)
+  - S-measure and E-measure (not implemented)
+  - Advanced metrics like Human Correction Efforts (HCE) and Mean Boundary Accuracy (MBA)
 - **Numerical Stability for BCE Loss**: The `BCELoss` implementation needs further refinement for full numerical stability, matching PyTorch's behavior.
-- **Refinement Functions**: Advanced foreground refinement functions like `refine_foreground` from the Python `image_proc.py` are not yet implemented.
 - **Multi-GPU Training**: Distributed training across multiple GPUs is not yet supported.
 - **Dynamic Resolution Training**: Training with variable input resolutions is not yet implemented.
 - **Box-Guided Segmentation**: Bounding box guidance for segmentation is not yet available.
@@ -222,15 +237,16 @@ project.
 
 ## Project Status
 
-| Component  | Status     | Notes                                       |
-|------------|------------|---------------------------------------------|
-| Core Model | ✅ Complete | Full BiRefNet architecture implemented      |
-| Inference  | ✅ Complete | Single/batch image processing               |
-| Training   | 🚧 Partial | CLI structure only, training logic missing  |
-| Conversion | ✅ Complete | Runtime PyTorch weight loading implemented  |
-| Datasets   | 🔄 Partial | DIS5K supported, others need implementation |
-| Backbones  | ✅ Complete | Swin v1, PVT v2, ResNet, VGG implemented    |
-| Evaluation | 🔄 Partial | Basic metrics, advanced benchmarking needed |
+| Component       | Status            | Notes                                         |
+|-----------------|-------------------|-----------------------------------------------|
+| Core Model      | ✅ Complete        | Full BiRefNet architecture implemented        |
+| Inference       | ✅ Complete        | Single/batch image processing                 |
+| Training        | ❌ Not Implemented | CLI structure only, no training logic         |
+| Conversion      | ✅ Complete        | Runtime PyTorch weight loading implemented    |
+| Datasets        | ✅ Complete        | DIS5K with full augmentation pipeline         |
+| Backbones       | ✅ Complete        | Swin v1, PVT v2, ResNet, VGG implemented      |
+| Post-processing | 🚧 Partial        | Basic ops work, advanced ops are placeholders |
+| Evaluation      | 🚧 Partial        | Core metrics work, advanced metrics partial   |
 
 ## Contributing
 

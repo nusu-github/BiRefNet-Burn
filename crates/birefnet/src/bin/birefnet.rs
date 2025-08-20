@@ -1,21 +1,6 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
-
 use anyhow::Result;
-use birefnet::burn_backend_types::{InferenceBackend, InferenceDevice, NAME};
-#[cfg(feature = "inference")]
-use birefnet_util::ImageUtils;
-use birefnet_util::{
-    refine_foreground_core, BiRefNetWeightLoading, ManagedModel, ModelLoader, ModelName,
-    WeightSource,
-};
-use burn::tensor::{
-    activation::sigmoid,
-    module::interpolate,
-    ops::{InterpolateMode, InterpolateOptions},
-};
+use birefnet::burn_backend_types::{InferenceDevice, NAME};
+use birefnet_util::ManagedModel;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -82,35 +67,29 @@ fn main() -> Result<()> {
             list_models,
         } => {
             if list_models {
-                println!("Available pretrained models:");
+                println!("利用可能な事前学習済みモデル:");
                 for model_name in ManagedModel::list_available_models() {
                     println!("  - {}", model_name);
                 }
                 return Ok(());
             }
 
-            println!("Running inference:");
-            println!("  Input: {input}");
-            println!("  Output: {output}");
-            println!("  Model: {model}");
+            use birefnet::inference::{run_inference, InferenceConfig};
+
+            let inference_config = InferenceConfig::new(input, output, model);
 
             // Stack overflow error workaround
             // Windows stack size is too small for large models
-            stacker::grow(4096 * 1024, || {
-                run_inference(&input, &output, &model, device)
-            })?;
+            stacker::grow(4096 * 1024, || run_inference(inference_config, device))?;
             Ok(())
         }
 
         #[cfg(feature = "train")]
         Commands::Train { config, resume } => {
-            println!("Starting training:");
-            println!("  Config: {}", config);
-            if let Some(checkpoint) = resume {
-                println!("  Resume from: {}", checkpoint);
-            }
-            // TODO: Implement training logic
-            Ok(())
+            use birefnet::training::{run_training, TrainingConfig};
+
+            let training_config = TrainingConfig::new(config, resume);
+            run_training(training_config)
         }
 
         Commands::Info => {
@@ -120,129 +99,4 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
-}
-
-#[cfg(feature = "inference")]
-fn run_inference(
-    input_path: &str,
-    output_path: &str,
-    model_spec: &str,
-    device: InferenceDevice,
-) -> Result<()> {
-    use birefnet_model::BiRefNet;
-
-    // Determine if model_spec is a pretrained model name or a file path
-    let managed_model = if Path::new(model_spec).exists() {
-        // It's a file path
-        let model_name = ModelName::new("custom");
-        let weights = WeightSource::Local {
-            path: PathBuf::from(model_spec),
-        };
-        ManagedModel::new(model_name, None, weights)
-    } else {
-        // It's a pretrained model name
-        ManagedModel::from_pretrained(model_spec)?
-    };
-
-    // Check if weights are available
-    if !<ManagedModel as ModelLoader<InferenceBackend>>::is_available(&managed_model) {
-        anyhow::bail!("Model weights are not available. Please check your model specification.");
-    }
-
-    println!("Loading model...");
-
-    // Load the model with weights
-    let model: BiRefNet<InferenceBackend> = BiRefNet::from_managed_model(&managed_model, &device)?;
-
-    println!("Model loaded successfully!");
-
-    // Create output directory if it doesn't exist
-    fs::create_dir_all(output_path)?;
-
-    let input_path = Path::new(input_path);
-    if input_path.is_file() {
-        // Process single image
-        process_single_image(&model, input_path, output_path, &device)?;
-    } else if input_path.is_dir() {
-        // Process all images in directory
-        process_directory(&model, input_path, output_path, &device)?;
-    } else {
-        anyhow::bail!("Input path does not exist: {}", input_path.display());
-    }
-
-    println!("Inference completed!");
-    Ok(())
-}
-
-#[cfg(feature = "inference")]
-fn process_single_image(
-    model: &birefnet_model::BiRefNet<InferenceBackend>,
-    input_path: &Path,
-    output_dir: &str,
-    device: &InferenceDevice,
-) -> Result<()> {
-    println!("Processing: {}", input_path.display());
-
-    // Load and preprocess image
-    let image = ImageUtils::load_image(input_path, device)?;
-    let [_, _, h, w] = image.dims();
-
-    let image_tensor = interpolate(
-        image.clone(),
-        [1024, 1024],
-        InterpolateOptions::new(InterpolateMode::Bicubic),
-    );
-
-    // Run inference
-    let mask = model.forward(image_tensor)?;
-    let mask = sigmoid(mask);
-
-    let mask = interpolate(
-        mask,
-        [h, w],
-        InterpolateOptions::new(InterpolateMode::Bicubic),
-    );
-
-    // Get the output file name
-    let file_stem = input_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("output");
-    let output_path = Path::new(output_dir).join(format!("{}_mask.png", file_stem));
-
-    // Convert tensor to image and save
-    let output = refine_foreground_core(image, mask.clone(), 90);
-    let output = ImageUtils::apply_mask(output, mask)?;
-    let output_image = ImageUtils::tensor_to_dynamic_image(output, false)?;
-    output_image.save(&output_path)?;
-
-    println!("Saved: {}", output_path.display());
-    Ok(())
-}
-
-#[cfg(feature = "inference")]
-fn process_directory(
-    model: &birefnet_model::BiRefNet<InferenceBackend>,
-    input_dir: &Path,
-    output_dir: &str,
-    device: &InferenceDevice,
-) -> Result<()> {
-    let supported_extensions = ["jpg", "jpeg", "png", "bmp", "tiff", "webp"];
-
-    for entry in fs::read_dir(input_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.is_file() {
-            if let Some(extension) = path.extension().and_then(|s| s.to_str()) {
-                if supported_extensions.contains(&extension.to_lowercase().as_str()) {
-                    if let Err(e) = process_single_image(model, &path, output_dir, device) {
-                        eprintln!("Error processing {}: {}", path.display(), e);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
 }

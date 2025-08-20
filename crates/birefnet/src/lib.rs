@@ -4,12 +4,16 @@
 //! inference and training capabilities across multiple backends.
 
 pub mod backend;
+#[cfg(feature = "inference")]
+pub mod inference;
+#[cfg(feature = "train")]
+pub mod training;
 
 // Re-export core modules
 // Re-export backend types for convenience
 pub use backend::burn_backend_types;
 #[cfg(feature = "inference")]
-pub use birefnet_inference as inference;
+pub use birefnet_inference;
 #[cfg(feature = "train")]
 pub use birefnet_loss as loss;
 #[cfg(feature = "train")]

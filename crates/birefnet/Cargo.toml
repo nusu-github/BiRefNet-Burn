@@ -12,23 +12,24 @@ name = "birefnet"
 path = "src/bin/birefnet.rs"
 
 [features]
-default = ["inference"]
+default = ["inference", "ndarray"]
 
 # Backend features - only at the top level
-cuda = ["burn/cuda", "burn/compilation-cache"]
-rocm = ["burn/rocm", "burn/compilation-cache"]
-metal = ["burn/metal"]
+select_backend = []
+cuda = ["burn/cuda", "burn/compilation-cache", "select_backend"]
+rocm = ["burn/rocm", "burn/compilation-cache", "select_backend"]
+metal = ["burn/metal", "select_backend"]
 ndarray = ["burn/ndarray"]
-wgpu = ["burn/wgpu"]
-vulkan = ["burn/vulkan"]
-wgpu-cpu = ["burn/wgpu"]
+wgpu = ["burn/wgpu", "select_backend"]
+vulkan = ["burn/vulkan", "select_backend"]
+wgpu-cpu = ["burn/wgpu", "select_backend"]
 
 f16 = []
 bf16 = []
 f32 = []
 
 # Task features
-train = ["burn/train", "birefnet-model/train", "birefnet-train", "birefnet-loss", "birefnet-metric"]
+train = ["burn/train", "birefnet-model/train", "birefnet-train", "birefnet-loss", "birefnet-metric", "burn/metrics", "burn/tui"]
 inference = ["birefnet-inference"]
 
 [dependencies]
@@ -45,6 +46,7 @@ anyhow = { workspace = true }
 burn = { workspace = true }
 cfg-if = { workspace = true }
 clap = { workspace = true }
+serde_json = { workspace = true }
 stacker = { workspace = true }
 
 [dev-dependencies]

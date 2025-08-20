@@ -14,8 +14,11 @@ default = []
 burn = { workspace = true, features = ["train"] }
 birefnet-model = { path = "../birefnet-model", features = ["train"] }
 birefnet-loss = { path = "../birefnet-loss" }
+birefnet-util = { path = "../birefnet-util" }
 
 image = { workspace = true }
+imageproc = { workspace = true }
+rand = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

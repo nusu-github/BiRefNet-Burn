@@ -51,7 +51,7 @@ pub mod burn_backend_types {
 // ndarray -------------------------------------------------------------------
 // This backend is used for testing and by default when no backend is selected.
 
-#[cfg(feature = "ndarray")]
+#[cfg(all(feature = "ndarray", not(feature = "select_backend")))]
 pub mod burn_backend_types {
     use burn::backend::ndarray::{NdArray, NdArrayDevice};
 
@@ -77,14 +77,4 @@ pub mod burn_backend_types {
     pub const NAME: &str = "vulkan";
     #[cfg(feature = "metal")]
     pub const NAME: &str = "metal";
-}
-
-#[cfg(feature = "wgpu-cpu")]
-pub mod burn_backend_types {
-    use burn::backend::wgpu::{Wgpu, WgpuDevice};
-
-    use super::*;
-    pub type InferenceBackend = Wgpu<ElemType>;
-    pub type InferenceDevice = WgpuDevice;
-    pub const NAME: &str = "wgpu-cpu";
 }
