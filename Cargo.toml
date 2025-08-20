@@ -9,6 +9,7 @@ readme = "README.md"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/nusu-github/BiRefNet-Burn"
 homepage = "https://github.com/nusu-github/BiRefNet-Burn"
+rust-version = "1.85.1"
 
 [workspace.dependencies]
 # Core Burn dependencies
@@ -32,7 +33,7 @@ imageproc = "0.25.0"
 
 # Utilities
 approx = "0.5"
-cfg-if = "1.0.1"
+cfg-if = "1.0.3"
 libm = "0.2.15"
 rand = "0.9.2"
 stacker = "0.1.21"

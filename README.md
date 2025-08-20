@@ -3,10 +3,9 @@
 ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)
 ![Rust](https://img.shields.io/badge/rust-1.85.1%2B-orange.svg)
 ![Burn](https://img.shields.io/badge/burn-0.18.0-red.svg)
+[![CI](https://github.com/nusu-github/BiRefNet-Burn/actions/workflows/rust.yml/badge.svg)](https://github.com/nusu-github/BiRefNet-Burn/actions/workflows/rust.yml)
 
-A Rust implementation of the BiRefNet (Bilateral Reference Network) for high-resolution dichotomous image
-segmentation, built using the Burn deep learning framework. This project provides core model implementation with
-inference capabilities and foundational training infrastructure.
+A Rust implementation of the BiRefNet (Bilateral Reference Network) for high-resolution dichotomous image segmentation, built using the Burn deep learning framework. This project provides core model implementation with inference capabilities and foundational training infrastructure.
 
 ## Table of Contents
 
@@ -45,12 +44,13 @@ framework to provide enhanced performance, memory safety, and cross-platform dep
 - **Configuration System**: Type-safe, hierarchical configuration with validation
 - **Multiple Backends**: CPU (ndarray), GPU (WebGPU), and extensible backend system
 - **Comprehensive Loss System**: BCE, IoU, SSIM, MAE, Structure Loss, Contour Loss, Threshold Regularization, Patch IoU, and auxiliary classification losses with PyTorch-optimized weights
-- **Basic Evaluation Metrics**: Core metrics implemented (MSE, BIoU, Weighted F-measure), with advanced metrics partially implemented
+- **Core Evaluation Metrics**: MSE, BIoU, Weighted F-measure, F-measure, and MAE implemented with PyTorch-compatible calculations
+- **Complete Training System**: Full BiRefNet training pipeline with Burn Learner integration, configuration-based setup, and comprehensive optimizer support
 
 ### 🚧 Partially Implemented
 
 - **Post-processing Pipeline**: Basic threshold and resizing implemented, but advanced morphological operations (Gaussian blur, erosion/dilation, connected components, hole filling) are placeholder implementations
-- **Advanced Evaluation Metrics**: Core metrics (MSE, BIoU, Weighted F-measure) work correctly, but IoU, F-measure, MAE, S-measure, and E-measure calculations contain placeholder implementations
+- **Advanced Evaluation Metrics**: Core metrics (MSE, BIoU, Weighted F-measure, F-measure, MAE) work correctly, but IoU, S-measure, and E-measure calculations contain placeholder implementations
 - **Memory Efficiency**: Basic tensor operations optimization, further improvements needed
 
 ### 🔧 Core Components
@@ -59,14 +59,13 @@ framework to provide enhanced performance, memory safety, and cross-platform dep
 - **ASPP Module**: Atrous Spatial Pyramid Pooling for multi-scale feature extraction
 - **Decoder Blocks**: Progressive refinement with attention mechanisms
 - **Comprehensive Loss System**: BCE, IoU, SSIM, MAE, Structure Loss, Contour Loss, Threshold Regularization, Patch IoU, and auxiliary classification losses with PyTorch-optimized weights
-- **Evaluation Metrics**: Core metrics (MSE, BIoU, Weighted F-measure) with advanced metrics partially implemented
+- **Evaluation Metrics**: Core metrics (MSE, BIoU, Weighted F-measure, F-measure, MAE) fully implemented with PyTorch compatibility
 - **Data Pipeline**: Complete dataset loading with comprehensive augmentation (DIS5K dataset support)
 
 ### ❌ Not Yet Implemented
 
-- **Training Loop**: Complete training execution logic (only CLI structure and data handling exist)
 - **Advanced Post-processing**: Morphological operations, connected component analysis, hole filling, and Gaussian blur
-- **Complete Evaluation Suite**: Full implementation of IoU, F-measure, MAE, S-measure, and E-measure calculations
+- **Complete Evaluation Suite**: Full implementation of IoU, S-measure, and E-measure calculations
 - **Comprehensive Examples**: Code examples and tutorials
 - **Advanced Optimizations**: Production-grade performance tuning
 - **Standalone Converter Tool**: Dedicated CLI tool for batch model conversion
@@ -75,21 +74,19 @@ framework to provide enhanced performance, memory safety, and cross-platform dep
 
 ### Prerequisites
 
-- **Rust**: 1.85.1 or later
+- **Rust**: 1.85.1 or later (MSRV declared in Cargo; CI enforces)
 - **System Dependencies**: Based on your chosen backend (e.g., GPU drivers for WebGPU)
 
 ### Steps
 
-1. **Install Rust**:
-
-2. **Clone the repository**:
+1. **Clone the repository**:
 
    ```bash
    git clone https://github.com/nusu-github/BiRefNet-Burn.git
    cd BiRefNet-Burn
    ```
 
-3. **Build the project**:
+2. **Build the project**:
 
    ```bash
    # Build with all features
@@ -106,13 +103,13 @@ framework to provide enhanced performance, memory safety, and cross-platform dep
 Run inference on single images or directories:
 
 ```bash
-# Single image inference
+# Single image inference (auto-downloads weights for known model names)
 cargo run --release --bin birefnet -- infer --input path/to/image.jpg --output results/ --model General
 
 # Batch inference on directory
 cargo run --release --bin birefnet -- infer --input path/to/images/ --output results/ --model General
 
-# List available pretrained models
+# List available pretrained models (names resolved to HF Hub)
 cargo run --release --bin birefnet -- infer --list-models
 
 # Using specific backend
@@ -121,21 +118,39 @@ cargo run --release --bin birefnet --features wgpu --no-default-features -- infe
 
 ### Training
 
-**Note**: Training functionality is currently not implemented. The CLI interface exists for future development, but the actual training loop is not yet available.
+BiRefNet-Burn provides complete training functionality with Burn's Learner system integration:
 
 ```bash
-# Training commands (NOT YET FUNCTIONAL - placeholder for future implementation)
+# Train with configuration file
 cargo run --release --bin birefnet --features train -- train --config path/to/config.json
+
+# Resume training from checkpoint
+cargo run --release --bin birefnet --features train -- train --config path/to/config.json --resume path/to/checkpoint.json
 ```
 
-Current training infrastructure includes:
+Implemented training features:
 
-- Dataset loading and augmentation pipeline
-- Loss function implementations
-- CLI command structure
-- Configuration system
+- **Complete Training Pipeline**: Full Burn Learner integration with metrics and checkpointing
+- **Configuration-Based Setup**: JSON configuration files for reproducible training
+- **Optimizer Support**: AdamW, Adam, and SGD optimizers with customizable parameters
+- **Dataset Integration**: DIS5K dataset loading with comprehensive augmentation
+- **Loss Function Integration**: All implemented loss functions available for training
+- **Metrics Logging**: Real-time training and validation metrics
+- **Model Persistence**: Automatic model checkpointing and final model saving
 
-**Missing**: The core training loop, optimizer integration, and checkpoint management.
+Note: Checkpoint resume is WIP (CLI flag exists; loading under development).
+
+### Backends
+
+- **Default**: CPU backend (`ndarray`).
+- **GPU options**: Enable one of `wgpu` (cross‑platform), `vulkan`, `metal` (macOS), `cuda`, or `rocm` via `--features` at the top‑level `birefnet` crate. Some GPU features require vendor toolchains/drivers.
+    - Examples:
+        - WebGPU (cross‑platform): `cargo run --release --bin birefnet --features wgpu --no-default-features -- …`
+        - CUDA (Linux/Windows): `cargo run --release --bin birefnet --features cuda --no-default-features -- …`
+        - Metal (macOS): `cargo run --release --bin birefnet --features metal --no-default-features -- …`
+    - Notes:
+        - Ensure appropriate drivers/toolkits are installed for your platform.
+        - Some backends perform ahead‑of‑time compilation on first run; expect a warm‑up cost.
 
 ### Backend Information
 
@@ -200,19 +215,17 @@ While this project aims to provide a comprehensive Rust implementation of BiRefN
 ### 🚧 Missing Features
 
 - **`BiRefNetC2F` Model**: The coarse-to-fine model (`BiRefNetC2F`) from the Python implementation is not yet available.
-- **Complete Training System**: While dataset handling and CLI structure exist, the actual training loop implementation is not yet available.
 - **Advanced Post-processing Operations**: Key post-processing functions are placeholder implementations:
-  - Gaussian blur convolution
-  - Morphological operations (erosion, dilation, opening, closing)
-  - Connected component analysis and filtering
-  - Hole filling using morphological reconstruction
+    - Gaussian blur convolution
+    - Morphological operations (erosion, dilation, opening, closing)
+    - Connected component analysis and filtering
+    - Hole filling using morphological reconstruction
 - **Gradient-based Auxiliary Loss**: Boundary gradient supervision (`out_ref` mode) from the original implementation is not yet implemented.
-- **Complete Evaluation Metrics**: Several metrics contain placeholder implementations:
-  - IoU calculation (returns 0.0)
-  - F-measure calculation (returns 0.0)
-  - MAE calculation (returns 0.0)
-  - S-measure and E-measure (not implemented)
-  - Advanced metrics like Human Correction Efforts (HCE) and Mean Boundary Accuracy (MBA)
+- **Complete Evaluation Metrics**: Several advanced metrics contain placeholder implementations:
+    - IoU calculation (returns 0.0)
+    - S-measure and E-measure (not implemented)
+    - Advanced metrics like Human Correction Efforts (HCE) and Mean Boundary Accuracy (MBA)
+    - Note: F-measure and MAE calculations are fully implemented and functional
 - **Numerical Stability for BCE Loss**: The `BCELoss` implementation needs further refinement for full numerical stability, matching PyTorch's behavior.
 - **Multi-GPU Training**: Distributed training across multiple GPUs is not yet supported.
 - **Dynamic Resolution Training**: Training with variable input resolutions is not yet implemented.
@@ -237,16 +250,16 @@ project.
 
 ## Project Status
 
-| Component       | Status            | Notes                                         |
-|-----------------|-------------------|-----------------------------------------------|
-| Core Model      | ✅ Complete        | Full BiRefNet architecture implemented        |
-| Inference       | ✅ Complete        | Single/batch image processing                 |
-| Training        | ❌ Not Implemented | CLI structure only, no training logic         |
-| Conversion      | ✅ Complete        | Runtime PyTorch weight loading implemented    |
-| Datasets        | ✅ Complete        | DIS5K with full augmentation pipeline         |
-| Backbones       | ✅ Complete        | Swin v1, PVT v2, ResNet, VGG implemented      |
-| Post-processing | 🚧 Partial        | Basic ops work, advanced ops are placeholders |
-| Evaluation      | 🚧 Partial        | Core metrics work, advanced metrics partial   |
+| Component       | Status          | Notes                                         |
+|-----------------|-----------------|-----------------------------------------------|
+| Core Model      | ✅ Complete      | Full BiRefNet architecture implemented        |
+| Inference       | ✅ Complete      | Single/batch image processing                 |
+| Training        | ✅ Complete      | Full pipeline with Learner integration        |
+| Conversion      | ✅ Complete      | Runtime PyTorch weight loading implemented    |
+| Datasets        | ✅ Complete      | DIS5K with full augmentation pipeline         |
+| Backbones       | ✅ Complete      | Swin v1, PVT v2, ResNet, VGG implemented      |
+| Post-processing | 🚧 Partial      | Basic ops work, advanced ops are placeholders |
+| Evaluation      | ✅ Core Complete | F-measure, MAE, MSE, BIoU, Weighted F-measure |
 
 ## Contributing
 
@@ -333,6 +346,4 @@ Many components and design patterns in BiRefNet-Burn are inspired by or directly
 
 - **Issues**: [GitHub Issues](https://github.com/nusu-github/BiRefNet-Burn/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/nusu-github/BiRefNet-Burn/discussions)
-- **Documentation**: [Online Docs](https://docs.rs/birefnet-burn)
-
-For commercial support or custom development, please contact the maintainers.
+- **Documentation**: Generate locally with `cargo doc --all-features --no-deps --open`
