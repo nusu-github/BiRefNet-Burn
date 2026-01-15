@@ -2,7 +2,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)
 ![Rust](https://img.shields.io/badge/rust-1.85.1%2B-orange.svg)
-![Burn](https://img.shields.io/badge/burn-0.18.0-red.svg)
+![Burn](https://img.shields.io/badge/burn-0.20.0-red.svg)
 [![CI](https://github.com/nusu-github/BiRefNet-Burn/actions/workflows/rust.yml/badge.svg)](https://github.com/nusu-github/BiRefNet-Burn/actions/workflows/rust.yml)
 
 A Rust implementation of the BiRefNet (Bilateral Reference Network) for high-resolution dichotomous image segmentation, built using the Burn deep learning framework. This project provides core model implementation with inference capabilities and foundational training infrastructure.
@@ -13,9 +13,9 @@ A Rust implementation of the BiRefNet (Bilateral Reference Network) for high-res
 - [Features](#features)
 - [Installation](#installation)
 - [Usage](#usage)
-    - [Inference](#inference)
-    - [Training](#training)
-    - [Backend Information](#backend-information)
+  - [Inference](#inference)
+  - [Training](#training)
+  - [Backend Information](#backend-information)
 - [Architecture](#architecture)
 - [Current Limitations](#current-limitations)
 - [License](#license)
@@ -144,13 +144,13 @@ Note: Checkpoint resume is WIP (CLI flag exists; loading under development).
 
 - **Default**: CPU backend (`ndarray`).
 - **GPU options**: Enable one of `wgpu` (cross‑platform), `vulkan`, `metal` (macOS), `cuda`, or `rocm` via `--features` at the top‑level `birefnet` crate. Some GPU features require vendor toolchains/drivers.
-    - Examples:
-        - WebGPU (cross‑platform): `cargo run --release --bin birefnet --features wgpu --no-default-features -- …`
-        - CUDA (Linux/Windows): `cargo run --release --bin birefnet --features cuda --no-default-features -- …`
-        - Metal (macOS): `cargo run --release --bin birefnet --features metal --no-default-features -- …`
-    - Notes:
-        - Ensure appropriate drivers/toolkits are installed for your platform.
-        - Some backends perform ahead‑of‑time compilation on first run; expect a warm‑up cost.
+  - Examples:
+    - WebGPU (cross‑platform): `cargo run --release --bin birefnet --features wgpu --no-default-features -- …`
+    - CUDA (Linux/Windows): `cargo run --release --bin birefnet --features cuda --no-default-features -- …`
+    - Metal (macOS): `cargo run --release --bin birefnet --features metal --no-default-features -- …`
+  - Notes:
+    - Ensure appropriate drivers/toolkits are installed for your platform.
+    - Some backends perform ahead‑of‑time compilation on first run; expect a warm‑up cost.
 
 ### Backend Information
 
@@ -216,16 +216,16 @@ While this project aims to provide a comprehensive Rust implementation of BiRefN
 
 - **`BiRefNetC2F` Model**: The coarse-to-fine model (`BiRefNetC2F`) from the Python implementation is not yet available.
 - **Advanced Post-processing Operations**: Key post-processing functions are placeholder implementations:
-    - Gaussian blur convolution
-    - Morphological operations (erosion, dilation, opening, closing)
-    - Connected component analysis and filtering
-    - Hole filling using morphological reconstruction
+  - Gaussian blur convolution
+  - Morphological operations (erosion, dilation, opening, closing)
+  - Connected component analysis and filtering
+  - Hole filling using morphological reconstruction
 - **Gradient-based Auxiliary Loss**: Boundary gradient supervision (`out_ref` mode) from the original implementation is not yet implemented.
 - **Complete Evaluation Metrics**: Several advanced metrics contain placeholder implementations:
-    - IoU calculation (returns 0.0)
-    - S-measure and E-measure (not implemented)
-    - Advanced metrics like Human Correction Efforts (HCE) and Mean Boundary Accuracy (MBA)
-    - Note: F-measure and MAE calculations are fully implemented and functional
+  - IoU calculation (returns 0.0)
+  - S-measure and E-measure (not implemented)
+  - Advanced metrics like Human Correction Efforts (HCE) and Mean Boundary Accuracy (MBA)
+  - Note: F-measure and MAE calculations are fully implemented and functional
 - **Numerical Stability for BCE Loss**: The `BCELoss` implementation needs further refinement for full numerical stability, matching PyTorch's behavior.
 - **Multi-GPU Training**: Distributed training across multiple GPUs is not yet supported.
 - **Dynamic Resolution Training**: Training with variable input resolutions is not yet implemented.
@@ -250,15 +250,15 @@ project.
 
 ## Project Status
 
-| Component       | Status          | Notes                                         |
-|-----------------|-----------------|-----------------------------------------------|
+| Component       | Status           | Notes                                         |
+| --------------- | ---------------- | --------------------------------------------- |
 | Core Model      | ✅ Complete      | Full BiRefNet architecture implemented        |
 | Inference       | ✅ Complete      | Single/batch image processing                 |
 | Training        | ✅ Complete      | Full pipeline with Learner integration        |
 | Conversion      | ✅ Complete      | Runtime PyTorch weight loading implemented    |
 | Datasets        | ✅ Complete      | DIS5K with full augmentation pipeline         |
 | Backbones       | ✅ Complete      | Swin v1, PVT v2, ResNet, VGG implemented      |
-| Post-processing | 🚧 Partial      | Basic ops work, advanced ops are placeholders |
+| Post-processing | 🚧 Partial       | Basic ops work, advanced ops are placeholders |
 | Evaluation      | ✅ Core Complete | F-measure, MAE, MSE, BIoU, Weighted F-measure |
 
 ## Contributing
