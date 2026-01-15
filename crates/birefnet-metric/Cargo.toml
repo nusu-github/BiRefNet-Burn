@@ -18,4 +18,4 @@ derive-new = "0.7.0"
 birefnet-util = { path = "../birefnet-util" }
 
 [dev-dependencies]
-burn = { workspace = true, features = ["ndarray", "train"] }
+burn = { workspace = true, features = ["cpu", "train"] }

@@ -4,7 +4,7 @@ pub use postprocessing::*;
 
 #[cfg(test)]
 mod tests {
-    use burn::backend::NdArray;
+    use burn::backend::Cpu;
 
-    pub type TestBackend = NdArray;
+    pub type TestBackend = Cpu;
 }

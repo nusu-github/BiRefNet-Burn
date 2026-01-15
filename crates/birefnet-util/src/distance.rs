@@ -3,7 +3,7 @@
 //! This module provides distance transform algorithms required for implementing
 //! evaluation metrics like WeightedFMeasure that depend on spatial distance calculations.
 
-use burn::tensor::{backend::Backend, s, ElementConversion, Tensor};
+use burn::tensor::{ElementConversion, Tensor, backend::Backend, s};
 
 /// Euclidean distance transform with indices (simplified implementation)
 ///
@@ -278,11 +278,11 @@ pub fn bwdist<B: Backend>(
 
 #[cfg(test)]
 mod tests {
-    use burn::backend::NdArray;
+    use burn::backend::Cpu;
 
     use super::*;
 
-    type TestBackend = NdArray;
+    type TestBackend = Cpu;
 
     #[test]
     fn manhattan_distance_transform_single_point() {

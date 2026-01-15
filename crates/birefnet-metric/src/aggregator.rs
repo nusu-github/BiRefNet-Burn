@@ -5,7 +5,7 @@
 
 use core::marker::PhantomData;
 
-use burn::tensor::{backend::Backend, Tensor};
+use burn::tensor::{Tensor, backend::Backend};
 
 use super::utils::calculate_all_metrics;
 

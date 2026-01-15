@@ -22,4 +22,4 @@ rand = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-burn = { workspace = true, features = ["ndarray", "train"] }
+burn = { workspace = true, features = ["cpu", "train"] }

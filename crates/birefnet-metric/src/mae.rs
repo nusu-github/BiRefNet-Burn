@@ -4,13 +4,14 @@
 //! for evaluating segmentation performance.
 
 use core::marker::PhantomData;
+use std::sync::Arc;
 
 use burn::{
     prelude::*,
-    tensor::{backend::Backend, cast::ToElement, Tensor},
+    tensor::{Tensor, backend::Backend, cast::ToElement},
     train::metric::{
+        Metric, MetricMetadata, Numeric, NumericEntry,
         state::{FormatOptions, NumericMetricState},
-        Metric, MetricEntry, MetricMetadata, Numeric,
     },
 };
 
@@ -24,9 +25,11 @@ pub struct MAEMetricConfig {
     pub apply_sigmoid: bool,
 }
 
+#[derive(Clone)]
 pub struct MAEMetric<B: Backend> {
     state: NumericMetricState,
     apply_sigmoid: bool,
+    name: Arc<String>,
     _b: PhantomData<B>,
 }
 
@@ -35,6 +38,7 @@ impl MAEMetricConfig {
         MAEMetric {
             state: NumericMetricState::default(),
             apply_sigmoid: self.apply_sigmoid,
+            name: Arc::new("MAE".to_owned()),
             _b: PhantomData,
         }
     }
@@ -55,11 +59,15 @@ impl<B: Backend> MAEMetric<B> {
 impl<B: Backend> Metric for MAEMetric<B> {
     type Input = MAEInput<B>;
 
-    fn name(&self) -> String {
-        "MAE".to_owned()
+    fn name(&self) -> Arc<String> {
+        self.name.clone()
     }
 
-    fn update(&mut self, item: &Self::Input, _metadata: &MetricMetadata) -> MetricEntry {
+    fn update(
+        &mut self,
+        item: &Self::Input,
+        _metadata: &MetricMetadata,
+    ) -> burn::train::metric::SerializedEntry {
         let [batch_size, ..] = item.predictions.dims();
 
         let mut total_mae = 0.0;
@@ -70,8 +78,8 @@ impl<B: Backend> Metric for MAEMetric<B> {
                 .predictions
                 .clone()
                 .slice(s![b..=b, .., .., ..])
-                .squeeze(0);
-            let gt: Tensor<B, 3> = item.targets.clone().slice(s![b..=b, .., .., ..]).squeeze(0);
+                .squeeze();
+            let gt: Tensor<B, 3> = item.targets.clone().slice(s![b..=b, .., .., ..]).squeeze();
 
             let mae = calculate_mae_single(pred, gt);
             total_mae += mae;
@@ -91,8 +99,12 @@ impl<B: Backend> Metric for MAEMetric<B> {
 }
 
 impl<B: Backend> Numeric for MAEMetric<B> {
-    fn value(&self) -> f64 {
-        self.state.value()
+    fn value(&self) -> NumericEntry {
+        self.state.current_value()
+    }
+
+    fn running_value(&self) -> NumericEntry {
+        self.state.running_value()
     }
 }
 

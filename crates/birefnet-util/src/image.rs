@@ -2,10 +2,10 @@
 
 use std::path::Path;
 
-use burn::tensor::{backend::Backend, DType, Tensor, TensorData};
+use burn::tensor::{DType, Tensor, TensorData, backend::Backend};
 use image::{
-    buffer::ConvertBuffer, imageops::FilterType, DynamicImage, GenericImageView, ImageBuffer,
-    ImageFormat, Luma, Rgb, Rgba,
+    DynamicImage, GenericImageView, ImageBuffer, ImageFormat, Luma, Rgb, Rgba,
+    buffer::ConvertBuffer, imageops::FilterType,
 };
 use thiserror::Error;
 
@@ -28,7 +28,9 @@ pub enum ImageError {
     #[error("batch size mismatch: expected 1, got {actual}")]
     InvalidBatchSize { actual: usize },
 
-    #[error("unsupported image format: is_mask={is_mask}, channels={channels}. Expected: (true, 1), (false, 3), or (false, 4)")]
+    #[error(
+        "unsupported image format: is_mask={is_mask}, channels={channels}. Expected: (true, 1), (false, 3), or (false, 4)"
+    )]
     UnsupportedImageFormat { is_mask: bool, channels: usize },
 
     #[error(
@@ -66,7 +68,9 @@ pub enum ImageError {
     #[error("empty path list provided for batch processing")]
     EmptyPathList,
 
-    #[error("image {index} has dimensions {actual_height}x{actual_width}, expected {expected_height}x{expected_width}")]
+    #[error(
+        "image {index} has dimensions {actual_height}x{actual_width}, expected {expected_height}x{expected_width}"
+    )]
     InconsistentImageDimensions {
         index: usize,
         actual_height: usize,
@@ -159,7 +163,7 @@ impl ImageUtils {
         }
 
         // Remove batch dimension and permute to HWC
-        let tensor = tensor.squeeze::<3>(0).permute([1, 2, 0]);
+        let tensor = tensor.squeeze::<3>().permute([1, 2, 0]);
 
         // Convert to f64 with better error handling
         let data = tensor
@@ -311,7 +315,7 @@ impl ImageUtils {
     /// # Arguments
     /// * `data` - Raw pixel data
     /// * `width` - Image width
-    /// * `height` - Image height  
+    /// * `height` - Image height
     /// * `channels` - Number of channels (1, 3, or 4)
     /// * `device` - Device to create tensor on
     /// * `normalize` - Whether to normalize u8 values to [0,1] range
@@ -383,7 +387,7 @@ impl ImageUtils {
         let [_, _, expected_height, expected_width] = first_tensor.dims();
 
         let mut tensors = Vec::with_capacity(paths.len());
-        tensors.push(first_tensor.squeeze::<3>(0));
+        tensors.push(first_tensor.squeeze::<3>());
 
         // Process remaining images
         for (i, path) in paths.iter().enumerate().skip(1) {
@@ -405,7 +409,7 @@ impl ImageUtils {
                 });
             }
 
-            tensors.push(tensor.squeeze::<3>(0));
+            tensors.push(tensor.squeeze::<3>());
         }
 
         Ok(Tensor::stack(tensors, 0))
@@ -583,11 +587,11 @@ impl ImageUtils {
 
 #[cfg(test)]
 mod tests {
-    use burn::backend::NdArray;
+    use burn::backend::Cpu;
 
     use super::*;
 
-    type TestBackend = NdArray;
+    type TestBackend = Cpu;
 
     #[test]
     fn from_raw_pixels_invalid_data_returns_error() {

@@ -16,7 +16,7 @@ use crate::{
 pub enum NormLayerEnum<B: Backend> {
     ChannelsFirst(ChannelsFirst),
     ChannelsLast(ChannelsLast),
-    BatchNorm2d(BatchNorm<B, 2>),
+    BatchNorm2d(BatchNorm<B>),
     BasicDecBlk(LayerNorm<B>),
 }
 

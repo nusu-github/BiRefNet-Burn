@@ -6,8 +6,8 @@
 use burn::{
     module::Param,
     nn::{
-        conv::{Conv2d, Conv2dConfig},
         PaddingConfig2d,
+        conv::{Conv2d, Conv2dConfig},
     },
     prelude::*,
     tensor::{activation::sigmoid, module::deform_conv2d, ops::DeformConvOptions},

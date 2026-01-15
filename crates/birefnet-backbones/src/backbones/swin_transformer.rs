@@ -32,12 +32,12 @@
 
 use std::ops::Range;
 
-use birefnet_extra_ops::{trunc_normal, DropPath, DropPathConfig};
+use birefnet_extra_ops::{DropPath, DropPathConfig, trunc_normal};
 use burn::{
     module::Param,
     nn::{
-        conv::{Conv2d, Conv2dConfig},
         Dropout, DropoutConfig, Gelu, LayerNorm, LayerNormConfig, Linear, LinearConfig,
+        conv::{Conv2d, Conv2dConfig},
     },
     prelude::*,
     tensor::{
@@ -1763,9 +1763,14 @@ mod tests {
                 let prev_spatial =
                     outputs[stage - 1].shape().dims[2] * outputs[stage - 1].shape().dims[3];
                 let curr_spatial = dims[2] * dims[3];
-                assert!(curr_spatial <= prev_spatial,
-                    "Spatial dimensions should decrease between stages: stage {} = {}, stage {} = {}", 
-                    stage - 1, prev_spatial, stage, curr_spatial);
+                assert!(
+                    curr_spatial <= prev_spatial,
+                    "Spatial dimensions should decrease between stages: stage {} = {}, stage {} = {}",
+                    stage - 1,
+                    prev_spatial,
+                    stage,
+                    curr_spatial
+                );
             }
         }
 

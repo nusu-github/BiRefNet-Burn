@@ -15,7 +15,7 @@ use burn::{
     config::Config,
     module::{Content, DisplaySettings, Module, ModuleDisplay},
     nn::loss::Reduction,
-    tensor::{backend::Backend, Tensor},
+    tensor::{Tensor, backend::Backend},
 };
 
 /// Configuration for creating a [Threshold Regularization loss](ThresholdRegularizationLoss).
@@ -130,13 +130,13 @@ impl ThresholdRegularizationLoss {
 #[cfg(test)]
 mod tests {
     use burn::{
-        backend::NdArray,
-        tensor::{ops::FloatElem, TensorData, Tolerance, Transaction},
+        backend::Cpu,
+        tensor::{TensorData, Tolerance, Transaction, ops::FloatElem},
     };
 
     use super::*;
 
-    type TestBackend = NdArray;
+    type TestBackend = Cpu;
     type FT = FloatElem<TestBackend>;
 
     #[test]

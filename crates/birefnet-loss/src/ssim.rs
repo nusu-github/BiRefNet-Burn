@@ -13,8 +13,8 @@
 use burn::{
     config::Config,
     module::{Content, DisplaySettings, Module, ModuleDisplay, Param},
-    nn::{conv::Conv2dConfig, loss::Reduction, PaddingConfig2d},
-    tensor::{backend::Backend, Tensor},
+    nn::{PaddingConfig2d, conv::Conv2dConfig, loss::Reduction},
+    tensor::{Tensor, backend::Backend},
 };
 
 /// Configuration for creating an [SSIM loss](SSIMLoss).
@@ -250,7 +250,7 @@ impl SSIMLoss {
         ssim_map
             .reshape([batch_size as i32, -1])
             .mean_dim(1)
-            .squeeze(1)
+            .squeeze::<1>()
     }
 
     fn assertions<B: Backend>(&self, predictions: &Tensor<B, 4>, targets: &Tensor<B, 4>) {
@@ -265,7 +265,7 @@ impl SSIMLoss {
 
 #[cfg(test)]
 mod tests {
-    use burn::tensor::{cast::ToElement, TensorData};
+    use burn::tensor::{TensorData, cast::ToElement};
 
     use super::*;
     use crate::tests::TestBackend;

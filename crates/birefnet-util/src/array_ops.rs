@@ -3,7 +3,7 @@
 //! This module provides essential array operations that are missing from Burn's core
 //! but required for implementing computer vision evaluation metrics.
 
-use burn::tensor::{backend::Backend, s, ElementConversion, Tensor};
+use burn::tensor::{ElementConversion, Tensor, backend::Backend, s};
 
 /// Compute histogram of tensor values
 ///
@@ -210,12 +210,12 @@ pub fn std_with_ddof<B: Backend, const D: usize>(tensor: Tensor<B, D>, ddof: usi
 #[cfg(test)]
 mod tests {
     use approx::assert_relative_eq;
-    use burn::backend::NdArray;
+    use burn::backend::Cpu;
     use rstest::*;
 
     use super::*;
 
-    type TestBackend = NdArray;
+    type TestBackend = Cpu;
 
     // Helper function to create test data vectors
     fn create_test_data_1d(pattern: &str, size: usize) -> Vec<f32> {

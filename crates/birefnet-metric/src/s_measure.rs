@@ -4,14 +4,15 @@
 //! considering both object-level and region-level information.
 
 use core::marker::PhantomData;
+use std::sync::Arc;
 
 use burn::{
     config::Config,
     prelude::*,
-    tensor::{backend::Backend, cast::ToElement, Int, Tensor},
+    tensor::{Int, Tensor, backend::Backend, cast::ToElement},
     train::metric::{
+        Metric, MetricMetadata, Numeric, NumericEntry,
         state::{FormatOptions, NumericMetricState},
-        Metric, MetricEntry, MetricMetadata, Numeric,
     },
 };
 
@@ -46,9 +47,10 @@ impl<B: Backend> SMeasureInput<B> {
 }
 
 /// S-measure metric.
+#[derive(Clone)]
 pub struct SMeasureMetric<B: Backend> {
     state: NumericMetricState,
-    name: String,
+    name: Arc<String>,
     alpha: f64,
     _backend: PhantomData<B>,
 }
@@ -57,7 +59,7 @@ impl<B: Backend> Default for SMeasureMetric<B> {
     fn default() -> Self {
         Self {
             state: NumericMetricState::default(),
-            name: "S_measure".to_owned(),
+            name: Arc::new("S_measure".to_owned()),
             alpha: 0.5,
             _backend: PhantomData,
         }
@@ -74,7 +76,7 @@ impl<B: Backend> SMeasureMetric<B> {
     pub fn with_config(config: SMeasureMetricConfig) -> Self {
         Self {
             state: NumericMetricState::default(),
-            name: config.name,
+            name: Arc::new(config.name),
             alpha: config.alpha,
             _backend: PhantomData,
         }
@@ -84,22 +86,22 @@ impl<B: Backend> SMeasureMetric<B> {
 impl<B: Backend> Metric for SMeasureMetric<B> {
     type Input = SMeasureInput<B>;
 
-    fn name(&self) -> String {
-        self.name.to_string()
+    fn name(&self) -> Arc<String> {
+        self.name.clone()
     }
 
-    fn update(&mut self, input: &Self::Input, _metadata: &MetricMetadata) -> MetricEntry {
+    fn update(
+        &mut self,
+        input: &Self::Input,
+        _metadata: &MetricMetadata,
+    ) -> burn::train::metric::SerializedEntry {
         let [batch_size, ..] = input.predictions.dims();
 
         let mut total_sm = 0.0;
 
         for b in 0..batch_size {
-            let pred = input
-                .predictions
-                .clone()
-                .slice(s![b..=b, .., ..])
-                .squeeze(0);
-            let gt = input.targets.clone().slice(s![b..=b, .., ..]).squeeze(0);
+            let pred = input.predictions.clone().slice(s![b..=b, .., ..]).squeeze();
+            let gt = input.targets.clone().slice(s![b..=b, .., ..]).squeeze();
 
             let sm = calculate_s_measure(pred, gt, self.alpha);
             total_sm += sm;
@@ -109,7 +111,7 @@ impl<B: Backend> Metric for SMeasureMetric<B> {
         self.state.update(
             avg_sm,
             batch_size,
-            FormatOptions::new(self.name.to_string()).precision(5),
+            FormatOptions::new(self.name.clone()).precision(5),
         )
     }
 
@@ -119,8 +121,12 @@ impl<B: Backend> Metric for SMeasureMetric<B> {
 }
 
 impl<B: Backend> Numeric for SMeasureMetric<B> {
-    fn value(&self) -> f64 {
-        self.state.value()
+    fn value(&self) -> NumericEntry {
+        self.state.current_value()
+    }
+
+    fn running_value(&self) -> NumericEntry {
+        self.state.running_value()
     }
 }
 

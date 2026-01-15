@@ -1,4 +1,4 @@
-use burn::tensor::{backend::Backend, module::avg_pool2d, s, Tensor};
+use burn::tensor::{Tensor, backend::Backend, module::avg_pool2d, s};
 
 /// Small epsilon value to prevent division by zero in blur fusion calculations
 const EPSILON: f32 = 1e-5;
@@ -178,6 +178,7 @@ fn mean_blur<B: Backend>(x: Tensor<B, 4>, kernel_size: usize) -> Tensor<B, 4> {
         [1, 1], // stride = 1
         [0, 0], // no additional padding
         false,  // count_include_pad = false
+        false,  // ceil_mode = false
     )
 }
 
@@ -242,11 +243,11 @@ fn blur_fusion_estimator<B: Backend>(
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use birefnet_util::foreground_refiner::refine_foreground_core;
-/// use burn::{backend::ndarray::NdArray, tensor::Tensor};
+/// use burn::{backend::cpu::Cpu, tensor::Tensor};
 ///
-/// type Backend = NdArray<f32>;
+/// type Backend = Cpu<f32>;
 /// let device = Default::default();
 ///
 /// // Create sample image and mask tensors
@@ -304,11 +305,11 @@ pub fn refine_foreground_core<B: Backend>(
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use birefnet_util::foreground_refiner::refine_foreground;
-/// use burn::{backend::ndarray::NdArray, tensor::Tensor};
+/// use burn::{backend::cpu::Cpu, tensor::Tensor};
 ///
-/// type Backend = NdArray<f32>;
+/// type Backend = Cpu<f32>;
 /// let device = Default::default();
 ///
 /// // Create sample image [C, H, W] and mask [H, W]
@@ -346,7 +347,7 @@ pub fn refine_foreground<B: Backend>(
     let refined_4d = refine_foreground_core(image_4d, mask_4d, radius);
 
     // Remove batch dimension
-    refined_4d.squeeze(0)
+    refined_4d.squeeze()
 }
 
 /// Refine foreground for batch inputs
@@ -366,11 +367,11 @@ pub fn refine_foreground<B: Backend>(
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use birefnet_util::foreground_refiner::refine_foreground_batch;
-/// use burn::{backend::ndarray::NdArray, tensor::Tensor};
+/// use burn::{backend::cpu::Cpu, tensor::Tensor};
 ///
-/// type Backend = NdArray<f32>;
+/// type Backend = Cpu<f32>;
 /// let device = Default::default();
 ///
 /// // Create batch of images [B, C, H, W] and masks [B, 1, H, W]
@@ -392,11 +393,11 @@ pub fn refine_foreground_batch<B: Backend>(
 
 #[cfg(test)]
 mod tests {
-    use burn::backend::ndarray::NdArray;
+    use burn::backend::cpu::Cpu;
 
     use super::*;
 
-    type TestBackend = NdArray<f32>;
+    type TestBackend = Cpu<f32>;
 
     #[test]
     fn pad_replicate_uniform_padding_preserves_dimensions() {

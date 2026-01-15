@@ -74,7 +74,7 @@ fn main() -> Result<()> {
                 return Ok(());
             }
 
-            use birefnet::inference::{run_inference, InferenceConfig};
+            use birefnet::inference::{InferenceConfig, run_inference};
 
             let inference_config = InferenceConfig::new(input, output, model);
 
@@ -86,7 +86,7 @@ fn main() -> Result<()> {
 
         #[cfg(feature = "train")]
         Commands::Train { config, resume } => {
-            use birefnet::training::{run_training, TrainingConfig};
+            use birefnet::training::{TrainingConfig, run_training};
 
             let training_config = TrainingConfig::new(config, resume);
             run_training(training_config)

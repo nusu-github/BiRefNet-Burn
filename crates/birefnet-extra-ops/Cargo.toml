@@ -15,5 +15,5 @@ burn = { workspace = true }
 libm = { workspace = true }
 
 [dev-dependencies]
-burn = { workspace = true, features = ["ndarray"] }
+burn = { workspace = true, features = ["cpu"] }
 rstest = { workspace = true }

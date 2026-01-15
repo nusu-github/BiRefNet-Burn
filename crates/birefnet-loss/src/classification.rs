@@ -12,7 +12,7 @@ use burn::{
     config::Config,
     module::{Content, DisplaySettings, Module, ModuleDisplay},
     nn::loss::{CrossEntropyLoss, CrossEntropyLossConfig, Reduction},
-    tensor::{backend::Backend, Int, Tensor},
+    tensor::{Int, Tensor, backend::Backend},
 };
 
 /// Configuration for creating a [Classification loss](ClassificationLoss).
@@ -185,15 +185,19 @@ mod tests {
         let expected_ce = loss.ce_loss.forward(pred, targets);
         let expected_weighted = expected_ce.mul_scalar(loss.weight);
 
-        let [result_mean_data, result_no_reduction_data, expected_weighted_data1, expected_weighted_data2] =
-            Transaction::default()
-                .register(result_mean)
-                .register(result_no_reduction)
-                .register(expected_weighted.clone())
-                .register(expected_weighted)
-                .execute()
-                .try_into()
-                .expect("Correct amount of tensor data");
+        let [
+            result_mean_data,
+            result_no_reduction_data,
+            expected_weighted_data1,
+            expected_weighted_data2,
+        ] = Transaction::default()
+            .register(result_mean)
+            .register(result_no_reduction)
+            .register(expected_weighted.clone())
+            .register(expected_weighted)
+            .execute()
+            .try_into()
+            .expect("Correct amount of tensor data");
 
         result_mean_data.assert_approx_eq::<f32>(&expected_weighted_data1, Tolerance::default());
         result_no_reduction_data
@@ -268,15 +272,19 @@ mod tests {
         let result_mean = loss.forward(&predictions, &targets, Reduction::Mean);
         let result_sum = loss.forward(&predictions, &targets, Reduction::Sum);
 
-        let [result_auto_data, result_mean_data1, result_sum_data, result_mean_data2] =
-            Transaction::default()
-                .register(result_auto)
-                .register(result_mean.clone())
-                .register(result_sum)
-                .register(result_mean)
-                .execute()
-                .try_into()
-                .expect("Correct amount of tensor data");
+        let [
+            result_auto_data,
+            result_mean_data1,
+            result_sum_data,
+            result_mean_data2,
+        ] = Transaction::default()
+            .register(result_auto)
+            .register(result_mean.clone())
+            .register(result_sum)
+            .register(result_mean)
+            .execute()
+            .try_into()
+            .expect("Correct amount of tensor data");
 
         // Auto should equal Mean for single prediction
         result_auto_data.assert_approx_eq::<f32>(&result_mean_data1, Tolerance::default());

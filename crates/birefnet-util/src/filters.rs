@@ -6,7 +6,7 @@
 use std::f64::consts::PI;
 
 use burn::tensor::{
-    backend::Backend, module::conv2d, ops::ConvOptions, s, ElementConversion, Tensor,
+    ElementConversion, Tensor, backend::Backend, module::conv2d, ops::ConvOptions, s,
 };
 
 /// MATLAB-style 2D Gaussian kernel
@@ -240,11 +240,11 @@ fn pad_replicate_for_conv<B: Backend>(
 
 #[cfg(test)]
 mod tests {
-    use burn::backend::NdArray;
+    use burn::backend::Cpu;
 
     use super::*;
 
-    type TestBackend = NdArray;
+    type TestBackend = Cpu;
 
     #[test]
     fn matlab_gaussian_2d_creates_normalized_kernel() {

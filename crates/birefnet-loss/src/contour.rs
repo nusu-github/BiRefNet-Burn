@@ -17,7 +17,7 @@ use burn::{
     config::Config,
     module::{Content, DisplaySettings, Module, ModuleDisplay},
     nn::loss::Reduction,
-    tensor::{backend::Backend, s, Int, Tensor},
+    tensor::{Int, Tensor, backend::Backend, s},
 };
 
 /// Configuration for creating a [Contour loss](ContourLoss).
@@ -164,7 +164,7 @@ impl ContourLoss {
             .sqrt()
             .reshape([batch_size as i32, -1])
             .mean_dim(1)
-            .squeeze(1);
+            .squeeze::<1>();
 
         // Region terms
         let c_in = Tensor::ones_like(&predictions);
@@ -175,7 +175,7 @@ impl ContourLoss {
         let region_in = region_in_term
             .reshape([batch_size as i32, -1])
             .mean_dim(1)
-            .squeeze(1);
+            .squeeze::<1>();
 
         // region_out = mean((1-pred) * (targets - c_out)²) per batch
         let region_out_term = (Tensor::ones_like(&predictions) - predictions)
@@ -183,7 +183,7 @@ impl ContourLoss {
         let region_out = region_out_term
             .reshape([batch_size as i32, -1])
             .mean_dim(1)
-            .squeeze(1);
+            .squeeze::<1>();
 
         let region = region_in + region_out;
 
@@ -203,7 +203,7 @@ impl ContourLoss {
 
 #[cfg(test)]
 mod tests {
-    use burn::tensor::{cast::ToElement, TensorData};
+    use burn::tensor::{TensorData, cast::ToElement};
 
     use super::*;
     use crate::tests::TestBackend;

@@ -6,8 +6,8 @@ use core::f64::consts::SQRT_2;
 
 use burn::{
     nn::{
-        conv::{Conv2d, Conv2dConfig},
         BatchNorm, BatchNormConfig, Initializer, PaddingConfig2d, Relu,
+        conv::{Conv2d, Conv2dConfig},
     },
     prelude::*,
 };
@@ -34,10 +34,10 @@ impl<B: Backend> ResidualBlock<B> {
 #[derive(Module, Debug)]
 pub struct BasicBlock<B: Backend> {
     conv1: Conv2d<B>,
-    bn1: BatchNorm<B, 2>,
+    bn1: BatchNorm<B>,
     relu: Relu,
     conv2: Conv2d<B>,
-    bn2: BatchNorm<B, 2>,
+    bn2: BatchNorm<B>,
     downsample: Option<Downsample<B>>,
 }
 
@@ -110,12 +110,12 @@ impl<B: Backend> BasicBlock<B> {
 #[derive(Module, Debug)]
 pub struct Bottleneck<B: Backend> {
     conv1: Conv2d<B>,
-    bn1: BatchNorm<B, 2>,
+    bn1: BatchNorm<B>,
     relu: Relu,
     conv2: Conv2d<B>,
-    bn2: BatchNorm<B, 2>,
+    bn2: BatchNorm<B>,
     conv3: Conv2d<B>,
-    bn3: BatchNorm<B, 2>,
+    bn3: BatchNorm<B>,
     downsample: Option<Downsample<B>>,
 }
 
@@ -200,7 +200,7 @@ impl<B: Backend> Bottleneck<B> {
 #[derive(Module, Debug)]
 pub struct Downsample<B: Backend> {
     conv: Conv2d<B>,
-    bn: BatchNorm<B, 2>,
+    bn: BatchNorm<B>,
 }
 
 impl<B: Backend> Downsample<B> {

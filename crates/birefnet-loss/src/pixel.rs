@@ -9,16 +9,17 @@ use burn::{
     nn::loss::{BinaryCrossEntropyLoss, BinaryCrossEntropyLossConfig, MseLoss, Reduction},
     prelude::*,
     tensor::{
-        activation,
+        Tensor, activation,
         backend::Backend,
         cast::ToElement,
         module::interpolate,
         ops::{InterpolateMode, InterpolateOptions},
-        Tensor,
     },
 };
 
 use super::{
+    ContourLossConfig, IoULossConfig, MaeLossConfig, SSIMLossConfig, StructureLossConfig,
+    ThresholdRegularizationLossConfig,
     contour::ContourLoss,
     iou::IoULoss,
     mae::MaeLoss,
@@ -26,8 +27,6 @@ use super::{
     ssim::SSIMLoss,
     structure::StructureLoss,
     threshold_regularization::ThresholdRegularizationLoss,
-    ContourLossConfig, IoULossConfig, MaeLossConfig, SSIMLossConfig, StructureLossConfig,
-    ThresholdRegularizationLossConfig,
 };
 
 /// Configuration for different loss components in PixLoss.

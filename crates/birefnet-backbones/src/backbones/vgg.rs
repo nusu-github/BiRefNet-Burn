@@ -7,9 +7,9 @@ use core::f64::consts::SQRT_2;
 
 use burn::{
     nn::{
+        BatchNorm, BatchNormConfig, Initializer, PaddingConfig2d, Relu,
         conv::{Conv2d, Conv2dConfig},
         pool::{MaxPool2d, MaxPool2dConfig},
-        BatchNorm, BatchNormConfig, Initializer, PaddingConfig2d, Relu,
     },
     prelude::*,
 };
@@ -251,7 +251,7 @@ impl<B: Backend> VGGBlockLayer<B> {
 #[derive(Module, Debug)]
 pub struct VGGConvLayer<B: Backend> {
     conv: Conv2d<B>,
-    batch_norm: Option<BatchNorm<B, 2>>,
+    batch_norm: Option<BatchNorm<B>>,
     relu: Relu,
 }
 

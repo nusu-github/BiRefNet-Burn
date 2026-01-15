@@ -17,7 +17,7 @@ use burn::{
     config::Config,
     module::{Content, DisplaySettings, Module, ModuleDisplay},
     nn::loss::Reduction,
-    tensor::{backend::Backend, Int, Tensor},
+    tensor::{Int, Tensor, backend::Backend},
 };
 
 use super::iou::IoULoss;
@@ -216,7 +216,7 @@ impl PatchIoULoss {
 
 #[cfg(test)]
 mod tests {
-    use burn::tensor::{cast::ToElement, TensorData};
+    use burn::tensor::{TensorData, cast::ToElement};
 
     use super::*;
     use crate::tests::TestBackend;

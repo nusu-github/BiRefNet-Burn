@@ -48,18 +48,18 @@ pub mod burn_backend_types {
     pub const NAME: &str = "rocm";
 }
 
-// ndarray -------------------------------------------------------------------
+// CubeCL CPU ----------------------------------------------------------------
 // This backend is used for testing and by default when no backend is selected.
 
-#[cfg(all(feature = "ndarray", not(feature = "select_backend")))]
+#[cfg(all(feature = "cpu", not(feature = "select_backend")))]
 pub mod burn_backend_types {
-    use burn::backend::ndarray::{NdArray, NdArrayDevice};
+    use burn::backend::cpu::{Cpu, CpuDevice};
 
     use super::*;
 
-    pub type InferenceBackend = NdArray<ElemType>;
-    pub type InferenceDevice = NdArrayDevice;
-    pub const NAME: &str = "ndarray";
+    pub type InferenceBackend = Cpu<ElemType>;
+    pub type InferenceDevice = CpuDevice;
+    pub const NAME: &str = "cpu";
 }
 
 // WebGPU --------------------------------------------------------------------

@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use birefnet_util::ImageUtils;
-use burn::tensor::{backend::Backend, Tensor};
+use burn::tensor::{Tensor, backend::Backend};
 use image::{self, imageops::FilterType};
 
 /// Apply threshold to create binary mask.

@@ -5,13 +5,14 @@
 //! and changeable F-measure calculations as per the original Python implementation.
 
 use core::marker::PhantomData;
+use std::sync::Arc;
 
 use burn::{
     prelude::*,
-    tensor::{backend::Backend, cast::ToElement, Tensor},
+    tensor::{Tensor, backend::Backend, cast::ToElement},
     train::metric::{
+        Metric, MetricMetadata, Numeric, NumericEntry,
         state::{FormatOptions, NumericMetricState},
-        Metric, MetricEntry, MetricMetadata, Numeric,
     },
 };
 
@@ -28,10 +29,11 @@ pub struct FMeasureMetricConfig {
 }
 
 /// F-measure metric.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct FMeasureMetric<B: Backend> {
     state: NumericMetricState,
     beta: f64,
+    name: Arc<String>,
     adaptive_fms: Vec<f64>,
     precision_curves: Vec<Vec<f64>>,
     recall_curves: Vec<Vec<f64>>,
@@ -45,6 +47,7 @@ impl<B: Backend> FMeasureMetric<B> {
         Self {
             state: NumericMetricState::default(),
             beta: 0.3,
+            name: Arc::new("F-measure".to_owned()),
             adaptive_fms: Vec::new(),
             precision_curves: Vec::new(),
             recall_curves: Vec::new(),
@@ -58,6 +61,7 @@ impl<B: Backend> FMeasureMetric<B> {
         Self {
             state: NumericMetricState::default(),
             beta,
+            name: Arc::new("F-measure".to_owned()),
             adaptive_fms: Vec::new(),
             precision_curves: Vec::new(),
             recall_curves: Vec::new(),
@@ -78,11 +82,15 @@ impl<B: Backend> FMeasureMetric<B> {
 impl<B: Backend> Metric for FMeasureMetric<B> {
     type Input = FMeasureInput<B>;
 
-    fn name(&self) -> String {
-        "F-measure".to_owned()
+    fn name(&self) -> Arc<String> {
+        self.name.clone()
     }
 
-    fn update(&mut self, item: &Self::Input, _metadata: &MetricMetadata) -> MetricEntry {
+    fn update(
+        &mut self,
+        item: &Self::Input,
+        _metadata: &MetricMetadata,
+    ) -> burn::train::metric::SerializedEntry {
         let [batch_size, ..] = item.predictions.dims();
 
         // Process each item in the batch
@@ -91,8 +99,8 @@ impl<B: Backend> Metric for FMeasureMetric<B> {
                 .predictions
                 .clone()
                 .slice(s![b..=b, .., .., ..])
-                .squeeze(0);
-            let gt: Tensor<B, 3> = item.targets.clone().slice(s![b..=b, .., .., ..]).squeeze(0);
+                .squeeze();
+            let gt: Tensor<B, 3> = item.targets.clone().slice(s![b..=b, .., .., ..]).squeeze();
 
             // Calculate adaptive F-measure
             let adaptive_fm = calculate_adaptive_fm(pred.clone(), gt.clone(), self.beta);
@@ -123,8 +131,12 @@ impl<B: Backend> Metric for FMeasureMetric<B> {
 }
 
 impl<B: Backend> Numeric for FMeasureMetric<B> {
-    fn value(&self) -> f64 {
-        self.adaptive_fm_value()
+    fn value(&self) -> NumericEntry {
+        NumericEntry::Value(self.adaptive_fm_value())
+    }
+
+    fn running_value(&self) -> NumericEntry {
+        self.state.running_value()
     }
 }
 

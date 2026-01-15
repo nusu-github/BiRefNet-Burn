@@ -23,7 +23,7 @@ mod simple_convs;
 pub mod utils;
 
 // Re-export specific types from each module instead of using wildcards
-pub use aspp::{ASPPConfig, ASPPDeformable, ASPPDeformableConfig, ASPP};
+pub use aspp::{ASPP, ASPPConfig, ASPPDeformable, ASPPDeformableConfig};
 pub use decoder_blocks::{BasicDecBlk, BasicDecBlkConfig, ResBlk, ResBlkConfig};
 pub use deform_conv::DeformableConv2d;
 pub use lateral_blocks::{BasicLatBlk, BasicLatBlkConfig};

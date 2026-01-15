@@ -3,7 +3,7 @@
 //! This module provides morphological image processing operations required for
 //! implementing computer vision evaluation metrics like HCE, MBA, and BIoU.
 
-use burn::tensor::{backend::Backend, s, ElementConversion, Tensor};
+use burn::tensor::{ElementConversion, Tensor, backend::Backend, s};
 
 /// Structuring element for morphological operations
 #[derive(Debug, Clone)]
@@ -345,12 +345,12 @@ fn pad_replicate_4d<B: Backend>(tensor: Tensor<B, 4>, pad_h: usize, pad_w: usize
 #[cfg(test)]
 mod tests {
     use approx::assert_relative_eq;
-    use burn::backend::NdArray;
+    use burn::backend::Cpu;
     use rstest::*;
 
     use super::*;
 
-    type TestBackend = NdArray;
+    type TestBackend = Cpu;
 
     // Helper function to create test image data
     fn create_test_image_tensor<B: Backend>(

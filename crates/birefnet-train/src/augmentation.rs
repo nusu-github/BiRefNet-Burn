@@ -12,8 +12,8 @@
 //! 6. Background color synthesis augmentation - solid, similar, random color patterns
 //! 7. Dynamic input size augmentation - per-batch size changes
 
-use image::{buffer::ConvertBuffer, imageops::FilterType, DynamicImage, GenericImageView, Rgb};
-use imageproc::geometric_transformations::{rotate_about_center, Interpolation};
+use image::{DynamicImage, GenericImageView, Rgb, buffer::ConvertBuffer, imageops::FilterType};
+use imageproc::geometric_transformations::{Interpolation, rotate_about_center};
 use rand::{Rng, SeedableRng};
 
 /// Data augmentation configuration parameters
@@ -552,9 +552,11 @@ mod tests {
         let config = AugmentationConfig::default();
         assert_eq!(config.enabled_methods.len(), 4);
         assert!(config.enabled_methods.contains(&AugmentationMethod::Flip));
-        assert!(config
-            .enabled_methods
-            .contains(&AugmentationMethod::Enhance));
+        assert!(
+            config
+                .enabled_methods
+                .contains(&AugmentationMethod::Enhance)
+        );
         assert!(config.enabled_methods.contains(&AugmentationMethod::Rotate));
         assert!(config.enabled_methods.contains(&AugmentationMethod::Pepper));
         assert!(!config.background_color_synthesis);

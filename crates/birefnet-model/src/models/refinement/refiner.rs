@@ -1,23 +1,23 @@
-use birefnet_backbones::{create_backbone, Backbone, BackboneType, BackboneWrapper, PvtV2Variant};
+use birefnet_backbones::{Backbone, BackboneType, BackboneWrapper, PvtV2Variant, create_backbone};
 use burn::{
     module::Ignored,
     nn::{
+        BatchNorm, BatchNormConfig, PaddingConfig2d, Relu,
         conv::{Conv2d, Conv2dConfig},
         pool::{MaxPool2d, MaxPool2dConfig},
-        BatchNorm, BatchNormConfig, PaddingConfig2d, Relu,
     },
     prelude::*,
     tensor::activation,
 };
 
 use crate::{
+    DecoderAttention, ModelConfig,
     config::{InterpolationStrategy, SqueezeBlock},
     error::BiRefNetResult,
     models::modules::{
-        utils::{build_norm_layer, intelligent_interpolate, ActLayerEnum, NormLayerEnum},
         BasicDecBlk, BasicDecBlkConfig, BasicLatBlk, BasicLatBlkConfig,
+        utils::{ActLayerEnum, NormLayerEnum, build_norm_layer, intelligent_interpolate},
     },
-    DecoderAttention, ModelConfig,
 };
 
 /// Configuration for the RefinerDecoder
@@ -318,7 +318,8 @@ impl RefinerPVTInChannels4Config {
             DecoderAttention::ASPPDeformable => SqueezeBlock::ASPPDeformable(0),
         };
 
-        let squeeze_module = BasicDecBlkConfig::new(squeeze_block, self.config.interpolation.clone())
+        let squeeze_module =
+            BasicDecBlkConfig::new(squeeze_block, self.config.interpolation.clone())
                 .with_in_channels(channels[3]) // Use highest resolution features
                 .with_out_channels(channels[3])
                 .init(device)?;
@@ -416,7 +417,8 @@ impl RefinerConfig {
             DecoderAttention::ASPPDeformable => SqueezeBlock::ASPPDeformable(0),
         };
 
-        let squeeze_module = BasicDecBlkConfig::new(squeeze_block, self.config.interpolation.clone())
+        let squeeze_module =
+            BasicDecBlkConfig::new(squeeze_block, self.config.interpolation.clone())
                 .with_in_channels(channels[3]) // Use highest resolution features
                 .with_out_channels(channels[3])
                 .init(device)?;
@@ -475,18 +477,18 @@ pub struct RefUNetConfig {
 #[derive(Module, Debug)]
 pub struct RefUNet<B: Backend> {
     // Encoder layers
-    encoder_1: (Conv2d<B>, Conv2d<B>, BatchNorm<B, 2>, Relu),
-    encoder_2: (MaxPool2d, Conv2d<B>, BatchNorm<B, 2>, Relu),
-    encoder_3: (MaxPool2d, Conv2d<B>, BatchNorm<B, 2>, Relu),
-    encoder_4: (MaxPool2d, Conv2d<B>, BatchNorm<B, 2>, Relu),
+    encoder_1: (Conv2d<B>, Conv2d<B>, BatchNorm<B>, Relu),
+    encoder_2: (MaxPool2d, Conv2d<B>, BatchNorm<B>, Relu),
+    encoder_3: (MaxPool2d, Conv2d<B>, BatchNorm<B>, Relu),
+    encoder_4: (MaxPool2d, Conv2d<B>, BatchNorm<B>, Relu),
     pool4: MaxPool2d,
 
     // Decoder layers
-    decoder_5: (Conv2d<B>, BatchNorm<B, 2>, Relu),
-    decoder_4: (Conv2d<B>, BatchNorm<B, 2>, Relu),
-    decoder_3: (Conv2d<B>, BatchNorm<B, 2>, Relu),
-    decoder_2: (Conv2d<B>, BatchNorm<B, 2>, Relu),
-    decoder_1: (Conv2d<B>, BatchNorm<B, 2>, Relu),
+    decoder_5: (Conv2d<B>, BatchNorm<B>, Relu),
+    decoder_4: (Conv2d<B>, BatchNorm<B>, Relu),
+    decoder_3: (Conv2d<B>, BatchNorm<B>, Relu),
+    decoder_2: (Conv2d<B>, BatchNorm<B>, Relu),
+    decoder_1: (Conv2d<B>, BatchNorm<B>, Relu),
 
     conv_d0: Conv2d<B>,
     /// Interpolation strategy for tensor resizing operations.

@@ -1,13 +1,14 @@
 //! Mean Squared Error (MSE) metric for BiRefNet.
 
 use core::marker::PhantomData;
+use std::sync::Arc;
 
 use burn::{
     config::Config,
-    tensor::{backend::Backend, cast::ToElement, s, Tensor},
+    tensor::{Tensor, backend::Backend, cast::ToElement, s},
     train::metric::{
+        Metric, MetricMetadata, Numeric, NumericEntry,
         state::{FormatOptions, NumericMetricState},
-        Metric, MetricEntry, MetricMetadata, Numeric,
     },
 };
 
@@ -22,24 +23,28 @@ pub struct MSEMetricConfig {
 }
 
 /// MSE metric.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct MSEMetric<B: Backend> {
     state: NumericMetricState,
-    name: String,
+    name: Arc<String>,
     _backend: PhantomData<B>,
 }
 
 impl<B: Backend> MSEMetric<B> {
     /// Creates a new MSE metric.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            state: NumericMetricState::default(),
+            name: Arc::new("MSE".to_owned()),
+            _backend: PhantomData,
+        }
     }
 
     /// Creates a new MSE metric with a custom name.
     pub fn with_name(name: String) -> Self {
         Self {
             state: NumericMetricState::default(),
-            name,
+            name: Arc::new(name),
             _backend: PhantomData,
         }
     }
@@ -48,11 +53,15 @@ impl<B: Backend> MSEMetric<B> {
 impl<B: Backend> Metric for MSEMetric<B> {
     type Input = MSEInput<B>;
 
-    fn name(&self) -> String {
+    fn name(&self) -> Arc<String> {
         self.name.clone()
     }
 
-    fn update(&mut self, input: &Self::Input, _metadata: &MetricMetadata) -> MetricEntry {
+    fn update(
+        &mut self,
+        input: &Self::Input,
+        _metadata: &MetricMetadata,
+    ) -> burn::train::metric::SerializedEntry {
         let [batch_size, ..] = input.predictions.dims();
 
         let mut total_mse = 0.0;
@@ -63,12 +72,8 @@ impl<B: Backend> Metric for MSEMetric<B> {
                 .predictions
                 .clone()
                 .slice(s![b..=b, .., .., ..])
-                .squeeze(0);
-            let gt: Tensor<B, 3> = input
-                .targets
-                .clone()
-                .slice(s![b..=b, .., .., ..])
-                .squeeze(0);
+                .squeeze();
+            let gt: Tensor<B, 3> = input.targets.clone().slice(s![b..=b, .., .., ..]).squeeze();
 
             let mse = calculate_mse_single(pred, gt);
             total_mse += mse;
@@ -88,8 +93,12 @@ impl<B: Backend> Metric for MSEMetric<B> {
 }
 
 impl<B: Backend> Numeric for MSEMetric<B> {
-    fn value(&self) -> f64 {
-        self.state.value()
+    fn value(&self) -> NumericEntry {
+        self.state.current_value()
+    }
+
+    fn running_value(&self) -> NumericEntry {
+        self.state.running_value()
     }
 }
 

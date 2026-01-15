@@ -20,6 +20,6 @@ image = { workspace = true, features = ["jpeg", "png", "tiff", "bmp", "webp"] }
 hf-hub = { workspace = true }
 
 [dev-dependencies]
-burn = { workspace = true, features = ["ndarray"] }
+burn = { workspace = true, features = ["cpu"] }
 rstest = { workspace = true }
 approx = { workspace = true }

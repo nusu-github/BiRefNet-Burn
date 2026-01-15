@@ -5,7 +5,7 @@
 
 use burn::{
     prelude::*,
-    tensor::{backend::Backend, Tensor},
+    tensor::{Tensor, backend::Backend},
 };
 
 use super::{
@@ -39,9 +39,9 @@ pub fn calculate_all_metrics<B: Backend>(
     // Calculate metrics that work with 4D tensors
     // TODO: Implement calculate_iou or use BIoU
     let iou = 0.0; // placeholder
-                   // TODO: Fix dimension mismatch - f_measure expects 2D tensors
+    // TODO: Fix dimension mismatch - f_measure expects 2D tensors
     let f_measure = 0.0; // placeholder
-                         // TODO: Fix dimension mismatch - mae expects 2D tensors
+    // TODO: Fix dimension mismatch - mae expects 2D tensors
     let mae = 0.0; // placeholder
 
     // For metrics that need 2D tensors, process batch
@@ -55,13 +55,13 @@ pub fn calculate_all_metrics<B: Backend>(
         let pred_2d: Tensor<B, 2> = predictions
             .clone()
             .slice(s![b..=b, 0..1, .., ..])
-            .squeeze::<3>(0)
-            .squeeze::<2>(0);
+            .squeeze::<3>()
+            .squeeze::<2>();
         let target_2d: Tensor<B, 2> = targets
             .clone()
             .slice(s![b..=b, 0..1, .., ..])
-            .squeeze::<3>(0)
-            .squeeze::<2>(0);
+            .squeeze::<3>()
+            .squeeze::<2>();
 
         mse_sum += calculate_mse(pred_2d.clone(), target_2d.clone());
         // TODO: Implement s_measure and e_measure

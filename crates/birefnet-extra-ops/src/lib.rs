@@ -10,13 +10,13 @@ mod trunc_normal;
 
 // Convenient re-exports
 pub use drop_path::{DropPath, DropPathConfig};
-pub use erfinv::{erfinv, Erfinv};
+pub use erfinv::{Erfinv, erfinv};
 pub use identity::Identity;
 pub use trunc_normal::{trunc_normal, trunc_normal_};
 
 #[cfg(test)]
 mod tests {
-    use burn::backend::NdArray;
+    use burn::backend::Cpu;
 
-    pub type TestBackend = NdArray;
+    pub type TestBackend = Cpu;
 }

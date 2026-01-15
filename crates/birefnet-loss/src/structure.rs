@@ -15,11 +15,11 @@ use burn::{
     config::Config,
     module::{Content, DisplaySettings, Module, ModuleDisplay},
     nn::{
+        PaddingConfig2d,
         loss::Reduction,
         pool::{AvgPool2d, AvgPool2dConfig},
-        PaddingConfig2d,
     },
-    tensor::{activation::sigmoid, backend::Backend, Int, Tensor},
+    tensor::{Int, Tensor, activation::sigmoid, backend::Backend},
 };
 
 /// Configuration for creating a [Structure loss](StructureLoss).
@@ -213,7 +213,7 @@ impl StructureLoss {
             .reshape([batch_size as i32, channels as i32]);
 
         // Mean over channels: [B,C] -> [B,1] -> [B]
-        bce_avg.mean_dim(1).squeeze(1)
+        bce_avg.mean_dim(1).squeeze::<1>()
     }
 
     /// Compute weighted IoU loss.
@@ -242,7 +242,7 @@ impl StructureLoss {
             / (union_flat - inter_flat.add_scalar(self.eps));
 
         // IoU loss = 1 - IoU, average over channels: [B,C] -> [B,1] -> [B]
-        (iou.ones_like() - iou).mean_dim(1).squeeze(1)
+        (iou.ones_like() - iou).mean_dim(1).squeeze::<1>()
     }
 
     fn assertions<B: Backend>(&self, predictions: &Tensor<B, 4>, targets: &Tensor<B, 4, Int>) {
@@ -257,7 +257,7 @@ impl StructureLoss {
 
 #[cfg(test)]
 mod tests {
-    use burn::tensor::{cast::ToElement, TensorData};
+    use burn::tensor::{TensorData, cast::ToElement};
 
     use super::*;
     use crate::tests::TestBackend;
@@ -307,12 +307,14 @@ mod tests {
         // All should be valid finite values
         assert!(result_mean.into_scalar().to_f64().is_finite());
         assert!(result_sum.into_scalar().to_f64().is_finite());
-        assert!(result_no_reduction
-            .clone()
-            .sum()
-            .into_scalar()
-            .to_f64()
-            .is_finite());
+        assert!(
+            result_no_reduction
+                .clone()
+                .sum()
+                .into_scalar()
+                .to_f64()
+                .is_finite()
+        );
 
         // Should have shape [batch_size] for no reduction
         assert_eq!(result_no_reduction.dims(), [1]);

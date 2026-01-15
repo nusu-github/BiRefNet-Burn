@@ -1,8 +1,8 @@
 use std::{fs, path::Path, sync::Arc};
 
 use anyhow::Result;
-use birefnet_model::{training::BiRefNetBatch, BiRefNetConfig, InterpolationStrategy, ModelConfig};
-use birefnet_train::{dataset::BiRefNetBatcher, BiRefNetDataset};
+use birefnet_model::{BiRefNetConfig, InterpolationStrategy, ModelConfig, training::BiRefNetBatch};
+use birefnet_train::{BiRefNetDataset, dataset::BiRefNetBatcher};
 use burn::{
     backend::Autodiff,
     config::Config,
@@ -11,7 +11,7 @@ use burn::{
     prelude::*,
     record::CompactRecorder,
     tensor::backend::AutodiffBackend,
-    train::{metric::LossMetric, LearnerBuilder},
+    train::{LearnerBuilder, metric::LossMetric},
 };
 
 use crate::backend::burn_backend_types::{InferenceBackend, InferenceDevice, NAME};

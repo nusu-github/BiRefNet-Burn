@@ -11,11 +11,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use birefnet_model::{training::BiRefNetBatch, ModelConfig, Task};
+use birefnet_model::{ModelConfig, Task, training::BiRefNetBatch};
 use birefnet_util::ImageUtils;
 use burn::{
     data::{dataloader::batcher::Batcher, dataset::Dataset},
-    tensor::{backend::Backend, Tensor, TensorData},
+    tensor::{Tensor, TensorData, backend::Backend},
 };
 use image::{DynamicImage, ImageFormat};
 
@@ -33,11 +33,11 @@ use crate::{
 pub struct BiRefNetItem {
     /// Preprocessed RGB image data as 3D array [H, W, C] with normalized floats
     pub image: Vec<f32>,
-    /// Preprocessed binary mask data as 2D array [H, W] with normalized floats  
+    /// Preprocessed binary mask data as 2D array [H, W] with normalized floats
     pub mask: Vec<f32>,
     /// Image height in pixels
     pub height: usize,
-    /// Image width in pixels  
+    /// Image width in pixels
     pub width: usize,
 }
 
@@ -81,7 +81,7 @@ impl<B: Backend> Batcher<B, BiRefNetItem, BiRefNetBatch<B>> for BiRefNetBatcher<
             let normalized_tensor =
                 ImageUtils::apply_imagenet_normalization(image_tensor_with_batch)
                     .expect("Failed to apply ImageNet normalization")
-                    .squeeze::<3>(0); // [1, C, H, W] -> [C, H, W]
+                    .squeeze::<3>(); // [1, C, H, W] -> [C, H, W]
 
             // Convert mask data to tensor [1, H, W]
             let mask_tensor = Tensor::<B, 2>::from_data(
@@ -393,7 +393,7 @@ mod tests {
 
     use super::*;
 
-    type TestBackend = burn::backend::ndarray::NdArray<f32>;
+    type TestBackend = burn::backend::cpu::Cpu<f32>;
 
     #[test]
     fn birefnet_batcher_creates_correct_batch_dimensions() {

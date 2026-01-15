@@ -21,8 +21,8 @@
 use burn::{
     module::Ignored,
     nn::{
-        conv::{Conv2d, Conv2dConfig},
         BatchNorm, BatchNormConfig, PaddingConfig2d, Relu,
+        conv::{Conv2d, Conv2dConfig},
     },
     prelude::*,
     tensor::activation::sigmoid,
@@ -66,7 +66,7 @@ pub struct DecoderConfig {
 #[derive(Module, Debug)]
 struct GdtConvs<B: Backend> {
     conv: Conv2d<B>,
-    bn: BatchNorm<B, 2>,
+    bn: BatchNorm<B>,
     relu: Relu,
 }
 
@@ -250,8 +250,12 @@ impl DecoderConfig {
             self.create_ipt_blocks(split, device);
 
         // Create decoder blocks using helper function
-        let [decoder_block4, decoder_block3, decoder_block2, decoder_block1] =
-            self.create_decoder_blocks(device)?;
+        let [
+            decoder_block4,
+            decoder_block3,
+            decoder_block2,
+            decoder_block1,
+        ] = self.create_decoder_blocks(device)?;
 
         // Create lateral blocks using helper function
         let [lateral_block4, lateral_block3, lateral_block2] = self.create_lateral_blocks(device);

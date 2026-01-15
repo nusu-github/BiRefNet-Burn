@@ -15,4 +15,4 @@ burn = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-burn = { workspace = true, features = ["ndarray"] }
+burn = { workspace = true, features = ["cpu"] }

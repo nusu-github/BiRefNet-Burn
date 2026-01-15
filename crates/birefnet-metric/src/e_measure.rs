@@ -4,14 +4,15 @@
 //! considering both local and global similarities.
 
 use core::marker::PhantomData;
+use std::sync::Arc;
 
 use burn::{
     config::Config,
     prelude::*,
-    tensor::{backend::Backend, cast::ToElement, Bool, Tensor},
+    tensor::{Bool, Tensor, backend::Backend, cast::ToElement},
     train::metric::{
+        Metric, MetricMetadata, Numeric, NumericEntry,
         state::{FormatOptions, NumericMetricState},
-        Metric, MetricEntry, MetricMetadata, Numeric,
     },
 };
 
@@ -50,10 +51,11 @@ pub struct EMeasureState {
 }
 
 /// E-measure metric.
+#[derive(Clone)]
 pub struct EMeasureMetric<B: Backend> {
     state: EMeasureState,
     numeric_state: NumericMetricState,
-    name: String,
+    name: Arc<String>,
     _backend: PhantomData<B>,
 }
 
@@ -62,7 +64,7 @@ impl<B: Backend> Default for EMeasureMetric<B> {
         Self {
             state: EMeasureState::default(),
             numeric_state: NumericMetricState::default(),
-            name: "E_measure".to_owned(),
+            name: Arc::new("E_measure".to_owned()),
             _backend: PhantomData,
         }
     }
@@ -79,7 +81,7 @@ impl<B: Backend> EMeasureMetric<B> {
         Self {
             state: EMeasureState::default(),
             numeric_state: NumericMetricState::default(),
-            name: config.name,
+            name: Arc::new(config.name),
             _backend: PhantomData,
         }
     }
@@ -88,20 +90,20 @@ impl<B: Backend> EMeasureMetric<B> {
 impl<B: Backend> Metric for EMeasureMetric<B> {
     type Input = EMeasureInput<B>;
 
-    fn name(&self) -> String {
-        self.name.to_string()
+    fn name(&self) -> Arc<String> {
+        self.name.clone()
     }
 
-    fn update(&mut self, input: &Self::Input, _metadata: &MetricMetadata) -> MetricEntry {
+    fn update(
+        &mut self,
+        input: &Self::Input,
+        _metadata: &MetricMetadata,
+    ) -> burn::train::metric::SerializedEntry {
         let [batch_size, ..] = input.predictions.dims();
 
         for b in 0..batch_size {
-            let pred = input
-                .predictions
-                .clone()
-                .slice(s![b..=b, .., ..])
-                .squeeze(0);
-            let gt = input.targets.clone().slice(s![b..=b, .., ..]).squeeze(0);
+            let pred = input.predictions.clone().slice(s![b..=b, .., ..]).squeeze();
+            let gt = input.targets.clone().slice(s![b..=b, .., ..]).squeeze();
 
             let (adaptive_em, changeable_em) = calculate_e_measure(pred, gt);
             self.state.adaptive_ems.push(adaptive_em);
@@ -116,7 +118,7 @@ impl<B: Backend> Metric for EMeasureMetric<B> {
         self.numeric_state.update(
             avg_adaptive_em,
             batch_size,
-            FormatOptions::new(self.name.to_string()).precision(5),
+            FormatOptions::new(self.name.clone()).precision(5),
         )
     }
 
@@ -127,10 +129,14 @@ impl<B: Backend> Metric for EMeasureMetric<B> {
 }
 
 impl<B: Backend> Numeric for EMeasureMetric<B> {
-    fn value(&self) -> f64 {
+    fn value(&self) -> NumericEntry {
         // Use the dedicated function to get E-measure results
         let (adaptive_em, _changeable_ems) = get_e_measure_results(&self.state);
-        adaptive_em
+        NumericEntry::Value(adaptive_em)
+    }
+
+    fn running_value(&self) -> NumericEntry {
+        self.numeric_state.running_value()
     }
 }
 

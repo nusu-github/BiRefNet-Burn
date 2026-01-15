@@ -13,7 +13,7 @@ use burn::{
     config::Config,
     module::{Content, DisplaySettings, Module, ModuleDisplay},
     nn::loss::Reduction,
-    tensor::{backend::Backend, Int, Tensor},
+    tensor::{Int, Tensor, backend::Backend},
 };
 
 /// Configuration for creating an [IoU loss](IoULoss).
@@ -130,7 +130,7 @@ impl IoULoss {
 
         // IoU loss is (1 - IoU) [B, 1] -> [B]
         let loss = Tensor::ones_like(&iou) - iou;
-        loss.squeeze(1)
+        loss.squeeze::<1>()
     }
 
     fn assertions<B: Backend>(&self, predictions: &Tensor<B, 4>, targets: &Tensor<B, 4, Int>) {

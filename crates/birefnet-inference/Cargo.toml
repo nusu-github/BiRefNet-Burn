@@ -21,4 +21,4 @@ cfg-if = { workspace = true }
 image = { workspace = true }
 
 [dev-dependencies]
-burn = { workspace = true, features = ["ndarray"] }
+burn = { workspace = true, features = ["cpu"] }

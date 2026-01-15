@@ -13,8 +13,8 @@
 //! multi-scale inputs, context aggregation, and various decoder block configurations.
 
 use birefnet_backbones::{
-    create_backbone, Backbone, BackboneType, BackboneWrapper, PvtV2Variant, ResNetVariant,
-    SwinVariant, VGGVariant,
+    Backbone, BackboneType, BackboneWrapper, PvtV2Variant, ResNetVariant, SwinVariant, VGGVariant,
+    create_backbone,
 };
 #[cfg(feature = "train")]
 use birefnet_loss::{BiRefNetLoss, BiRefNetLossConfig};
@@ -22,14 +22,14 @@ use burn::{module::Ignored, prelude::*};
 #[cfg(feature = "train")]
 use burn::{
     tensor::backend::AutodiffBackend,
-    train::{TrainOutput, TrainStep, ValidStep},
+    train::{InferenceStep, TrainOutput, TrainStep},
 };
 
 use super::{
     decoder::{Decoder, DecoderConfig},
     modules::{
-        ASPPConfig, ASPPDeformable, ASPPDeformableConfig, BasicDecBlk, BasicDecBlkConfig, ResBlk,
-        ResBlkConfig, ASPP,
+        ASPP, ASPPConfig, ASPPDeformable, ASPPDeformableConfig, BasicDecBlk, BasicDecBlkConfig,
+        ResBlk, ResBlkConfig,
     },
     refinement::{
         RefUNet, RefUNetConfig, Refiner, RefinerConfig, RefinerPVTInChannels4,
@@ -469,7 +469,10 @@ impl<B: Backend> BiRefNet<B> {
 }
 
 #[cfg(feature = "train")]
-impl<B: AutodiffBackend> TrainStep<BiRefNetBatch<B>, BiRefNetOutput<B>> for BiRefNet<B> {
+impl<B: AutodiffBackend> TrainStep for BiRefNet<B> {
+    type Input = BiRefNetBatch<B>;
+    type Output = BiRefNetOutput<B>;
+
     fn step(&self, batch: BiRefNetBatch<B>) -> TrainOutput<BiRefNetOutput<B>> {
         // Use default loss configuration for training
         let item = self.forward_classification(batch).unwrap();
@@ -478,7 +481,10 @@ impl<B: AutodiffBackend> TrainStep<BiRefNetBatch<B>, BiRefNetOutput<B>> for BiRe
 }
 
 #[cfg(feature = "train")]
-impl<B: Backend> ValidStep<BiRefNetBatch<B>, BiRefNetOutput<B>> for BiRefNet<B> {
+impl<B: Backend> InferenceStep for BiRefNet<B> {
+    type Input = BiRefNetBatch<B>;
+    type Output = BiRefNetOutput<B>;
+
     fn step(&self, batch: BiRefNetBatch<B>) -> BiRefNetOutput<B> {
         // Use default loss configuration for validation
         self.forward_classification(batch).unwrap()
@@ -490,7 +496,7 @@ mod tests {
     use birefnet_loss::BiRefNetLossConfig;
     use burn::{
         tensor::{Distribution, Tensor},
-        train::{TrainStep, ValidStep},
+        train::{InferenceStep, TrainStep},
     };
 
     use super::BiRefNetConfig;
@@ -578,7 +584,7 @@ mod tests {
         let batch = BiRefNetBatch { images, masks };
 
         // Test validation step
-        let output = ValidStep::step(&model, batch);
+        let output = InferenceStep::step(&model, batch);
 
         // Should have valid output
         assert!(output.loss.into_scalar().is_finite());

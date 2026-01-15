@@ -6,8 +6,8 @@
 
 use burn::{
     nn::{
-        conv::{Conv2d, Conv2dConfig},
         PaddingConfig2d,
+        conv::{Conv2d, Conv2dConfig},
     },
     prelude::*,
 };

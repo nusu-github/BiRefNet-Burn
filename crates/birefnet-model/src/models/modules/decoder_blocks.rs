@@ -6,13 +6,13 @@
 use birefnet_extra_ops::Identity;
 use burn::{
     nn::{
-        conv::{Conv2d, Conv2dConfig},
         BatchNorm, BatchNormConfig, PaddingConfig2d, Relu,
+        conv::{Conv2d, Conv2dConfig},
     },
     prelude::*,
 };
 
-use super::{ASPPConfig, ASPPDeformable, ASPPDeformableConfig, ASPP};
+use super::{ASPP, ASPPConfig, ASPPDeformable, ASPPDeformableConfig};
 use crate::{
     config::{DecChannelsInter, DecoderAttention, InterpolationStrategy, SqueezeBlock},
     error::BiRefNetResult,
@@ -23,7 +23,7 @@ use crate::{
 /// Uses BatchNorm when batch_size > 1, otherwise Identity (matching PyTorch behavior).
 #[derive(Module, Debug)]
 pub enum NormLayer<B: Backend> {
-    BatchNorm(BatchNorm<B, 2>),
+    BatchNorm(BatchNorm<B>),
     Identity(Identity<B>),
 }
 

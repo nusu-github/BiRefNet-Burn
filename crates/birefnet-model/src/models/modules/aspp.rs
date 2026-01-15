@@ -6,14 +6,14 @@
 use burn::{
     module::Ignored,
     nn::{
+        Dropout, DropoutConfig, PaddingConfig2d, Relu,
         conv::{Conv2d, Conv2dConfig},
         pool::{AdaptiveAvgPool2d, AdaptiveAvgPool2dConfig},
-        Dropout, DropoutConfig, PaddingConfig2d, Relu,
     },
     prelude::*,
 };
 
-use super::{decoder_blocks::NormLayer, utils::intelligent_interpolate, DeformableConv2d};
+use super::{DeformableConv2d, decoder_blocks::NormLayer, utils::intelligent_interpolate};
 use crate::{
     config::InterpolationStrategy, error::BiRefNetResult,
     models::modules::deform_conv::DeformableConv2dConfig,

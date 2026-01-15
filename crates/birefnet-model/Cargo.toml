@@ -12,7 +12,7 @@ default = []
 
 # Training features
 train = ["burn/train", "birefnet-loss"]
-ndarray = ["burn/ndarray"]
+cpu = ["burn/cpu"]
 
 [dependencies]
 burn = { workspace = true }
@@ -23,5 +23,5 @@ birefnet-loss = { path = "../birefnet-loss", optional = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-burn = { workspace = true, features = ["ndarray", "train"] }
+burn = { workspace = true, features = ["cpu", "train"] }
 birefnet-loss = { path = "../birefnet-loss" }

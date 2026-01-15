@@ -18,13 +18,13 @@
 //! - Paper: https://arxiv.org/abs/2106.13797
 //! - Original PyTorch implementation: https://github.com/whai362/PVT
 
-use birefnet_extra_ops::{trunc_normal, DropPath, DropPathConfig};
+use birefnet_extra_ops::{DropPath, DropPathConfig, trunc_normal};
 use burn::{
     module::Param,
     nn::{
-        conv::{Conv2d, Conv2dConfig},
         Dropout, DropoutConfig, Gelu, Initializer, LayerNorm, LayerNormConfig, Linear,
         PaddingConfig2d,
+        conv::{Conv2d, Conv2dConfig},
     },
     prelude::*,
     tensor::activation::softmax,
@@ -250,8 +250,8 @@ impl<B: Backend> Attention<B> {
                 .reshape([b, new_h * new_w, 2, self.num_heads, c / self.num_heads])
                 .permute([2, 0, 3, 1, 4]);
             (
-                kv.clone().slice([0..1]).squeeze(0),
-                kv.slice([1..2]).squeeze(0),
+                kv.clone().slice([0..1]).squeeze(),
+                kv.slice([1..2]).squeeze(),
             )
         } else {
             let kv = self
@@ -260,8 +260,8 @@ impl<B: Backend> Attention<B> {
                 .reshape([b, n, 2, self.num_heads, c / self.num_heads])
                 .permute([2, 0, 3, 1, 4]);
             (
-                kv.clone().slice([0..1]).squeeze(0),
-                kv.slice([1..2]).squeeze(0),
+                kv.clone().slice([0..1]).squeeze(),
+                kv.slice([1..2]).squeeze(),
             )
         };
 

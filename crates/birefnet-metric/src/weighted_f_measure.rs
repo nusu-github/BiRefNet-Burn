@@ -4,14 +4,15 @@
 //! based on distance from ground truth boundaries.
 
 use core::marker::PhantomData;
+use std::sync::Arc;
 
 use birefnet_util::{euclidean_distance_transform_simple, gaussian_filter_matlab};
 use burn::{
     config::Config,
-    tensor::{backend::Backend, cast::ToElement, s, Bool, Tensor},
+    tensor::{Bool, Tensor, backend::Backend, cast::ToElement, s},
     train::metric::{
+        Metric, MetricMetadata, Numeric, NumericEntry,
         state::{FormatOptions, NumericMetricState},
-        Metric, MetricEntry, MetricMetadata, Numeric,
     },
 };
 
@@ -29,9 +30,10 @@ pub struct WeightedFMeasureMetricConfig {
 use crate::input::WeightedFMeasureInput;
 
 /// Weighted F-measure metric.
+#[derive(Clone)]
 pub struct WeightedFMeasureMetric<B: Backend> {
     state: NumericMetricState,
-    name: String,
+    name: Arc<String>,
     beta: f64,
     _backend: PhantomData<B>,
 }
@@ -40,7 +42,7 @@ impl<B: Backend> Default for WeightedFMeasureMetric<B> {
     fn default() -> Self {
         Self {
             state: NumericMetricState::default(),
-            name: "WF_measure".to_owned(),
+            name: Arc::new("WF_measure".to_owned()),
             beta: 1.0,
             _backend: PhantomData,
         }
@@ -57,7 +59,7 @@ impl<B: Backend> WeightedFMeasureMetric<B> {
     pub fn with_config(config: WeightedFMeasureMetricConfig) -> Self {
         Self {
             state: NumericMetricState::default(),
-            name: config.name,
+            name: Arc::new(config.name),
             beta: config.beta,
             _backend: PhantomData,
         }
@@ -67,11 +69,15 @@ impl<B: Backend> WeightedFMeasureMetric<B> {
 impl<B: Backend> Metric for WeightedFMeasureMetric<B> {
     type Input = WeightedFMeasureInput<B>;
 
-    fn name(&self) -> String {
-        self.name.to_string()
+    fn name(&self) -> Arc<String> {
+        self.name.clone()
     }
 
-    fn update(&mut self, input: &Self::Input, _metadata: &MetricMetadata) -> MetricEntry {
+    fn update(
+        &mut self,
+        input: &Self::Input,
+        _metadata: &MetricMetadata,
+    ) -> burn::train::metric::SerializedEntry {
         let [batch_size, ..] = input.predictions.dims();
 
         let mut total_wfm = 0.0;
@@ -82,12 +88,8 @@ impl<B: Backend> Metric for WeightedFMeasureMetric<B> {
                 .predictions
                 .clone()
                 .slice(s![b..=b, .., .., ..])
-                .squeeze(0);
-            let gt: Tensor<B, 3> = input
-                .targets
-                .clone()
-                .slice(s![b..=b, .., .., ..])
-                .squeeze(0);
+                .squeeze();
+            let gt: Tensor<B, 3> = input.targets.clone().slice(s![b..=b, .., .., ..]).squeeze();
 
             let wfm = calculate_weighted_f_measure(pred, gt, self.beta);
             total_wfm += wfm;
@@ -97,7 +99,7 @@ impl<B: Backend> Metric for WeightedFMeasureMetric<B> {
         self.state.update(
             avg_wfm,
             batch_size,
-            FormatOptions::new(self.name.to_string()).precision(5),
+            FormatOptions::new(self.name.clone()).precision(5),
         )
     }
 
@@ -107,8 +109,12 @@ impl<B: Backend> Metric for WeightedFMeasureMetric<B> {
 }
 
 impl<B: Backend> Numeric for WeightedFMeasureMetric<B> {
-    fn value(&self) -> f64 {
-        self.state.value()
+    fn value(&self) -> NumericEntry {
+        self.state.current_value()
+    }
+
+    fn running_value(&self) -> NumericEntry {
+        self.state.running_value()
     }
 }
 
@@ -117,7 +123,7 @@ impl<B: Backend> Numeric for WeightedFMeasureMetric<B> {
 /// Implements the weighted F-measure calculation from Python BiRefNet:
 /// 1. Apply _prepare_data to normalize inputs
 /// 2. Check for all-background case
-/// 3. Calculate distance transform for background pixels  
+/// 3. Calculate distance transform for background pixels
 /// 4. Apply error dependency and Gaussian smoothing
 /// 5. Calculate pixel importance weights
 /// 6. Compute weighted precision, recall, and F-measure
@@ -206,8 +212,8 @@ pub fn calculate_weighted_f_measure<B: Backend>(
 /// Prepares prediction and ground truth data following Python _prepare_data logic.
 fn prepare_data<B: Backend>(pred: Tensor<B, 3>, gt: Tensor<B, 3>) -> (Tensor<B, 2>, Tensor<B, 2>) {
     // Squeeze to 2D (remove channel dimension)
-    let pred_2d = pred.squeeze(0);
-    let gt_2d = gt.squeeze(0);
+    let pred_2d = pred.squeeze();
+    let gt_2d = gt.squeeze();
 
     // gt = gt > 128 (binary ground truth)
     let gt_binary = gt_2d.greater_elem(128).float();
@@ -242,7 +248,7 @@ fn distance_transform<B: Backend>(gt: Tensor<B, 2, Bool>) -> Tensor<B, 2> {
     let distance = euclidean_distance_transform_simple(binary_image);
 
     // Squeeze back to 2D
-    distance.squeeze::<2>(0).squeeze::<2>(0)
+    distance.squeeze::<2>().squeeze::<2>()
 }
 
 /// Apply error dependency transformation.
@@ -278,7 +284,7 @@ fn gaussian_filter<B: Backend>(
     let filtered_4d = gaussian_filter_matlab(input_4d, (kernel_size, kernel_size), sigma);
 
     // Convert back to 2D
-    filtered_4d.squeeze::<2>(0).squeeze::<2>(0)
+    filtered_4d.squeeze::<2>().squeeze::<2>()
 }
 
 /// Calculate minimum error between original and smoothed versions.

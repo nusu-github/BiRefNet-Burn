@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use burn::{
     nn::loss::Reduction,
     prelude::*,
-    tensor::{backend::Backend, cast::ToElement, Tensor},
+    tensor::{Tensor, backend::Backend, cast::ToElement},
 };
 use thiserror::Error;
 
@@ -38,7 +38,9 @@ pub enum BiRefNetLossError {
     ComputationError { reason: String },
 
     /// Tensor shape incompatibility
-    #[error("incompatible tensor shapes: predictions shape {pred_shape:?} does not match targets shape {target_shape:?}")]
+    #[error(
+        "incompatible tensor shapes: predictions shape {pred_shape:?} does not match targets shape {target_shape:?}"
+    )]
     IncompatibleShapes {
         pred_shape: Vec<usize>,
         target_shape: Vec<usize>,
@@ -342,10 +344,10 @@ impl<B: Backend> BiRefNetLoss<B> {
 #[cfg(test)]
 mod tests {
     use burn::{
-        backend::NdArray,
+        backend::Cpu,
         tensor::{Distribution, Tensor},
     };
-    pub type TestBackend = NdArray<f32>;
+    pub type TestBackend = Cpu<f32>;
     use super::*;
 
     #[test]

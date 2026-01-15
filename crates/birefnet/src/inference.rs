@@ -5,8 +5,8 @@ use std::{
 
 use anyhow::Result;
 use birefnet_util::{
-    refine_foreground_core, BiRefNetWeightLoading, ImageUtils, ManagedModel, ModelLoader,
-    ModelName, WeightSource,
+    BiRefNetWeightLoading, ImageUtils, ManagedModel, ModelLoader, ModelName, WeightSource,
+    refine_foreground_core,
 };
 use burn::tensor::{
     activation::sigmoid,

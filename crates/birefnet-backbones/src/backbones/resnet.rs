@@ -7,9 +7,9 @@ use core::f64::consts::SQRT_2;
 
 use burn::{
     nn::{
+        BatchNorm, BatchNormConfig, Initializer, PaddingConfig2d, Relu,
         conv::{Conv2d, Conv2dConfig},
         pool::{MaxPool2d, MaxPool2dConfig},
-        BatchNorm, BatchNormConfig, Initializer, PaddingConfig2d, Relu,
     },
     prelude::*,
 };
@@ -23,7 +23,9 @@ pub use blocks::LayerBlock;
 #[derive(Debug, Error)]
 pub enum ResNetError {
     /// Unsupported ResNet configuration
-    #[error("unsupported ResNet configuration: {layers:?} - only ResNet50 [3,4,6,3] and ResNet101 [3,4,23,3] are supported")]
+    #[error(
+        "unsupported ResNet configuration: {layers:?} - only ResNet50 [3,4,6,3] and ResNet101 [3,4,23,3] are supported"
+    )]
     UnsupportedConfiguration { layers: Vec<usize> },
 }
 
@@ -151,7 +153,7 @@ impl<B: Backend> ResNetBackbone<B> {
 #[derive(Module, Debug)]
 pub struct Conv1Block<B: Backend> {
     conv1: Conv2d<B>,
-    bn1: BatchNorm<B, 2>,
+    bn1: BatchNorm<B>,
     relu: Relu,
     maxpool: MaxPool2d,
 }

@@ -34,9 +34,9 @@ pub struct BiRefNetOutput<B: Backend> {
     pub targets: Tensor<B, 4>,
 }
 
-#[cfg(all(feature = "train", feature = "ndarray"))]
+#[cfg(all(feature = "train", feature = "cpu"))]
 impl<B: Backend> ItemLazy for BiRefNetOutput<B> {
-    type ItemSync = BiRefNetOutput<burn::backend::ndarray::NdArray<f32>>;
+    type ItemSync = BiRefNetOutput<burn::backend::cpu::Cpu<f32>>;
 
     fn sync(self) -> Self::ItemSync {
         let [loss, output, targets] = burn::tensor::Transaction::default()
@@ -57,7 +57,7 @@ impl<B: Backend> ItemLazy for BiRefNetOutput<B> {
     }
 }
 
-#[cfg(all(feature = "train", not(feature = "ndarray")))]
+#[cfg(all(feature = "train", not(feature = "cpu")))]
 impl<B: Backend> ItemLazy for BiRefNetOutput<B> {
     type ItemSync = Self;
 
@@ -109,13 +109,13 @@ impl<B: Backend> Adaptor<LossInput<B>> for BiRefNetOutput<B> {
 #[cfg(test)]
 mod tests {
     use burn::{
-        backend::ndarray::NdArray,
+        backend::cpu::Cpu,
         tensor::{Distribution, Tensor},
     };
 
     use super::*;
 
-    type TestBackend = NdArray<f32>;
+    type TestBackend = Cpu<f32>;
 
     #[test]
     fn birefnet_batch_new_creates_correct_structure() {

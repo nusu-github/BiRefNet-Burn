@@ -17,7 +17,7 @@ use burn_import::{
     pytorch::{LoadArgs as PyTorchLoadArgs, PyTorchFileRecorder},
     safetensors::{LoadArgs as SafetensorsLoadArgs, SafetensorsFileRecorder},
 };
-use hf_hub::{api::sync, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync};
 use thiserror::Error;
 
 /// Errors that can occur during model weight management operations.
@@ -820,11 +820,11 @@ pub trait BiRefNetWeightLoading<B: Backend> {
 
 #[cfg(test)]
 mod tests {
-    use burn::backend::NdArray;
+    use burn::backend::Cpu;
 
     use super::*;
 
-    type TestBackend = NdArray;
+    type TestBackend = Cpu;
 
     #[test]
     fn test_managed_model_creation() {
