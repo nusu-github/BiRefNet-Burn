@@ -85,9 +85,7 @@ fn main() -> Result<()> {
 
             // Stack overflow workaround for large models on platforms
             // with small default stack sizes (e.g. Windows).
-            stacker::grow(4096 * 1024, || {
-                run_inference(&inference_config, &device)
-            })?;
+            stacker::grow(4096 * 1024, || run_inference(&inference_config, &device))?;
             Ok(())
         }
 
@@ -95,8 +93,7 @@ fn main() -> Result<()> {
         Commands::Train { config, resume } => {
             use birefnet::training::{TrainingCliArgs, run_training};
 
-            let args =
-                TrainingCliArgs::new(config, resume.map(std::path::PathBuf::from));
+            let args = TrainingCliArgs::new(config, resume.map(std::path::PathBuf::from));
             run_training(args)
         }
 

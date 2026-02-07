@@ -4,10 +4,9 @@
 //! for evaluating boundary-focused segmentation performance.
 
 use core::marker::PhantomData;
-
-use birefnet_util::{StructuringElement, erosion};
 use std::sync::Arc;
 
+use birefnet_util::{StructuringElement, erosion};
 use burn::{
     prelude::*,
     tensor::{Tensor, backend::Backend, cast::ToElement},

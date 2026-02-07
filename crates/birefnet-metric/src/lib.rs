@@ -96,11 +96,16 @@ pub use mse::{MSEMetric, MSEMetricConfig};
 // Re-export lesser-used items with warning
 #[deprecated(note = "S-measure is not yet fully implemented and tested")]
 #[doc(inline)]
-pub use s_measure::{SMeasureInput as SMeasureInputDeprecated, SMeasureMetric, SMeasureMetricConfig, calculate_s_measure};
+pub use s_measure::{
+    SMeasureInput as SMeasureInputDeprecated, SMeasureMetric, SMeasureMetricConfig,
+    calculate_s_measure,
+};
 #[doc(inline)]
 pub use utils::{AllMetricsResult, calculate_all_metrics};
 #[doc(inline)]
-pub use weighted_f_measure::{WeightedFMeasureMetric, WeightedFMeasureMetricConfig, calculate_weighted_f_measure};
+pub use weighted_f_measure::{
+    WeightedFMeasureMetric, WeightedFMeasureMetricConfig, calculate_weighted_f_measure,
+};
 
 #[cfg(test)]
 mod tests {

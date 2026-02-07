@@ -214,7 +214,10 @@ pub fn tensor_to_dynamic_image<B: Backend>(
 ///
 /// # Returns
 /// RGBA image tensor [batch, 4, height, width] with alpha channel from mask
-pub fn apply_mask<B: Backend>(image: Tensor<B, 4>, mask: Tensor<B, 4>) -> ImageResult<Tensor<B, 4>> {
+pub fn apply_mask<B: Backend>(
+    image: Tensor<B, 4>,
+    mask: Tensor<B, 4>,
+) -> ImageResult<Tensor<B, 4>> {
     let image_dims = image.dims();
     let mask_dims = mask.dims();
     let [batch, channels, height, width] = image_dims;
@@ -414,8 +417,7 @@ pub fn apply_imagenet_normalization<B: Backend>(tensor: Tensor<B, 4>) -> ImageRe
     let device = tensor.device();
 
     // Create mean and std tensors with shape [1, 3, 1, 1] for broadcasting
-    let mean_data =
-        TensorData::new(IMAGENET_MEAN.to_vec(), [1, 3, 1, 1]).convert::<B::FloatElem>();
+    let mean_data = TensorData::new(IMAGENET_MEAN.to_vec(), [1, 3, 1, 1]).convert::<B::FloatElem>();
     let mean_tensor = Tensor::from_data(mean_data, &device);
 
     let std_data = TensorData::new(IMAGENET_STD.to_vec(), [1, 3, 1, 1]).convert::<B::FloatElem>();
@@ -620,16 +622,14 @@ mod tests {
 
         // Test with normalization
         let data = vec![0_u8, 127, 255]; // Should become [0.0, ~0.5, 1.0]
-        let result = from_raw_pixels_with_normalization::<TestBackend>(
-            data, 1, 1, 3, &device, true,
-        );
+        let result =
+            from_raw_pixels_with_normalization::<TestBackend>(data, 1, 1, 3, &device, true);
         assert!(result.is_ok());
 
         // Test without normalization
         let data = vec![0_u8, 127, 255]; // Should remain [0.0, 127.0, 255.0]
-        let result = from_raw_pixels_with_normalization::<TestBackend>(
-            data, 1, 1, 3, &device, false,
-        );
+        let result =
+            from_raw_pixels_with_normalization::<TestBackend>(data, 1, 1, 3, &device, false);
         assert!(result.is_ok());
     }
 
@@ -761,9 +761,7 @@ mod tests {
 
         // Test complex paths
         assert!(is_supported_image_format("/path/to/image.png"));
-        assert!(is_supported_image_format(
-            "./relative/path/image.jpg"
-        ));
+        assert!(is_supported_image_format("./relative/path/image.jpg"));
     }
 
     #[test]

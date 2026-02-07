@@ -158,7 +158,7 @@ fn pad_replicate<B: Backend>(tensor: Tensor<B, 4>, padding: Padding) -> Tensor<B
 fn mean_blur<B: Backend>(x: Tensor<B, 4>, kernel_size: usize) -> Tensor<B, 4> {
     assert!(kernel_size > 0, "Kernel size must be greater than 0");
 
-    let padding = if kernel_size % 2 == 0 {
+    let padding = if kernel_size.is_multiple_of(2) {
         let pad_l = kernel_size / 2 - 1;
         let pad_r = kernel_size / 2;
         let pad_t = kernel_size / 2 - 1;

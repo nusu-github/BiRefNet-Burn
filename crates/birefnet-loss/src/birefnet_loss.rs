@@ -246,15 +246,15 @@ impl<B: Backend> BiRefNetLoss<B> {
         let mut total_loss = pixel_loss;
 
         // Add classification loss if enabled and predictions are provided
-        if let Some(ref cls_loss) = self.classification_loss {
-            if let (Some(class_preds), Some(class_targets)) = (class_preds, class_targets) {
-                let cls_loss_value = cls_loss
-                    .forward(class_preds, class_targets, Reduction::Mean)
-                    .mul_scalar(self.classification_weight)
-                    .mul_scalar(self.global_scale);
+        if let Some(ref cls_loss) = self.classification_loss
+            && let (Some(class_preds), Some(class_targets)) = (class_preds, class_targets)
+        {
+            let cls_loss_value = cls_loss
+                .forward(class_preds, class_targets, Reduction::Mean)
+                .mul_scalar(self.classification_weight)
+                .mul_scalar(self.global_scale);
 
-                total_loss = total_loss + cls_loss_value;
-            }
+            total_loss = total_loss + cls_loss_value;
         }
 
         Ok(total_loss)
@@ -314,21 +314,21 @@ impl<B: Backend> BiRefNetLoss<B> {
         let mut total_loss = pixel_loss;
 
         // Add classification loss if enabled and predictions are provided
-        if let Some(ref cls_loss) = self.classification_loss {
-            if let (Some(class_preds), Some(class_targets)) = (class_preds, class_targets) {
-                let cls_loss_value = cls_loss
-                    .forward(class_preds, class_targets, Reduction::Mean)
-                    .mul_scalar(self.classification_weight)
-                    .mul_scalar(self.global_scale);
+        if let Some(ref cls_loss) = self.classification_loss
+            && let (Some(class_preds), Some(class_targets)) = (class_preds, class_targets)
+        {
+            let cls_loss_value = cls_loss
+                .forward(class_preds, class_targets, Reduction::Mean)
+                .mul_scalar(self.classification_weight)
+                .mul_scalar(self.global_scale);
 
-                total_loss = total_loss.clone() + cls_loss_value.clone();
+            total_loss = total_loss.clone() + cls_loss_value.clone();
 
-                // Add classification loss to dictionary
-                loss_dict.insert(
-                    "classification".to_owned(),
-                    cls_loss_value.into_scalar().to_f64(),
-                );
-            }
+            // Add classification loss to dictionary
+            loss_dict.insert(
+                "classification".to_owned(),
+                cls_loss_value.into_scalar().to_f64(),
+            );
         }
 
         // Add total loss to dictionary

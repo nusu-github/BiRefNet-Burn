@@ -78,10 +78,9 @@ impl<B: Backend> Batcher<B, BiRefNetItem, BiRefNetBatch<B>> for BiRefNetBatcher<
 
             // Apply ImageNet normalization: add batch dimension, normalize, then remove batch dimension
             let image_tensor_with_batch = image_tensor.unsqueeze::<4>(); // [C, H, W] -> [1, C, H, W]
-            let normalized_tensor =
-                apply_imagenet_normalization(image_tensor_with_batch)
-                    .expect("Failed to apply ImageNet normalization")
-                    .squeeze::<3>(); // [1, C, H, W] -> [C, H, W]
+            let normalized_tensor = apply_imagenet_normalization(image_tensor_with_batch)
+                .expect("Failed to apply ImageNet normalization")
+                .squeeze::<3>(); // [1, C, H, W] -> [C, H, W]
 
             // Convert mask data to tensor [1, H, W]
             let mask_tensor = Tensor::<B, 2>::from_data(
