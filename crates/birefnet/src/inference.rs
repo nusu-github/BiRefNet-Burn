@@ -100,10 +100,7 @@ pub fn run_inference(config: &InferenceConfig, device: &InferenceDevice) -> Resu
     } else if config.input_path.is_dir() {
         process_directory(&model, &config.input_path, &config.output_path, device)?;
     } else {
-        anyhow::bail!(
-            "Input path does not exist: {}",
-            config.input_path.display()
-        );
+        anyhow::bail!("Input path does not exist: {}", config.input_path.display());
     }
 
     tracing::info!("inference completed");
