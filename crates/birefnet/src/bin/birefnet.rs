@@ -2,6 +2,10 @@ use anyhow::Result;
 use birefnet::burn_backend_types::{InferenceDevice, NAME};
 use birefnet_util::ManagedModel;
 use clap::{Parser, Subcommand};
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 #[derive(Parser)]
 #[command(name = "birefnet")]
@@ -52,11 +56,12 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
+
     let cli = Cli::parse();
 
-    // Initialize device
     let device = InferenceDevice::default();
-    println!("Using backend: {}", NAME);
+    tracing::info!(backend = NAME, "device initialized");
 
     match cli.command {
         #[cfg(feature = "inference")]
@@ -66,35 +71,38 @@ fn main() -> Result<()> {
             model,
             list_models,
         } => {
+            use birefnet::inference::{InferenceConfig, run_inference};
+
             if list_models {
-                println!("利用可能な事前学習済みモデル:");
+                println!("Available pretrained models:");
                 for model_name in ManagedModel::list_available_models() {
-                    println!("  - {}", model_name);
+                    println!("  - {model_name}");
                 }
                 return Ok(());
             }
 
-            use birefnet::inference::{InferenceConfig, run_inference};
-
             let inference_config = InferenceConfig::new(input, output, model);
 
-            // Stack overflow error workaround
-            // Windows stack size is too small for large models
-            stacker::grow(4096 * 1024, || run_inference(inference_config, device))?;
+            // Stack overflow workaround for large models on platforms
+            // with small default stack sizes (e.g. Windows).
+            stacker::grow(4096 * 1024, || {
+                run_inference(&inference_config, &device)
+            })?;
             Ok(())
         }
 
         #[cfg(feature = "train")]
         Commands::Train { config, resume } => {
-            use birefnet::training::{TrainingConfig, run_training};
+            use birefnet::training::{TrainingCliArgs, run_training};
 
-            let training_config = TrainingConfig::new(config, resume);
-            run_training(training_config)
+            let args =
+                TrainingCliArgs::new(config, resume.map(std::path::PathBuf::from));
+            run_training(args)
         }
 
         Commands::Info => {
             println!("BiRefNet Information:");
-            println!("  Backend: {}", NAME);
+            println!("  Backend: {NAME}");
             println!("  Device: {device:?}");
             Ok(())
         }

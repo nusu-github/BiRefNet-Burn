@@ -1,8 +1,8 @@
-//! Backend selection utilities for BiRefNet
+//! Backend selection utilities for `BiRefNet`.
 //!
 //! This module provides a centralized way to handle backend selection
-//! based on feature flags for the main BiRefNet crate.
-//! https://github.com/tracel-ai/burn-lm/blob/main/crates/burn-lm-inference/src/backends.rs
+//! based on feature flags for the main `BiRefNet` crate.
+//! <https://github.com/tracel-ai/burn-lm/blob/main/crates/burn-lm-inference/src/backends.rs>
 
 mod elems {
     cfg_if::cfg_if! {
@@ -22,7 +22,7 @@ mod elems {
     }
 }
 
-pub use elems::*;
+pub use elems::{DTYPE_NAME, ElemType};
 
 // Cuda ----------------------------------------------------------------------
 
@@ -30,7 +30,8 @@ pub use elems::*;
 pub mod burn_backend_types {
     use burn::backend::cuda::{Cuda, CudaDevice};
 
-    use super::*;
+    use super::ElemType;
+
     pub type InferenceBackend = Cuda<ElemType>;
     pub type InferenceDevice = CudaDevice;
     pub const NAME: &str = "cuda";
@@ -42,7 +43,8 @@ pub mod burn_backend_types {
 pub mod burn_backend_types {
     use burn::backend::rocm::{Rocm, RocmDevice};
 
-    use super::*;
+    use super::ElemType;
+
     pub type InferenceBackend = Rocm<ElemType>;
     pub type InferenceDevice = RocmDevice;
     pub const NAME: &str = "rocm";
@@ -55,7 +57,7 @@ pub mod burn_backend_types {
 pub mod burn_backend_types {
     use burn::backend::cpu::{Cpu, CpuDevice};
 
-    use super::*;
+    use super::ElemType;
 
     pub type InferenceBackend = Cpu<ElemType>;
     pub type InferenceDevice = CpuDevice;
@@ -68,7 +70,8 @@ pub mod burn_backend_types {
 pub mod burn_backend_types {
     use burn::backend::wgpu::{Wgpu, WgpuDevice};
 
-    use super::*;
+    use super::ElemType;
+
     pub type InferenceBackend = Wgpu<ElemType>;
     pub type InferenceDevice = WgpuDevice;
     #[cfg(all(feature = "wgpu", not(feature = "vulkan"), not(feature = "metal")))]

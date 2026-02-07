@@ -78,17 +78,29 @@ pub mod utils;
 pub mod weighted_f_measure;
 
 // Re-export main types and traits
+#[doc(inline)]
 pub use biou::{BIoUMetric, BIoUMetricConfig};
+#[doc(inline)]
 pub use f_measure::{FMeasureMetric, FMeasureMetricConfig};
-pub use input::*;
+#[doc(inline)]
+pub use input::{
+    BIoUInput, BiRefNetLossInput, EMeasureInput, FMeasureInput, MAEInput, MSEInput, SMeasureInput,
+    WeightedFMeasureInput,
+};
+#[doc(inline)]
 pub use loss::LossMetric;
+#[doc(inline)]
 pub use mae::{MAEMetric, MAEMetricConfig};
+#[doc(inline)]
 pub use mse::{MSEMetric, MSEMetricConfig};
 // Re-export lesser-used items with warning
 #[deprecated(note = "S-measure is not yet fully implemented and tested")]
-pub use s_measure::*;
-pub use utils::*;
-pub use weighted_f_measure::{WeightedFMeasureMetric, WeightedFMeasureMetricConfig};
+#[doc(inline)]
+pub use s_measure::{SMeasureInput as SMeasureInputDeprecated, SMeasureMetric, SMeasureMetricConfig, calculate_s_measure};
+#[doc(inline)]
+pub use utils::{AllMetricsResult, calculate_all_metrics};
+#[doc(inline)]
+pub use weighted_f_measure::{WeightedFMeasureMetric, WeightedFMeasureMetricConfig, calculate_weighted_f_measure};
 
 #[cfg(test)]
 mod tests {

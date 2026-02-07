@@ -28,14 +28,18 @@ mod models;
 pub mod training;
 
 // Re-export specific configuration types instead of wildcard
+#[doc(inline)]
 pub use config::{
     Backbone, BackboneConfig, DecBlk, DecChannelsInter, DecoderAttention, DecoderConfig,
     InterpolationStrategy, LateralBlock, ModelConfig, MultiScaleInput, Optimizer, PathConfig,
     PreprocMethods, PromptForLocation, Refine, RefineConfig, SqueezeBlock, Task, TaskConfig,
 };
+#[doc(inline)]
 pub use error::{BiRefNetError, BiRefNetResult};
+#[doc(inline)]
 pub use models::birefnet::{BiRefNet, BiRefNetConfig, BiRefNetRecord};
 #[cfg(feature = "train")]
+#[doc(inline)]
 pub use training::{BiRefNetBatch, BiRefNetOutput};
 
 #[cfg(test)]

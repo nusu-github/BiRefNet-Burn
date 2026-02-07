@@ -31,7 +31,7 @@ pub struct AllMetricsResult {
 pub fn calculate_all_metrics<B: Backend>(
     predictions: Tensor<B, 4>,
     targets: Tensor<B, 4>,
-    threshold: f64,
+    _threshold: f64,
 ) -> AllMetricsResult {
     // Ensure predictions and targets have correct shape
     let [batch_size, _, _, _] = predictions.dims();

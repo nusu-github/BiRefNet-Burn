@@ -12,7 +12,7 @@ use std::{
 };
 
 use birefnet_model::{ModelConfig, Task, training::BiRefNetBatch};
-use birefnet_util::ImageUtils;
+use birefnet_util::apply_imagenet_normalization;
 use burn::{
     data::{dataloader::batcher::Batcher, dataset::Dataset},
     tensor::{Tensor, TensorData, backend::Backend},
@@ -79,7 +79,7 @@ impl<B: Backend> Batcher<B, BiRefNetItem, BiRefNetBatch<B>> for BiRefNetBatcher<
             // Apply ImageNet normalization: add batch dimension, normalize, then remove batch dimension
             let image_tensor_with_batch = image_tensor.unsqueeze::<4>(); // [C, H, W] -> [1, C, H, W]
             let normalized_tensor =
-                ImageUtils::apply_imagenet_normalization(image_tensor_with_batch)
+                apply_imagenet_normalization(image_tensor_with_batch)
                     .expect("Failed to apply ImageNet normalization")
                     .squeeze::<3>(); // [1, C, H, W] -> [C, H, W]
 

@@ -4,7 +4,7 @@
 //! segmentation masks and images.
 
 use anyhow::{Context, Result};
-use birefnet_util::ImageUtils;
+use birefnet_util::{dynamic_image_to_tensor, tensor_to_dynamic_image};
 use burn::tensor::{Tensor, backend::Backend};
 use image::{self, imageops::FilterType};
 
@@ -209,7 +209,7 @@ pub fn resize_tensor<B: Backend>(
 
     // This approach converts tensor to image, resizes, then converts back to tensor.
     // It's inefficient but works without a direct tensor interpolation implementation.
-    let dynamic_image = ImageUtils::tensor_to_dynamic_image(tensor, false)
+    let dynamic_image = tensor_to_dynamic_image(tensor, false)
         .context("Failed to convert tensor to image for resizing")?;
 
     let resized_image = dynamic_image.resize_exact(
@@ -219,6 +219,6 @@ pub fn resize_tensor<B: Backend>(
     );
 
     // Convert back to tensor
-    ImageUtils::dynamic_image_to_tensor(resized_image, device)
+    dynamic_image_to_tensor(resized_image, device)
         .context("Failed to convert resized image back to tensor")
 }

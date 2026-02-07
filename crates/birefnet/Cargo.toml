@@ -16,12 +16,12 @@ default = ["inference", "cpu"]
 
 # Backend features - only at the top level
 select_backend = []
-cuda = ["burn/cuda", "select_backend"]
-rocm = ["burn/rocm", "select_backend"]
-metal = ["burn/metal", "select_backend"]
+cuda = ["burn/cuda", "burn/fusion", "burn/autotune", "select_backend"]
+rocm = ["burn/rocm", "burn/fusion", "burn/autotune", "select_backend"]
+metal = ["burn/metal", "burn/fusion", "burn/autotune", "select_backend"]
 cpu = ["burn/cpu"]
-wgpu = ["burn/wgpu", "select_backend"]
-vulkan = ["burn/vulkan", "select_backend"]
+wgpu = ["burn/wgpu", "burn/fusion", "burn/autotune", "select_backend"]
+vulkan = ["burn/vulkan", "burn/fusion", "burn/autotune", "select_backend"]
 wgpu-cpu = ["burn/wgpu", "select_backend"]
 
 f16 = []
@@ -54,8 +54,14 @@ anyhow = { workspace = true }
 burn = { workspace = true }
 cfg-if = { workspace = true }
 clap = { workspace = true }
+mimalloc = "0.1"
 serde_json = { workspace = true }
 stacker = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true
 
 [dev-dependencies]
 burn = { workspace = true, features = ["cpu"] }

@@ -5,6 +5,7 @@
 
 mod backbones;
 
+#[doc(inline)]
 pub use backbones::{
     pvt_v2::{PvtV2Config, PyramidVisionTransformerImpr},
     resnet::{ResNetBackbone, ResNetConfig},

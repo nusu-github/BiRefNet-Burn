@@ -16,32 +16,39 @@ use burn::{
 
 use crate::backend::burn_backend_types::{InferenceBackend, InferenceDevice, NAME};
 
-/// Simple training configuration for CLI usage
+/// CLI arguments for the training subcommand.
 #[derive(Debug)]
-pub struct TrainingConfig {
-    /// Path to the training configuration file
-    pub config_path: String,
-    /// Optional checkpoint file to resume training from
-    pub resume_checkpoint: Option<String>,
+pub struct TrainingCliArgs {
+    /// Path to the training configuration file.
+    pub config_path: std::path::PathBuf,
+    /// Optional checkpoint file to resume training from.
+    pub resume_checkpoint: Option<std::path::PathBuf>,
 }
 
-impl TrainingConfig {
-    /// Create a new training configuration
-    pub const fn new(config_path: String, resume_checkpoint: Option<String>) -> Self {
+impl TrainingCliArgs {
+    /// Creates a new set of training CLI arguments.
+    pub fn new(
+        config_path: impl Into<std::path::PathBuf>,
+        resume_checkpoint: Option<std::path::PathBuf>,
+    ) -> Self {
         Self {
-            config_path,
+            config_path: config_path.into(),
             resume_checkpoint,
         }
     }
 }
 
-/// Comprehensive training configuration matching PyTorch implementation functionality
+/// Comprehensive training configuration for BiRefNet.
+///
+/// Corresponds to the PyTorch implementation's training configuration,
+/// covering model, optimizer, dataset, and checkpointing settings.
+/// Loaded from a JSON file via [`TrainingConfig::load`].
 #[derive(Config, Debug)]
-pub struct TrainingConfigData {
-    /// Model configuration
+pub struct TrainingConfig {
+    /// Model configuration.
     pub model: ModelConfig,
 
-    /// Optimizer settings
+    /// Optimizer settings.
     pub optimizer: OptimizerConfig,
 
     #[config(default = 1e-4)]
@@ -50,7 +57,7 @@ pub struct TrainingConfigData {
     #[config(default = 1e-2)]
     pub weight_decay: f64,
 
-    /// Training parameters  
+    /// Number of training epochs.
     #[config(default = 120)]
     pub num_epochs: usize,
 
@@ -60,115 +67,123 @@ pub struct TrainingConfigData {
     #[config(default = 4)]
     pub num_workers: usize,
 
-    /// Dataset configuration
+    /// Dataset configuration.
     pub dataset: DatasetConfig,
 
-    /// Logging and checkpointing
+    /// Checkpoint save frequency (in epochs).
     #[config(default = 5)]
     pub save_step: usize,
 
+    /// Keep only the last N checkpoints.
     #[config(default = 20)]
     pub save_last: usize,
 
-    /// Random seed for reproducibility
+    /// Random seed for reproducibility.
     #[config(default = 42)]
     pub seed: u64,
 
-    /// Fine-tuning configuration
+    /// Number of epochs for fine-tuning the final layers.
     #[config(default = 0)]
     pub finetune_last_epochs: usize,
 }
 
-/// Dataset configuration for training
+/// Dataset paths and preprocessing options.
 #[derive(Config, Debug)]
 pub struct DatasetConfig {
-    /// Root directory containing dataset files
+    /// Root directory containing dataset files.
     pub data_root_dir: String,
 
-    /// List of training datasets to use
+    /// List of training datasets to use.
     pub training_set: Vec<String>,
 
-    /// Enable dynamic size processing
+    /// Enable dynamic size processing.
     #[config(default = false)]
     pub dynamic_size: bool,
 
-    /// Load all data into memory
+    /// Load all data into memory.
     #[config(default = false)]
     pub load_all: bool,
 
-    /// Target image size for training
+    /// Target image size for training.
     #[config(default = 1024)]
     pub size: u32,
 }
 
-/// Optimizer configuration supporting multiple optimizer types
+/// Optimizer selection and learning-rate schedule.
 #[derive(Config, Debug)]
 pub struct OptimizerConfig {
-    /// Type of optimizer to use
+    /// Type of optimizer (e.g. `"AdamW"`, `"Adam"`, `"SGD"`).
     pub optimizer_type: String,
 
-    /// Learning rate decay epochs (negative values count from end)
+    /// Learning rate decay epochs (negative values count from end).
     pub lr_decay_epochs: Vec<i32>,
 
-    /// Learning rate decay rate
+    /// Learning rate decay rate.
     #[config(default = 0.1)]
     pub lr_decay_rate: f64,
 }
 
-impl TrainingConfigData {
-    /// Load training configuration from JSON file
-    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
+impl TrainingConfig {
+    /// Loads a training configuration from a JSON file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or parsed.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let config_str = fs::read_to_string(path)?;
         let config: Self = serde_json::from_str(&config_str)?;
         Ok(config)
     }
 
-    /// Save training configuration to JSON file
-    pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+    /// Saves this configuration to a JSON file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be written.
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
         let config_str = serde_json::to_string_pretty(self)?;
         fs::write(path, config_str)?;
         Ok(())
     }
 }
 
-/// Simple training batch wrapper for compatibility with Burn's learner
+/// Simple training batch wrapper for Burn's learner.
 #[derive(Debug)]
 pub struct TrainingBatch<B: Backend> {
     pub images: Tensor<B, 4>,
     pub targets: Tensor<B, 4>,
 }
 
-/// Training execution function that runs on specific device
+/// Runs the training loop on a specific device.
+///
+/// # Errors
+///
+/// Returns an error if model initialization, data loading, or
+/// checkpoint saving fails.
 pub fn run_training_on_device<B: AutodiffBackend>(
     device: B::Device,
-    config: TrainingConfigData,
-    resume_checkpoint: Option<String>,
+    config: TrainingConfig,
+    resume_checkpoint: Option<std::path::PathBuf>,
 ) -> Result<()>
 where
     B::InnerBackend: Backend,
 {
-    println!("Initializing BiRefNet training on device: {:?}", device);
+    tracing::info!(?device, "initializing BiRefNet training");
 
-    // Set random seed for reproducibility
     B::seed(config.seed);
 
-    // 1. Initialize model configuration with loss config for training
     let model_config = BiRefNetConfig::new(config.model.clone())
         .with_loss_config(Some(birefnet_loss::BiRefNetLossConfig::new()));
     let model = model_config.init::<B>(&device)?;
 
-    // 2. Initialize optimizer (using AdamW for consistency)
     let optimizer = AdamConfig::new().init();
-    println!("Using optimizer: {}", config.optimizer.optimizer_type);
+    tracing::info!(optimizer = %config.optimizer.optimizer_type, "optimizer created");
 
-    // 3. Create learning rate as simple float (constant learning rate)
     let learning_rate = config.learning_rate;
 
-    // 4. Setup data loaders
     let train_loader = create_train_dataloader::<B>(&config)?;
     let valid_loader = create_valid_dataloader::<B>(&config)?;
 
-    // 5. Configure learner with metrics and interactive display
     let learner_builder = LearnerBuilder::new("./artifacts")
         .metric_train_numeric(LossMetric::new())
         .metric_valid_numeric(LossMetric::new())
@@ -177,44 +192,35 @@ where
         .num_epochs(config.num_epochs)
         .summary();
 
-    // Add checkpoint resuming if specified
     if let Some(_checkpoint_path) = resume_checkpoint {
         // TODO: Implement checkpoint loading
-        println!("Checkpoint resume not yet implemented");
+        tracing::warn!("checkpoint resume not yet implemented");
     }
 
     let learner = learner_builder.build(model, optimizer, learning_rate);
 
-    // 6. Execute training
-    println!("Starting training for {} epochs", config.num_epochs);
+    tracing::info!(epochs = config.num_epochs, "starting training");
     let trained_model = learner.fit(train_loader, valid_loader);
 
-    // 7. Save final model
     trained_model
         .save_file("./artifacts/final_model", &CompactRecorder::new())
-        .expect("Failed to save final model");
+        .map_err(|e| anyhow::anyhow!("failed to save final model: {e}"))?;
 
-    println!("Training completed successfully");
+    tracing::info!("training completed successfully");
     Ok(())
 }
 
-/// Create training dataloader with proper configuration
+/// Creates the training dataloader.
 fn create_train_dataloader<B: AutodiffBackend>(
-    config: &TrainingConfigData,
+    config: &TrainingConfig,
 ) -> Result<Arc<dyn DataLoader<B, BiRefNetBatch<B>>>>
 where
     B::InnerBackend: Backend,
 {
-    // Create model config for dataset initialization
     let model_config = ModelConfig::new(InterpolationStrategy::Bilinear);
-
-    // Create dataset
     let dataset = BiRefNetDataset::new(&model_config, "train")?;
-
-    // Create batcher
     let batcher = BiRefNetBatcher::<B>::new();
 
-    // Build dataloader
     let dataloader = DataLoaderBuilder::new(batcher)
         .batch_size(config.batch_size)
         .shuffle(config.seed)
@@ -224,23 +230,17 @@ where
     Ok(dataloader)
 }
 
-/// Create validation dataloader
+/// Creates the validation dataloader.
 fn create_valid_dataloader<B: AutodiffBackend>(
-    config: &TrainingConfigData,
+    config: &TrainingConfig,
 ) -> Result<Arc<dyn DataLoader<B::InnerBackend, BiRefNetBatch<B::InnerBackend>>>>
 where
     B::InnerBackend: Backend,
 {
-    // Create model config for dataset initialization
     let model_config = ModelConfig::new(InterpolationStrategy::Bilinear);
-
-    // Create validation dataset
     let dataset = BiRefNetDataset::new(&model_config, "val")?;
-
-    // Create batcher for validation (no autodiff needed)
     let batcher = BiRefNetBatcher::<B::InnerBackend>::new();
 
-    // Build validation dataloader
     let dataloader = DataLoaderBuilder::new(batcher)
         .batch_size(config.batch_size)
         .shuffle(config.seed)
@@ -250,66 +250,52 @@ where
     Ok(dataloader)
 }
 
-/// BiRefNet model training execution with comprehensive PyTorch-equivalent functionality
+/// Runs BiRefNet training from a CLI configuration.
 ///
-/// This function provides complete training capabilities matching the original PyTorch implementation,
-/// including configuration loading, device selection, optimizer setup, and advanced training features.
+/// Loads the JSON configuration file, validates paths, selects the
+/// backend, and launches the training loop.
 ///
-/// # Arguments
-/// * `config` - Training configuration specifying config file path and optional checkpoint resume
+/// # Errors
 ///
-/// # Returns
-/// * `Result<()>` - Success indicator or detailed error information
-///
-/// # Features
-/// - Configuration-based training setup from JSON files
-/// - Automatic device selection (GPU/CPU) based on available backends
-/// - Comprehensive optimizer support (AdamW, Adam, SGD)
-/// - Learning rate scheduling and weight decay
-/// - Checkpoint resume functionality
-/// - Metrics logging and model persistence
-/// - Memory-efficient data loading with proper batching
-pub fn run_training(config: TrainingConfig) -> Result<()> {
-    println!("BiRefNet Training System Initialization");
-    println!("Configuration file: {}", config.config_path);
+/// Returns an error if the configuration or checkpoint file is missing,
+/// the configuration cannot be parsed, or training fails.
+pub fn run_training(args: TrainingCliArgs) -> Result<()> {
+    tracing::info!(config = %args.config_path.display(), "BiRefNet training system initialization");
 
-    if let Some(checkpoint) = &config.resume_checkpoint {
-        println!("Resuming from checkpoint: {}", checkpoint);
+    if let Some(checkpoint) = &args.resume_checkpoint {
+        tracing::info!(checkpoint = %checkpoint.display(), "resuming from checkpoint");
     }
 
-    // Validate configuration file existence
-    if !Path::new(&config.config_path).exists() {
-        anyhow::bail!("Configuration file not found: {}", config.config_path);
+    if !args.config_path.exists() {
+        anyhow::bail!(
+            "Configuration file not found: {}",
+            args.config_path.display()
+        );
     }
 
-    // Validate checkpoint file existence if specified
-    if let Some(checkpoint) = &config.resume_checkpoint {
+    if let Some(checkpoint) = &args.resume_checkpoint {
         if !Path::new(checkpoint).exists() {
-            anyhow::bail!("Checkpoint file not found: {}", checkpoint);
+            anyhow::bail!("Checkpoint file not found: {}", checkpoint.display());
         }
     }
 
-    // Load comprehensive training configuration
-    println!("Loading training configuration...");
-    let training_config = TrainingConfigData::load(&config.config_path)?;
+    tracing::info!("loading training configuration");
+    let training_config = TrainingConfig::load(&args.config_path)?;
 
-    // Display configuration summary
-    println!("  Training Configuration Summary:");
-    println!("   • Model: {:?}", training_config.model.task.task);
-    println!(
-        "   • Optimizer: {}",
-        training_config.optimizer.optimizer_type
+    tracing::info!(
+        task = ?training_config.model.task.task,
+        optimizer = %training_config.optimizer.optimizer_type,
+        learning_rate = training_config.learning_rate,
+        batch_size = training_config.batch_size,
+        epochs = training_config.num_epochs,
+        dataset = ?training_config.dataset.training_set,
+        "configuration loaded",
     );
-    println!("   • Learning Rate: {:.2e}", training_config.learning_rate);
-    println!("   • Batch Size: {}", training_config.batch_size);
-    println!("   • Epochs: {}", training_config.num_epochs);
-    println!("   • Dataset: {:?}", training_config.dataset.training_set);
 
-    // Execute training on selected backend with autodiff support
-    println!("  Using {} backend for training", NAME);
+    tracing::info!(backend = NAME, "starting training on backend");
     run_training_on_device::<Autodiff<InferenceBackend>>(
         InferenceDevice::default(),
         training_config,
-        config.resume_checkpoint,
+        args.resume_checkpoint,
     )
 }
