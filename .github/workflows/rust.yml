@@ -2,9 +2,13 @@ name: Rust CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -36,9 +40,10 @@ jobs:
   test:
     name: Test Suite
     strategy:
+      fail-fast: false
       matrix:
-        rust: [ stable, beta, nightly ]
-        os: [ ubuntu-latest, windows-latest, macos-latest ]
+        rust: [stable, beta, nightly]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -46,9 +51,11 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
       - run: cargo build --workspace
-      - run: cargo test --workspace
-      - run: cargo test -p birefnet --features train
+      - run: cargo nextest run --workspace
+      - run: cargo nextest run -p birefnet --features train
+      - run: cargo test --workspace --doc
 
   docs:
     name: Documentation
@@ -80,10 +87,9 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.85.1
+          toolchain: 1.89.0
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace
-      - run: cargo test --workspace
+      - run: cargo check --workspace
 
   coverage:
     name: Code Coverage
@@ -91,6 +97,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: cargo llvm-cov --workspace --lcov --output-path lcov.info
@@ -98,12 +106,4 @@ jobs:
         with:
           files: lcov.info
           fail_ci_if_error: false
-
-  benchmark:
-    name: Benchmarks
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo bench --workspace --no-run
+          token: ${{ secrets.CODECOV_TOKEN }}
