@@ -159,7 +159,7 @@ impl DecoderConfig {
             if self.config.decoder.out_ref {
                 gdt_convs[i] = Some(GdtConvs::init(
                     Conv2dConfig::new([channel, Self::_N], [3, 3])
-                        .with_padding(PaddingConfig2d::Explicit(1, 1)),
+                        .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1)),
                     BatchNormConfig::new(Self::_N),
                     device,
                 ));

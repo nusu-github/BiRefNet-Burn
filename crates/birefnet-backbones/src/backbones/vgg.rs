@@ -282,7 +282,7 @@ impl<B: Backend> VGGConvLayer<B> {
         // 3x3 conv, stride=1, padding=1
         let conv = Conv2dConfig::new([in_channels, out_channels], [3, 3])
             .with_stride([1, 1])
-            .with_padding(PaddingConfig2d::Explicit(1, 1))
+            .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
             .with_bias(!batch_norm) // No bias when using batch norm
             .with_initializer(initializer)
             .init(device);

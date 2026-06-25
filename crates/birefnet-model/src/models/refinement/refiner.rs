@@ -214,7 +214,7 @@ impl<B: Backend> StemLayer<B> {
     ) -> BiRefNetResult<Self> {
         let conv1 = Conv2dConfig::new([in_channels, inter_channels], [3, 3])
             .with_stride([1, 1])
-            .with_padding(PaddingConfig2d::Explicit(1, 1))
+            .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
             .init(device);
 
         let norm1 = build_norm_layer(inter_channels, norm_layer, true, true, 1e-5, device)?;
@@ -222,7 +222,7 @@ impl<B: Backend> StemLayer<B> {
 
         let conv2 = Conv2dConfig::new([inter_channels, out_channels], [3, 3])
             .with_stride([1, 1])
-            .with_padding(PaddingConfig2d::Explicit(1, 1))
+            .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
             .init(device);
 
         let norm2 = build_norm_layer(out_channels, norm_layer, true, true, 1e-5, device)?;
@@ -500,10 +500,10 @@ impl RefUNetConfig {
         // Encoder
         let encoder_1 = (
             Conv2dConfig::new([self.in_channels, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1))
+                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
                 .init(device),
             Conv2dConfig::new([64, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1))
+                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
                 .init(device),
             BatchNormConfig::new(64).init(device),
             Relu::new(),
@@ -512,7 +512,7 @@ impl RefUNetConfig {
         let encoder_2 = (
             MaxPool2dConfig::new([2, 2]).with_strides([2, 2]).init(),
             Conv2dConfig::new([64, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1))
+                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
                 .init(device),
             BatchNormConfig::new(64).init(device),
             Relu::new(),
@@ -521,7 +521,7 @@ impl RefUNetConfig {
         let encoder_3 = (
             MaxPool2dConfig::new([2, 2]).with_strides([2, 2]).init(),
             Conv2dConfig::new([64, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1))
+                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
                 .init(device),
             BatchNormConfig::new(64).init(device),
             Relu::new(),
@@ -530,7 +530,7 @@ impl RefUNetConfig {
         let encoder_4 = (
             MaxPool2dConfig::new([2, 2]).with_strides([2, 2]).init(),
             Conv2dConfig::new([64, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1))
+                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
                 .init(device),
             BatchNormConfig::new(64).init(device),
             Relu::new(),
@@ -541,7 +541,7 @@ impl RefUNetConfig {
         // Decoder
         let decoder_5 = (
             Conv2dConfig::new([64, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1))
+                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
                 .init(device),
             BatchNormConfig::new(64).init(device),
             Relu::new(),
@@ -549,7 +549,7 @@ impl RefUNetConfig {
 
         let decoder_4 = (
             Conv2dConfig::new([128, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1))
+                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
                 .init(device),
             BatchNormConfig::new(64).init(device),
             Relu::new(),
@@ -557,7 +557,7 @@ impl RefUNetConfig {
 
         let decoder_3 = (
             Conv2dConfig::new([128, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1))
+                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
                 .init(device),
             BatchNormConfig::new(64).init(device),
             Relu::new(),
@@ -565,7 +565,7 @@ impl RefUNetConfig {
 
         let decoder_2 = (
             Conv2dConfig::new([128, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1))
+                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
                 .init(device),
             BatchNormConfig::new(64).init(device),
             Relu::new(),
@@ -573,14 +573,14 @@ impl RefUNetConfig {
 
         let decoder_1 = (
             Conv2dConfig::new([128, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1))
+                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
                 .init(device),
             BatchNormConfig::new(64).init(device),
             Relu::new(),
         );
 
         let conv_d0 = Conv2dConfig::new([64, 1], [3, 3])
-            .with_padding(PaddingConfig2d::Explicit(1, 1))
+            .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
             .init(device);
 
         let interpolation_strategy = Ignored(self.interpolation_strategy.clone());

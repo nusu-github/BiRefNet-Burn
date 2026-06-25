@@ -89,10 +89,7 @@ impl IoULoss {
         reduction: Reduction,
     ) -> Tensor<B, 1> {
         let loss = self.forward_no_reduction(predictions, targets);
-        match reduction {
-            Reduction::Mean | Reduction::Auto => loss.mean(),
-            Reduction::Sum => loss.sum(),
-        }
+        crate::reduce_loss(loss, reduction)
     }
 
     /// Compute the criterion on the input tensor without reduction.

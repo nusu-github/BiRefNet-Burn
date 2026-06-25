@@ -84,7 +84,7 @@ impl BasicDecBlkConfig {
     pub fn init<B: Backend>(&self, device: &Device<B>) -> BiRefNetResult<BasicDecBlk<B>> {
         let conv_in = Conv2dConfig::new([self.in_channels, self.inter_channels], [3, 3])
             .with_stride([1, 1])
-            .with_padding(PaddingConfig2d::Explicit(1, 1))
+            .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
             .init(device);
         let relu_in = Relu::new();
         let dec_att = match self.dec_att {
@@ -102,7 +102,7 @@ impl BasicDecBlkConfig {
         };
         let conv_out = Conv2dConfig::new([self.inter_channels, self.out_channels], [3, 3])
             .with_stride([1, 1])
-            .with_padding(PaddingConfig2d::Explicit(1, 1))
+            .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
             .init(device);
         let bn_in = NormLayer::new(self.inter_channels, self.batch_size, device);
         let bn_out = NormLayer::new(self.out_channels, self.batch_size, device);
@@ -207,7 +207,7 @@ impl ResBlkConfig {
 
         let conv_in = Conv2dConfig::new([self.in_channels, inter_channels], [3, 3])
             .with_stride([1, 1])
-            .with_padding(PaddingConfig2d::Explicit(1, 1))
+            .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
             .init(device);
 
         let bn_in = NormLayer::new(inter_channels, self.batch_size, device);
@@ -230,14 +230,14 @@ impl ResBlkConfig {
 
         let conv_out = Conv2dConfig::new([inter_channels, out_channels], [3, 3])
             .with_stride([1, 1])
-            .with_padding(PaddingConfig2d::Explicit(1, 1))
+            .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
             .init(device);
 
         let bn_out = NormLayer::new(out_channels, self.batch_size, device);
 
         let conv_resi = Conv2dConfig::new([self.in_channels, out_channels], [1, 1])
             .with_stride([1, 1])
-            .with_padding(PaddingConfig2d::Explicit(0, 0))
+            .with_padding(PaddingConfig2d::Explicit(0, 0, 0, 0))
             .init(device);
 
         Ok(ResBlk {

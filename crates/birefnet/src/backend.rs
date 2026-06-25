@@ -64,6 +64,19 @@ pub mod burn_backend_types {
     pub const NAME: &str = "cpu";
 }
 
+// NdArray CPU ---------------------------------------------------------------
+
+#[cfg(feature = "ndarray")]
+pub mod burn_backend_types {
+    use burn::backend::ndarray::{NdArray, NdArrayDevice};
+
+    use super::ElemType;
+
+    pub type InferenceBackend = NdArray<ElemType>;
+    pub type InferenceDevice = NdArrayDevice;
+    pub const NAME: &str = "ndarray";
+}
+
 // WebGPU --------------------------------------------------------------------
 
 #[cfg(any(feature = "wgpu", feature = "vulkan", feature = "metal"))]

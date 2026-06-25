@@ -1,21 +1,22 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    rc::Rc,
     sync::LazyLock,
 };
 
 use birefnet_model::{
-    Backbone, BackboneConfig, BiRefNetConfig, BiRefNetRecord, DecoderConfig, InterpolationStrategy,
-    ModelConfig, Task, TaskConfig,
+    Backbone, BackboneConfig, BiRefNetConfig, DecoderConfig, InterpolationStrategy, ModelConfig,
+    Task, TaskConfig,
 };
 use burn::{
     module::Module,
-    record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder},
-    tensor::backend::Backend,
+    record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder},
+    tensor::{DType, backend::Backend},
 };
-use burn_import::{
-    pytorch::{LoadArgs as PyTorchLoadArgs, PyTorchFileRecorder},
-    safetensors::{LoadArgs as SafetensorsLoadArgs, SafetensorsFileRecorder},
+use burn_store::{
+    ModuleAdapter, ModuleSnapshot, ModuleStore, PyTorchToBurnAdapter, PytorchStore,
+    SafetensorsStore, TensorSnapshot,
 };
 use hf_hub::{Repo, RepoType, api::sync};
 use thiserror::Error;
@@ -62,6 +63,33 @@ pub struct ModelSpec {
     pub default_resolution: (u32, u32),
     pub supports_dynamic_resolution: bool,
     pub config_builder: fn() -> BiRefNetConfig,
+}
+
+#[derive(Debug, Clone, Default)]
+struct UpcastHalfAdapter;
+
+impl ModuleAdapter for UpcastHalfAdapter {
+    fn adapt(&self, snapshot: &TensorSnapshot) -> TensorSnapshot {
+        match snapshot.dtype {
+            DType::F16 | DType::BF16 | DType::F64 | DType::I64 | DType::I32 | DType::I16
+            | DType::I8 | DType::U64 | DType::U32 | DType::U16 | DType::U8 => {
+                let data_fn = snapshot.clone_data_fn();
+                TensorSnapshot::from_closure(
+                    Rc::new(move || Ok(data_fn()?.convert_dtype(DType::F32))),
+                    DType::F32,
+                    snapshot.shape.clone(),
+                    snapshot.path_stack.clone().unwrap_or_default(),
+                    snapshot.container_stack.clone().unwrap_or_default(),
+                    snapshot.tensor_id.unwrap_or_default(),
+                )
+            }
+            _ => snapshot.clone(),
+        }
+    }
+
+    fn clone_box(&self) -> Box<dyn ModuleAdapter> {
+        Box::new(self.clone())
+    }
 }
 
 /// Helper function to create a BiRefNetConfig
@@ -168,7 +196,7 @@ static MODEL_SPECS: LazyLock<HashMap<String, ModelSpec>> = LazyLock::new(|| {
                 config_builder: || {
                     create_config(
                         Task::General,
-                        Backbone::SwinV1T,
+                        Backbone::SwinV1L,
                         Some(InterpolationStrategy::Bilinear),
                     )
                 },
@@ -391,10 +419,11 @@ pub trait ModelRecord {
 
 pub trait ModelLoader<B: Backend> {
     /// Load model weights into an existing model
-    fn load_model<M: Module<B>>(&self, model: M, device: &B::Device) -> Result<M, WeightError>;
-
-    /// Load model record for later use
-    fn load_record(&self, device: &B::Device) -> Result<BiRefNetRecord<B>, WeightError>;
+    fn load_model<M: Module<B> + ModuleSnapshot<B>>(
+        &self,
+        model: M,
+        device: &B::Device,
+    ) -> Result<M, WeightError>;
 
     /// Check if the weight source is available
     fn is_available(&self) -> bool;
@@ -487,8 +516,9 @@ impl ManagedModel {
             repo_id: format!("ZhengPeng7/{}", spec.hf_model_id),
             filename: "model.safetensors".to_owned(),
         };
+        let config = Some((spec.config_builder)());
 
-        Ok(Self::new(ModelName::new(model_name), None, weights))
+        Ok(Self::new(ModelName::new(model_name), config, weights))
     }
 
     pub fn get_weights_path(&self) -> Option<PathBuf> {
@@ -537,7 +567,11 @@ impl ManagedModel {
 }
 
 impl<B: Backend> ModelLoader<B> for ManagedModel {
-    fn load_model<M: Module<B>>(&self, model: M, device: &B::Device) -> Result<M, WeightError> {
+    fn load_model<M: Module<B> + ModuleSnapshot<B>>(
+        &self,
+        model: M,
+        device: &B::Device,
+    ) -> Result<M, WeightError> {
         let weights_path = self
             .get_weights_path()
             .ok_or_else(|| WeightError::FileSystemError {
@@ -576,41 +610,6 @@ impl<B: Backend> ModelLoader<B> for ManagedModel {
         }
     }
 
-    fn load_record(&self, device: &B::Device) -> Result<BiRefNetRecord<B>, WeightError> {
-        let weights_path = self
-            .get_weights_path()
-            .ok_or_else(|| WeightError::FileSystemError {
-                reason: "Failed to resolve weights path".to_string(),
-            })?;
-
-        if !weights_path.exists() {
-            return Err(WeightError::FileSystemError {
-                reason: format!("Weight file not found: {}", weights_path.display()),
-            });
-        }
-
-        let format = WeightFormat::from_path(&weights_path);
-
-        match format {
-            WeightFormat::PyTorch => self.load_pytorch_record(&weights_path, device),
-            WeightFormat::SafeTensors => self.load_safetensors_record(&weights_path, device),
-            WeightFormat::MessagePack => self.load_messagepack_record(&weights_path, device),
-            WeightFormat::Binary => self.load_binary_record(&weights_path, device),
-            WeightFormat::Auto => {
-                // Try different formats in order of preference
-                if let Ok(record) = self.load_pytorch_record(&weights_path, device) {
-                    Ok(record)
-                } else if let Ok(record) = self.load_safetensors_record(&weights_path, device) {
-                    Ok(record)
-                } else if let Ok(record) = self.load_messagepack_record(&weights_path, device) {
-                    Ok(record)
-                } else {
-                    self.load_binary_record(&weights_path, device)
-                }
-            }
-        }
-    }
-
     fn is_available(&self) -> bool {
         match &self.weights {
             WeightSource::Remote { .. } => {
@@ -623,64 +622,64 @@ impl<B: Backend> ModelLoader<B> for ManagedModel {
 }
 
 impl ManagedModel {
-    fn load_pytorch_model<B: Backend, M: Module<B>>(
+    fn load_pytorch_model<B: Backend, M: Module<B> + ModuleSnapshot<B>>(
         &self,
-        model: M,
+        mut model: M,
         weights_path: &Path,
-        device: &B::Device,
+        _device: &B::Device,
     ) -> Result<M, WeightError> {
-        let load_args = PyTorchLoadArgs::new(weights_path.to_path_buf());
-        let recorder = PyTorchFileRecorder::<FullPrecisionSettings>::default();
-        let record = recorder
-            .load(load_args, device)
+        let mut store = PytorchStore::from_file(weights_path);
+        store
+            .apply_to::<B, _>(&mut model)
             .map_err(|e| WeightError::ModelLoadError {
                 reason: format!("PyTorch model loading failed: {}", e),
             })?;
-        Ok(model.load_record(record))
+        Ok(model)
     }
 
-    fn load_safetensors_model<B: Backend, M: Module<B>>(
+    fn load_safetensors_model<B: Backend, M: Module<B> + ModuleSnapshot<B>>(
         &self,
-        model: M,
+        mut model: M,
         weights_path: &Path,
-        device: &B::Device,
+        _device: &B::Device,
     ) -> Result<M, WeightError> {
-        let load_args = SafetensorsLoadArgs::new(weights_path.to_path_buf())
-            .with_key_remap("decoder\\.conv_out1\\.0\\.(.+)", "decoder.conv_out1.$1")
-            .with_key_remap(
+        let mut store = SafetensorsStore::from_file(weights_path)
+            .skip_enum_variants(true)
+            .with_from_adapter(PyTorchToBurnAdapter.chain(UpcastHalfAdapter))
+            .with_key_remapping("decoder\\.conv_out1\\.0\\.(.+)", "decoder.conv_out1.$1")
+            .with_key_remapping(
                 "decoder\\.gdt_convs_attn_([2-4])\\.0\\.(.+)",
                 "decoder.gdt_convs_attn_$1.$2",
             )
-            .with_key_remap(
+            .with_key_remapping(
                 "decoder\\.gdt_convs_pred_([2-4])\\.0\\.(.+)",
                 "decoder.gdt_convs_pred_$1.$2",
             )
             // Sequential
-            .with_key_remap("bb\\.norm([0-3])\\.(.+)", "bb.norm_layers.$1.$2")
-            .with_key_remap(
+            .with_key_remapping("bb\\.norm([0-3])\\.(.+)", "bb.norm_layers.$1.$2")
+            .with_key_remapping(
                 "(.+?)\\.gdt_convs_([2-4])\\.0\\.(.+)",
                 "$1.gdt_convs_$2.conv.$3",
             )
-            .with_key_remap(
+            .with_key_remapping(
                 "(.+?)\\.gdt_convs_([2-4])\\.1\\.(.+)",
                 "$1.gdt_convs_$2.bn.$3",
             )
-            .with_key_remap(
+            .with_key_remapping(
                 "(.+)\\.global_avg_pool\\.1\\.(.+)",
                 "$1.global_avg_pool.conv.$2",
             )
-            .with_key_remap(
+            .with_key_remapping(
                 "(.+)\\.global_avg_pool\\.2\\.(.+)",
                 "$1.global_avg_pool.bn.$2",
             );
 
-        let recorder = SafetensorsFileRecorder::<FullPrecisionSettings>::default();
-        let record = recorder
-            .load(load_args, device)
+        store
+            .apply_to::<B, _>(&mut model)
             .map_err(|e| WeightError::ModelLoadError {
                 reason: format!("Safetensors model loading failed: {}", e),
             })?;
-        Ok(model.load_record(record))
+        Ok(model)
     }
 
     /// Load MessagePack format weights
@@ -713,61 +712,6 @@ impl ManagedModel {
             })
     }
 
-    fn load_pytorch_record<B: Backend>(
-        &self,
-        weights_path: &Path,
-        device: &B::Device,
-    ) -> Result<BiRefNetRecord<B>, WeightError> {
-        let load_args = PyTorchLoadArgs::new(weights_path.to_path_buf());
-        let recorder = PyTorchFileRecorder::<FullPrecisionSettings>::default();
-        recorder
-            .load(load_args, device)
-            .map_err(|e| WeightError::RecordLoadError {
-                reason: format!("PyTorch record loading failed: {}", e),
-            })
-    }
-
-    fn load_safetensors_record<B: Backend>(
-        &self,
-        weights_path: &Path,
-        device: &B::Device,
-    ) -> Result<BiRefNetRecord<B>, WeightError> {
-        let load_args = SafetensorsLoadArgs::new(weights_path.to_path_buf());
-        let recorder = SafetensorsFileRecorder::<FullPrecisionSettings>::default();
-        recorder
-            .load(load_args, device)
-            .map_err(|e| WeightError::RecordLoadError {
-                reason: format!("Safetensors record loading failed: {}", e),
-            })
-    }
-
-    /// Load MessagePack record
-    fn load_messagepack_record<B: Backend>(
-        &self,
-        weights_path: &Path,
-        device: &B::Device,
-    ) -> Result<BiRefNetRecord<B>, WeightError> {
-        let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
-        recorder
-            .load(weights_path.to_path_buf(), device)
-            .map_err(|e| WeightError::RecordLoadError {
-                reason: format!("MessagePack record loading failed: {}", e),
-            })
-    }
-
-    /// Load Binary record
-    fn load_binary_record<B: Backend>(
-        &self,
-        weights_path: &Path,
-        device: &B::Device,
-    ) -> Result<BiRefNetRecord<B>, WeightError> {
-        let recorder = BinFileRecorder::<FullPrecisionSettings>::new();
-        recorder
-            .load(weights_path.to_path_buf(), device)
-            .map_err(|e| WeightError::RecordLoadError {
-                reason: format!("Binary record loading failed: {}", e),
-            })
-    }
 }
 
 /// Extension trait for BiRefNet to provide convenient weight loading methods
@@ -868,6 +812,15 @@ mod tests {
         assert!(result.is_ok());
         let model = result.unwrap();
         assert_eq!(model.name().as_str(), "General");
+    }
+
+    #[test]
+    fn test_from_pretrained_stores_registered_config() {
+        let model = ManagedModel::from_pretrained("General-reso_512").unwrap();
+
+        let config = format!("{:?}", model.config().as_ref().unwrap());
+        assert!(config.contains("SwinV1L"));
+        assert_eq!(model.get_resolution(), Some((512, 512)));
     }
 
     #[test]

@@ -40,7 +40,7 @@ impl _ASPPModuleConfig {
             [self.kernel_size, self.kernel_size],
         )
         .with_stride([1, 1])
-        .with_padding(PaddingConfig2d::Explicit(self.padding, self.padding))
+        .with_padding(PaddingConfig2d::Explicit(self.padding, self.padding, self.padding, self.padding))
         .with_dilation([self.dilation, self.dilation])
         .with_bias(false)
         .init(device);

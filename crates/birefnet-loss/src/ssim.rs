@@ -134,10 +134,7 @@ impl SSIMLoss {
         reduction: Reduction,
     ) -> Tensor<B, 1> {
         let loss = self.forward_no_reduction(predictions, targets);
-        match reduction {
-            Reduction::Mean | Reduction::Auto => loss.mean(),
-            Reduction::Sum => loss.sum(),
-        }
+        crate::reduce_loss(loss, reduction)
     }
 
     /// Compute the criterion on the input tensor without reduction.
@@ -220,7 +217,7 @@ impl SSIMLoss {
         // Create convolution layer with Gaussian window
         let mut conv =
             Conv2dConfig::new([channels, channels], [self.window_size, self.window_size])
-                .with_padding(PaddingConfig2d::Explicit(padding, padding))
+                .with_padding(PaddingConfig2d::Explicit(padding, padding, padding, padding))
                 .with_groups(channels)
                 .with_bias(false)
                 .init(&device);

@@ -50,7 +50,7 @@ impl StructureLossConfig {
         let padding = self.kernel_size / 2;
         let avg_pool = AvgPool2dConfig::new([self.kernel_size, self.kernel_size])
             .with_strides([1, 1])
-            .with_padding(PaddingConfig2d::Explicit(padding, padding))
+            .with_padding(PaddingConfig2d::Explicit(padding, padding, padding, padding))
             .init();
 
         StructureLoss {
@@ -147,10 +147,7 @@ impl StructureLoss {
         reduction: Reduction,
     ) -> Tensor<B, 1> {
         let loss = self.forward_no_reduction(predictions, targets);
-        let reduced = match reduction {
-            Reduction::Mean | Reduction::Auto => loss.mean(),
-            Reduction::Sum => loss.sum(),
-        };
+        let reduced = crate::reduce_loss(loss, reduction);
 
         // Apply weight factor
         reduced.mul_scalar(self.weight)

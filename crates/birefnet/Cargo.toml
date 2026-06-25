@@ -12,7 +12,7 @@ name = "birefnet"
 path = "src/bin/birefnet.rs"
 
 [features]
-default = ["inference", "cpu"]
+default = ["inference", "ndarray"]
 
 # Backend features - only at the top level
 select_backend = []
@@ -20,6 +20,7 @@ cuda = ["burn/cuda", "burn/fusion", "burn/autotune", "select_backend"]
 rocm = ["burn/rocm", "burn/fusion", "burn/autotune", "select_backend"]
 metal = ["burn/metal", "burn/fusion", "burn/autotune", "select_backend"]
 cpu = ["burn/cpu"]
+ndarray = ["burn/ndarray", "select_backend"]
 wgpu = ["burn/wgpu", "burn/fusion", "burn/autotune", "select_backend"]
 vulkan = ["burn/vulkan", "burn/fusion", "burn/autotune", "select_backend"]
 wgpu-cpu = ["burn/wgpu", "select_backend"]

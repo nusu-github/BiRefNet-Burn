@@ -12,7 +12,7 @@ default = []
 
 [dependencies]
 burn = { workspace = true }
-burn-import = { workspace = true, features = ["pytorch", "safetensors"] }
+burn-store = "0.21.0"
 birefnet-model = { path = "../birefnet-model" }
 
 thiserror = { workspace = true }

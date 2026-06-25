@@ -93,10 +93,7 @@ impl MaeLoss {
         reduction: Reduction,
     ) -> Tensor<B, 1> {
         let loss = self.forward_no_reduction(predictions, targets);
-        let reduced = match reduction {
-            Reduction::Mean | Reduction::Auto => loss.mean(),
-            Reduction::Sum => loss.sum(),
-        };
+        let reduced = crate::reduce_loss(loss, reduction);
 
         // Apply weight factor
         reduced.mul_scalar(self.weight)

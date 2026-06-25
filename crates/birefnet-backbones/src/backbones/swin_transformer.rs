@@ -1364,7 +1364,7 @@ mod tests {
         );
         let output = mlp.forward(input);
 
-        assert_eq!(output.shape().dims, [batch_size, seq_len, input_dim]);
+        assert_eq!(output.dims(), [batch_size, seq_len, input_dim]);
     }
 
     #[rstest]
@@ -1392,7 +1392,7 @@ mod tests {
         let windows = window_partition(input.clone(), window_size);
         let expected_num_windows = (h / window_size) * (w / window_size);
         assert_eq!(
-            windows.shape().dims,
+            windows.dims(),
             [
                 batch_size * expected_num_windows,
                 window_size,
@@ -1403,7 +1403,7 @@ mod tests {
 
         // Test window reverse
         let reversed = window_reverse(windows, window_size, h, w);
-        assert_eq!(reversed.shape().dims, [batch_size, h, w, channels]);
+        assert_eq!(reversed.dims(), [batch_size, h, w, channels]);
 
         // Test that the operations are truly inverse (values are preserved)
         let [input_data, reversed_data] = Transaction::default()
@@ -1449,7 +1449,7 @@ mod tests {
         );
 
         let output = attention.forward(input, None);
-        assert_eq!(output.shape().dims, [num_windows, window_area, dim]);
+        assert_eq!(output.dims(), [num_windows, window_area, dim]);
 
         // Test that dimension is divisible by num_heads (required for multi-head attention)
         assert_eq!(
@@ -1492,7 +1492,7 @@ mod tests {
         let output_w = (width + patch_size - 1) / patch_size;
 
         assert_eq!(
-            output.shape().dims,
+            output.dims(),
             [batch_size, embed_dim, output_h, output_w]
         );
 
@@ -1533,7 +1533,7 @@ mod tests {
         let expected_channels = 2 * input_dim;
 
         assert_eq!(
-            output.shape().dims,
+            output.dims(),
             [batch_size, expected_h * expected_w, expected_channels]
         );
 
@@ -1590,7 +1590,7 @@ mod tests {
         );
 
         let output = block.forward(input, h, w, mask_matrix);
-        assert_eq!(output.shape().dims, [batch_size, h * w, dim]);
+        assert_eq!(output.dims(), [batch_size, h * w, dim]);
 
         // Verify that dimension is divisible by num_heads
         assert_eq!(
@@ -1631,7 +1631,7 @@ mod tests {
         let (x_out, h_out, w_out, x_down, h_down, w_down) = layer.forward(input, h, w);
 
         // Before downsampling - should preserve dimensions
-        assert_eq!(x_out.shape().dims, [batch_size, h * w, dim]);
+        assert_eq!(x_out.dims(), [batch_size, h * w, dim]);
         assert_eq!(h_out, h);
         assert_eq!(w_out, w);
 
@@ -1640,14 +1640,14 @@ mod tests {
             let expected_h = (h + 1) / 2; // Ceiling division
             let expected_w = (w + 1) / 2; // Ceiling division
             assert_eq!(
-                x_down.shape().dims,
+                x_down.dims(),
                 [batch_size, expected_h * expected_w, 2 * dim]
             );
             assert_eq!(h_down, expected_h);
             assert_eq!(w_down, expected_w);
         } else {
             // No downsampling - should be identical to output
-            assert_eq!(x_down.shape().dims, x_out.shape().dims);
+            assert_eq!(x_down.dims(), x_out.dims());
             assert_eq!(h_down, h_out);
             assert_eq!(w_down, w_out);
         }
@@ -1708,13 +1708,13 @@ mod tests {
                 expected_spatial_sizes[stage],
             ];
             assert_eq!(
-                output.shape().dims,
+                output.dims(),
                 expected_shape,
                 "Stage {} output shape mismatch for {}: expected {:?}, got {:?}",
                 stage,
                 model_variant,
                 expected_shape,
-                output.shape().dims
+                output.dims()
             );
         }
     }
@@ -1744,7 +1744,7 @@ mod tests {
 
         // Check that outputs have reasonable shapes
         for (stage, output) in outputs.iter().enumerate() {
-            let dims = output.shape().dims;
+            let dims = output.dims();
             assert_eq!(
                 dims[0], batch_size,
                 "Batch size should be preserved at stage {}",
@@ -1761,7 +1761,7 @@ mod tests {
             // Verify that spatial dimensions are reasonable (should be getting smaller)
             if stage > 0 {
                 let prev_spatial =
-                    outputs[stage - 1].shape().dims[2] * outputs[stage - 1].shape().dims[3];
+                    outputs[stage - 1].dims()[2] * outputs[stage - 1].dims()[3];
                 let curr_spatial = dims[2] * dims[3];
                 assert!(
                     curr_spatial <= prev_spatial,
@@ -1778,12 +1778,12 @@ mod tests {
         let expected_channels = [96, 192, 384, 768];
         for (stage, expected) in expected_channels.iter().enumerate() {
             assert_eq!(
-                outputs[stage].shape().dims[1],
+                outputs[stage].dims()[1],
                 *expected,
                 "Stage {} should have {} channels, got {}",
                 stage,
                 expected,
-                outputs[stage].shape().dims[1]
+                outputs[stage].dims()[1]
             );
         }
     }
@@ -1822,5 +1822,48 @@ mod tests {
             .with_num_heads([6, 12, 24, 48])
             .with_window_size(12)
             .init(device)
+    }
+
+    #[test]
+    fn cubecl_cpu_broadcast_add_matches_attention_bias_shape() {
+        type TestBackend = burn::backend::cpu::Cpu<f32>;
+        let device = Default::default();
+
+        let attn = Tensor::<TestBackend, 4>::zeros([121, 6, 144, 144], &device);
+        let bias = Tensor::<TestBackend, 3>::zeros([6, 144, 144], &device).unsqueeze();
+
+        let output = attn + bias;
+
+        assert_eq!(output.dims(), [121, 6, 144, 144]);
+        let data = output.into_data();
+        assert_eq!(data.shape.dims::<4>(), [121, 6, 144, 144]);
+    }
+
+    #[test]
+    fn cubecl_cpu_attention_matmul_64_windows() {
+        type TestBackend = burn::backend::cpu::Cpu<f32>;
+        let device = Default::default();
+
+        let q = Tensor::<TestBackend, 4>::zeros([64, 6, 144, 32], &device);
+        let k = Tensor::<TestBackend, 4>::zeros([64, 6, 144, 32], &device);
+        let output = q.matmul(k.swap_dims(2, 3));
+
+        assert_eq!(output.dims(), [64, 6, 144, 144]);
+        let data = output.into_data();
+        assert_eq!(data.shape.dims::<4>(), [64, 6, 144, 144]);
+    }
+
+    #[test]
+    fn cubecl_cpu_attention_matmul_100_windows_regression() {
+        type TestBackend = burn::backend::cpu::Cpu<f32>;
+        let device = Default::default();
+
+        let q = Tensor::<TestBackend, 4>::zeros([100, 6, 144, 32], &device);
+        let k = Tensor::<TestBackend, 4>::zeros([100, 6, 144, 32], &device);
+        let output = q.matmul(k.swap_dims(2, 3));
+
+        assert_eq!(output.dims(), [100, 6, 144, 144]);
+        let data = output.into_data();
+        assert_eq!(data.shape.dims::<4>(), [100, 6, 144, 144]);
     }
 }

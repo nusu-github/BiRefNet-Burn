@@ -19,11 +19,11 @@ impl SimpleConvsConfig {
     /// Initializes a `SimpleConvs` module.
     pub fn init<B: Backend>(&self, device: &Device<B>) -> SimpleConvs<B> {
         let conv1 = Conv2dConfig::new([self.in_channels, self.inter_channels], [3, 3])
-            .with_padding(PaddingConfig2d::Explicit(1, 1))
+            .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
             .init(device);
 
         let conv_out = Conv2dConfig::new([self.inter_channels, self.out_channels], [3, 3])
-            .with_padding(PaddingConfig2d::Explicit(1, 1))
+            .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
             .init(device);
 
         SimpleConvs { conv1, conv_out }

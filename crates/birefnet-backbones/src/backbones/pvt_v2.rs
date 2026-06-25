@@ -345,7 +345,7 @@ impl<B: Backend> OverlapPatchEmbed<B> {
         Self {
             proj: Conv2dConfig::new([in_channels, embed_dim], [patch_size, patch_size])
                 .with_stride([stride, stride])
-                .with_padding(PaddingConfig2d::Explicit(patch_size / 2, patch_size / 2))
+                .with_padding(PaddingConfig2d::Explicit(patch_size / 2, patch_size / 2, patch_size / 2, patch_size / 2))
                 .with_initializer(conv_initializer)
                 .init(device),
             norm: LayerNormConfig::new(embed_dim)

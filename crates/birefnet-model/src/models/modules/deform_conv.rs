@@ -44,7 +44,7 @@ impl DeformableConv2dConfig {
             [self.kernel_size, self.kernel_size],
         )
         .with_stride([self.stride, self.stride])
-        .with_padding(PaddingConfig2d::Explicit(self.padding, self.padding))
+        .with_padding(PaddingConfig2d::Explicit(self.padding, self.padding, self.padding, self.padding))
         .init(device);
 
         offset_conv.weight = Param::from_tensor(offset_conv.weight.val().zeros_like());
@@ -63,7 +63,7 @@ impl DeformableConv2dConfig {
             [self.kernel_size, self.kernel_size],
         )
         .with_stride([self.stride, self.stride])
-        .with_padding(PaddingConfig2d::Explicit(self.padding, self.padding))
+        .with_padding(PaddingConfig2d::Explicit(self.padding, self.padding, self.padding, self.padding))
         .init(device);
 
         modulator_conv.weight = Param::from_tensor(modulator_conv.weight.val().zeros_like());
@@ -82,7 +82,7 @@ impl DeformableConv2dConfig {
             [self.kernel_size, self.kernel_size],
         )
         .with_stride([self.stride, self.stride])
-        .with_padding(PaddingConfig2d::Explicit(self.padding, self.padding))
+        .with_padding(PaddingConfig2d::Explicit(self.padding, self.padding, self.padding, self.padding))
         .with_bias(self.bias)
         .init(device);
 

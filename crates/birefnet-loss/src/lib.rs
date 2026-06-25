@@ -77,6 +77,22 @@ mod threshold_regularization;
 // Integrated loss system
 mod birefnet_loss;
 
+use burn::{nn::loss::Reduction, prelude::*};
+
+pub(crate) fn reduce_loss<B: Backend, const D: usize>(
+    loss: Tensor<B, D>,
+    reduction: Reduction,
+) -> Tensor<B, 1> {
+    match reduction {
+        Reduction::Mean | Reduction::Auto => loss.mean(),
+        Reduction::Sum => loss.sum(),
+        Reduction::BatchMean => {
+            let batch_size = loss.dims()[0] as f64;
+            loss.sum().div_scalar(batch_size)
+        }
+    }
+}
+
 // Re-export core loss functions and configurations
 #[doc(inline)]
 pub use birefnet_loss::{BiRefNetLoss, BiRefNetLossConfig};

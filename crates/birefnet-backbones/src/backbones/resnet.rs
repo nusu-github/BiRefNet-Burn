@@ -176,7 +176,7 @@ impl<B: Backend> Conv1Block<B> {
         // 7x7 conv, stride=2, padding=3
         let conv1 = Conv2dConfig::new([in_channels, out_channels], [7, 7])
             .with_stride([2, 2])
-            .with_padding(PaddingConfig2d::Explicit(3, 3))
+            .with_padding(PaddingConfig2d::Explicit(3, 3, 3, 3))
             .with_bias(false)
             .with_initializer(initializer)
             .init(device);
@@ -186,7 +186,7 @@ impl<B: Backend> Conv1Block<B> {
         // 3x3 maxpool, stride=2, padding=1
         let maxpool = MaxPool2dConfig::new([3, 3])
             .with_strides([2, 2])
-            .with_padding(PaddingConfig2d::Explicit(1, 1))
+            .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
             .init();
 
         Self {
