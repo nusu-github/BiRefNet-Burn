@@ -43,7 +43,7 @@ walkdir = "2.5.0"
 rstest = "0.26.1"
 
 # Model hub integration
-hf-hub = { version = "0.4.3", default-features = false, features = ["ureq", "rustls-tls"] }
+hf-hub = { version = "0.5.0", default-features = false, features = ["ureq", "rustls-tls"] }
 
 [workspace.lints.rust]
 ambiguous_negative_literals = "warn"
