@@ -6,7 +6,11 @@
 use std::f64::consts::PI;
 
 use burn::tensor::{
-    ElementConversion, Tensor, backend::Backend, module::conv2d, ops::ConvOptions, s,
+    ElementConversion, Tensor,
+    backend::Backend,
+    module::conv2d,
+    ops::{ConvOptions, PadMode},
+    s,
 };
 
 /// MATLAB-style 2D Gaussian kernel
@@ -182,60 +186,14 @@ fn pad_replicate_for_conv<B: Backend>(
     pad_h: usize,
     pad_w: usize,
 ) -> Tensor<B, 4> {
-    let [batch_size, channels, height, width] = tensor.dims();
-
     if pad_h == 0 && pad_w == 0 {
         return tensor;
     }
-
-    let new_height = height + 2 * pad_h;
-    let new_width = width + 2 * pad_w;
-
-    let device = tensor.device();
-    let mut result = Tensor::<B, 4>::zeros([batch_size, channels, new_height, new_width], &device);
-
-    // Copy original tensor to center
-    result = result.slice_assign(
-        s![.., .., pad_h..pad_h + height, pad_w..pad_w + width],
-        tensor.clone(),
-    );
-
-    // Replicate edges
-    if pad_h > 0 {
-        let top_row = tensor.clone().slice(s![.., .., 0..1, ..]);
-        let bottom_row = tensor.slice(s![.., .., height - 1..height, ..]);
-
-        for i in 0..pad_h {
-            result =
-                result.slice_assign(s![.., .., i..i + 1, pad_w..pad_w + width], top_row.clone());
-            result = result.slice_assign(
-                s![
-                    ..,
-                    ..,
-                    pad_h + height + i..pad_h + height + i + 1,
-                    pad_w..pad_w + width
-                ],
-                bottom_row.clone(),
-            );
-        }
-    }
-
-    if pad_w > 0 {
-        let left_col = result.clone().slice(s![.., .., .., pad_w..pad_w + 1]);
-        let right_col = result
-            .clone()
-            .slice(s![.., .., .., pad_w + width - 1..pad_w + width]);
-
-        for i in 0..pad_w {
-            result = result.slice_assign(s![.., .., .., i..i + 1], left_col.clone());
-            result = result.slice_assign(
-                s![.., .., .., pad_w + width + i..pad_w + width + i + 1],
-                right_col.clone(),
-            );
-        }
-    }
-
-    result
+    // Burn 0.21 公式 PadMode::Edge = 境界値複製（replicate と等価）
+    tensor.pad(
+        [(0, 0), (0, 0), (pad_h, pad_h), (pad_w, pad_w)],
+        PadMode::Edge,
+    )
 }
 
 #[cfg(test)]

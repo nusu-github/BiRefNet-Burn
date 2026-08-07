@@ -134,8 +134,8 @@ mod tests {
 
         let batch = BiRefNetBatch::new(images, masks);
 
-        assert_eq!(batch.images.shape().dims, [4, 3, 64, 64]);
-        assert_eq!(batch.masks.shape().dims, [4, 1, 64, 64]);
+        assert_eq!(batch.images.shape().dims(), [4, 3, 64, 64]);
+        assert_eq!(batch.masks.shape().dims(), [4, 1, 64, 64]);
         assert_eq!(batch.batch_size(), 4);
     }
 
@@ -157,8 +157,8 @@ mod tests {
 
         let output = BiRefNetOutput::new(loss, logits, target);
 
-        assert_eq!(output.output.shape().dims, [2, 1, 32, 32]);
-        assert_eq!(output.targets.shape().dims, [2, 1, 32, 32]);
-        assert_eq!(output.loss.shape().dims, [1]);
+        assert_eq!(output.output.shape().dims(), [2, 1, 32, 32]);
+        assert_eq!(output.targets.shape().dims(), [2, 1, 32, 32]);
+        assert_eq!(output.loss.shape().dims(), [1]);
     }
 }

@@ -18,7 +18,7 @@ use burn_store::{
     ModuleAdapter, ModuleSnapshot, ModuleStore, PyTorchToBurnAdapter, PytorchStore,
     SafetensorsStore, TensorSnapshot,
 };
-use hf_hub::{Repo, RepoType, api::sync};
+use hf_hub::{HFClientSync, split_id};
 use thiserror::Error;
 
 /// Errors that can occur during model weight management operations.
@@ -523,11 +523,16 @@ impl ManagedModel {
 
     pub fn get_weights_path(&self) -> Option<PathBuf> {
         match &self.weights {
-            WeightSource::Remote { repo_id, filename } => sync::Api::new().map_or(None, |api| {
-                api.repo(Repo::new(repo_id.clone(), RepoType::Model))
-                    .get(filename)
+            WeightSource::Remote { repo_id, filename } => {
+                let client = HFClientSync::new().ok()?;
+                let (owner, name) = split_id(repo_id);
+                client
+                    .model(owner, name)
+                    .download_file()
+                    .filename(filename)
+                    .send()
                     .ok()
-            }),
+            }
             WeightSource::Local { path } => Some(path.clone()),
         }
     }
@@ -711,7 +716,6 @@ impl ManagedModel {
                 reason: format!("Binary model loading failed: {}", e),
             })
     }
-
 }
 
 /// Extension trait for BiRefNet to provide convenient weight loading methods

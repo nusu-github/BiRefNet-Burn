@@ -249,9 +249,11 @@ impl<B: Backend> Attention<B> {
                 .forward(x_)
                 .reshape([b, new_h * new_w, 2, self.num_heads, c / self.num_heads])
                 .permute([2, 0, 3, 1, 4]);
+            // Remove only the sliced head dimension; a plain `squeeze` would also drop
+            // the head axis when `num_heads == 1`.
             (
-                kv.clone().slice([0..1]).squeeze(),
-                kv.slice([1..2]).squeeze(),
+                kv.clone().slice([0..1]).squeeze_dim::<4>(0),
+                kv.slice([1..2]).squeeze_dim::<4>(0),
             )
         } else {
             let kv = self
@@ -259,9 +261,11 @@ impl<B: Backend> Attention<B> {
                 .forward(x)
                 .reshape([b, n, 2, self.num_heads, c / self.num_heads])
                 .permute([2, 0, 3, 1, 4]);
+            // Remove only the sliced head dimension; a plain `squeeze` would also drop
+            // the head axis when `num_heads == 1`.
             (
-                kv.clone().slice([0..1]).squeeze(),
-                kv.slice([1..2]).squeeze(),
+                kv.clone().slice([0..1]).squeeze_dim::<4>(0),
+                kv.slice([1..2]).squeeze_dim::<4>(0),
             )
         };
 
@@ -345,7 +349,12 @@ impl<B: Backend> OverlapPatchEmbed<B> {
         Self {
             proj: Conv2dConfig::new([in_channels, embed_dim], [patch_size, patch_size])
                 .with_stride([stride, stride])
-                .with_padding(PaddingConfig2d::Explicit(patch_size / 2, patch_size / 2, patch_size / 2, patch_size / 2))
+                .with_padding(PaddingConfig2d::Explicit(
+                    patch_size / 2,
+                    patch_size / 2,
+                    patch_size / 2,
+                    patch_size / 2,
+                ))
                 .with_initializer(conv_initializer)
                 .init(device),
             norm: LayerNormConfig::new(embed_dim)

@@ -1,6 +1,5 @@
 use birefnet_backbones::{Backbone, BackboneType, BackboneWrapper, PvtV2Variant, create_backbone};
 use burn::{
-    module::Ignored,
     nn::{
         BatchNorm, BatchNormConfig, PaddingConfig2d, Relu,
         conv::{Conv2d, Conv2dConfig},
@@ -50,7 +49,8 @@ pub struct RefinerDecoder<B: Backend> {
     conv_ms_spvn_2: Option<Conv2d<B>>,
     ms_supervision: bool,
     /// Interpolation strategy for tensor resizing operations.
-    interpolation_strategy: Ignored<InterpolationStrategy>,
+    #[module(skip)]
+    interpolation_strategy: InterpolationStrategy,
 }
 
 impl RefinerDecoderConfig {
@@ -126,7 +126,7 @@ impl RefinerDecoderConfig {
             (None, None, None)
         };
 
-        let interpolation_strategy = Ignored(self.interpolation_strategy.clone());
+        let interpolation_strategy = self.interpolation_strategy.clone();
 
         Ok(RefinerDecoder {
             decoder_block4,
@@ -155,25 +155,25 @@ impl<B: Backend> RefinerDecoder<B> {
         // Decoder block 4
         let p4 = self.decoder_block4.forward(x4);
         let [_, _, h3, w3] = x3.dims();
-        let _p4 = intelligent_interpolate(p4.clone(), [h3, w3], &self.interpolation_strategy.0);
+        let _p4 = intelligent_interpolate(p4.clone(), [h3, w3], &self.interpolation_strategy);
         let _p3 = _p4 + self.lateral_block4.forward(x3);
 
         // Decoder block 3
         let p3 = self.decoder_block3.forward(_p3);
         let [_, _, h2, w2] = x2.dims();
-        let _p3 = intelligent_interpolate(p3.clone(), [h2, w2], &self.interpolation_strategy.0);
+        let _p3 = intelligent_interpolate(p3.clone(), [h2, w2], &self.interpolation_strategy);
         let _p2 = _p3 + self.lateral_block3.forward(x2);
 
         // Decoder block 2
         let p2 = self.decoder_block2.forward(_p2);
         let [_, _, h1, w1] = x1.dims();
-        let _p2 = intelligent_interpolate(p2.clone(), [h1, w1], &self.interpolation_strategy.0);
+        let _p2 = intelligent_interpolate(p2.clone(), [h1, w1], &self.interpolation_strategy);
         let _p1 = _p2 + self.lateral_block2.forward(x1);
 
         // Decoder block 1
         let _p1 = self.decoder_block1.forward(_p1);
         let [_, _, h, w] = x.dims();
-        let _p1 = intelligent_interpolate(_p1, [h, w], &self.interpolation_strategy.0);
+        let _p1 = intelligent_interpolate(_p1, [h, w], &self.interpolation_strategy);
         let p1_out = self.conv_out1.forward(_p1);
 
         // Multi-scale supervision outputs
@@ -199,7 +199,8 @@ impl<B: Backend> RefinerDecoder<B> {
 pub struct StemLayer<B: Backend> {
     conv1: Conv2d<B>,
     norm1: Vec<NormLayerEnum<B>>,
-    act: Ignored<ActLayerEnum>,
+    #[module(skip)]
+    act: ActLayerEnum,
     conv2: Conv2d<B>,
     norm2: Vec<NormLayerEnum<B>>,
 }
@@ -218,7 +219,7 @@ impl<B: Backend> StemLayer<B> {
             .init(device);
 
         let norm1 = build_norm_layer(inter_channels, norm_layer, true, true, 1e-5, device)?;
-        let act = Ignored(ActLayerEnum::Gelu);
+        let act = ActLayerEnum::Gelu;
 
         let conv2 = Conv2dConfig::new([inter_channels, out_channels], [3, 3])
             .with_stride([1, 1])
@@ -256,7 +257,7 @@ impl<B: Backend> StemLayer<B> {
         }
 
         // Apply activation
-        x = match &self.act.0 {
+        x = match &self.act {
             ActLayerEnum::ReLU => activation::relu(x),
             ActLayerEnum::SiLU => activation::silu(x),
             ActLayerEnum::Gelu => activation::gelu(x),
@@ -492,7 +493,8 @@ pub struct RefUNet<B: Backend> {
 
     conv_d0: Conv2d<B>,
     /// Interpolation strategy for tensor resizing operations.
-    interpolation_strategy: Ignored<InterpolationStrategy>,
+    #[module(skip)]
+    interpolation_strategy: InterpolationStrategy,
 }
 
 impl RefUNetConfig {
@@ -583,7 +585,7 @@ impl RefUNetConfig {
             .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
             .init(device);
 
-        let interpolation_strategy = Ignored(self.interpolation_strategy.clone());
+        let interpolation_strategy = self.interpolation_strategy.clone();
 
         RefUNet {
             encoder_1,
@@ -653,7 +655,7 @@ impl<B: Backend> RefUNet<B> {
 
         let hx = {
             let [_, _, h, w] = hx4.dims();
-            let hx_up = intelligent_interpolate(hx, [h, w], &self.interpolation_strategy.0);
+            let hx_up = intelligent_interpolate(hx, [h, w], &self.interpolation_strategy);
             Tensor::cat(vec![hx_up, hx4], 1)
         };
 
@@ -665,7 +667,7 @@ impl<B: Backend> RefUNet<B> {
 
         let hx = {
             let [_, _, h, w] = hx3.dims();
-            let d4_up = intelligent_interpolate(d4, [h, w], &self.interpolation_strategy.0);
+            let d4_up = intelligent_interpolate(d4, [h, w], &self.interpolation_strategy);
             Tensor::cat(vec![d4_up, hx3], 1)
         };
 
@@ -677,7 +679,7 @@ impl<B: Backend> RefUNet<B> {
 
         let hx = {
             let [_, _, h, w] = hx2.dims();
-            let d3_up = intelligent_interpolate(d3, [h, w], &self.interpolation_strategy.0);
+            let d3_up = intelligent_interpolate(d3, [h, w], &self.interpolation_strategy);
             Tensor::cat(vec![d3_up, hx2], 1)
         };
 
@@ -689,7 +691,7 @@ impl<B: Backend> RefUNet<B> {
 
         let hx = {
             let [_, _, h, w] = hx1.dims();
-            let d2_up = intelligent_interpolate(d2, [h, w], &self.interpolation_strategy.0);
+            let d2_up = intelligent_interpolate(d2, [h, w], &self.interpolation_strategy);
             Tensor::cat(vec![d2_up, hx1], 1)
         };
 

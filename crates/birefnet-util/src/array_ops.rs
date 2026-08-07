@@ -37,7 +37,14 @@ pub fn histogram<B: Backend, const D: usize>(
 
     // Flatten tensor and convert to data
     let flat_tensor = tensor.flatten::<1>(0, D - 1);
-    let data = flat_tensor.into_data().convert::<f64>();
+    let data = flat_tensor.into_data();
+
+    // Empty tensors cannot pass `as_slice`/`convert`'s alignment check on the cubecl
+    // backend, so return zeroed bins early instead.
+    if data.num_elements() == 0 {
+        return Tensor::from_floats(vec![0.0; bins].as_slice(), &device);
+    }
+    let data = data.convert::<f64>();
     let values = data.as_slice::<f64>().unwrap();
 
     // Count values in each bin
@@ -54,7 +61,7 @@ pub fn histogram<B: Backend, const D: usize>(
     Tensor::from_floats(hist_data.as_slice(), &device)
 }
 
-/// Compute cumulative sum along specified dimension (specialized for 1D)
+/// Compute cumulative sum along dimension 0 (Burn 0.21 公式 cumsum による1D累積和)
 ///
 /// # Arguments
 /// * `tensor` - Input 1D tensor
@@ -62,26 +69,10 @@ pub fn histogram<B: Backend, const D: usize>(
 /// # Returns  
 /// 1D tensor with cumulative sums
 pub fn cumsum_1d<B: Backend>(tensor: Tensor<B, 1>) -> Tensor<B, 1> {
-    let [size] = tensor.dims();
-
-    if size <= 1 {
-        return tensor;
-    }
-
-    let mut result = tensor.clone();
-
-    // Iterative accumulation for 1D case
-    for i in 1..size {
-        let prev_value = result.clone().narrow(0, i - 1, 1);
-        let curr_value = tensor.clone().narrow(0, i, 1);
-        let accumulated = prev_value + curr_value;
-        result = result.slice_assign(s![i..i + 1], accumulated);
-    }
-
-    result
+    tensor.cumsum(0)
 }
 
-/// Compute cumulative sum along axis 0 for 2D tensors
+/// Compute cumulative sum along axis 0 (Burn 0.21 公式 cumsum による2D累積和)
 ///
 /// # Arguments
 /// * `tensor` - Input 2D tensor
@@ -89,25 +80,10 @@ pub fn cumsum_1d<B: Backend>(tensor: Tensor<B, 1>) -> Tensor<B, 1> {
 /// # Returns  
 /// 2D tensor with cumulative sums along axis 0
 pub fn cumsum_2d_axis0<B: Backend>(tensor: Tensor<B, 2>) -> Tensor<B, 2> {
-    let [rows, _cols] = tensor.dims();
-
-    if rows <= 1 {
-        return tensor;
-    }
-
-    let mut result = tensor.clone();
-
-    for i in 1..rows {
-        let prev_row = result.clone().narrow(0, i - 1, 1);
-        let curr_row = tensor.clone().narrow(0, i, 1);
-        let accumulated = prev_row + curr_row;
-        result = result.slice_assign(s![i..i + 1, ..], accumulated);
-    }
-
-    result
+    tensor.cumsum(0)
 }
 
-/// Flip 1D tensor (reverse order)
+/// Flip 1D tensor (reverse order) using the Burn 0.21 official `flip`
 ///
 /// # Arguments
 /// * `tensor` - Input 1D tensor
@@ -115,22 +91,7 @@ pub fn cumsum_2d_axis0<B: Backend>(tensor: Tensor<B, 2>) -> Tensor<B, 2> {
 /// # Returns
 /// Flipped tensor with same shape
 pub fn flip_1d<B: Backend>(tensor: Tensor<B, 1>) -> Tensor<B, 1> {
-    let [size] = tensor.dims();
-
-    if size <= 1 {
-        return tensor; // Nothing to flip
-    }
-
-    let mut slices = Vec::with_capacity(size);
-
-    // Collect slices in reverse order
-    for i in (0..size).rev() {
-        let slice = tensor.clone().narrow(0, i, 1);
-        slices.push(slice);
-    }
-
-    // Concatenate slices
-    Tensor::cat(slices, 0)
+    tensor.flip([0])
 }
 
 /// Count non-zero elements in tensor
@@ -141,11 +102,13 @@ pub fn flip_1d<B: Backend>(tensor: Tensor<B, 1>) -> Tensor<B, 1> {
 /// # Returns
 /// Number of non-zero elements as f64
 pub fn count_nonzero<B: Backend, const D: usize>(tensor: Tensor<B, D>) -> f64 {
-    let zero = Tensor::zeros_like(&tensor);
-    let mask = tensor.not_equal(zero);
-    // Convert bool tensor to float before summing
-    let mask_float = mask.float();
-    mask_float.sum().into_scalar().elem::<f64>()
+    // Burn 0.21 official not_equal_elem (no zeros_like allocation needed)
+    tensor
+        .not_equal_elem(0)
+        .float()
+        .sum()
+        .into_scalar()
+        .elem::<f64>()
 }
 
 /// Find indices where tensor is non-zero (equivalent to numpy.argwhere)
@@ -156,31 +119,24 @@ pub fn count_nonzero<B: Backend, const D: usize>(tensor: Tensor<B, D>) -> f64 {
 /// # Returns
 /// Vector of indices where tensor is non-zero
 pub fn argwhere<B: Backend, const D: usize>(tensor: Tensor<B, D>) -> Vec<[usize; D]> {
-    let zero = Tensor::zeros_like(&tensor);
-    let mask = tensor.not_equal(zero);
-    let data = mask.into_data();
-    let shape = data.shape.clone();
-    let values = data.as_slice::<bool>().unwrap();
+    // Burn 0.21 公式 argwhere: [num_nonzero, D] の行は row-major（フラット順）
+    let data = tensor.not_equal_elem(0).argwhere().into_data();
 
-    let mut indices = Vec::new();
-
-    // Convert flat index to multi-dimensional indices
-    for (flat_idx, &is_nonzero) in values.iter().enumerate() {
-        if is_nonzero {
-            let mut coords = [0; D];
-            let mut remaining = flat_idx;
-
-            for dim in 0..D {
-                let stride = shape[dim + 1..].iter().product::<usize>();
-                coords[dim] = remaining / stride;
-                remaining %= stride;
-            }
-
-            indices.push(coords);
-        }
+    // Empty results cannot pass `as_slice`'s alignment check on the cubecl backend.
+    if data.num_elements() == 0 {
+        return Vec::new();
     }
-
-    indices
+    let values = data.as_slice::<B::IntElem>().unwrap();
+    values
+        .chunks_exact(D)
+        .map(|chunk| {
+            let mut coords = [0; D];
+            for (i, &v) in chunk.iter().enumerate() {
+                coords[i] = v.elem::<i64>() as usize;
+            }
+            coords
+        })
+        .collect()
 }
 
 /// Compute standard deviation with specified degrees of freedom
@@ -378,9 +334,14 @@ mod tests {
             // Should return original tensor for size <= 1
             let orig_data = tensor.into_data();
             let result_data = result.into_data();
-            let orig_values = orig_data.as_slice::<f32>().unwrap();
-            let result_values = result_data.as_slice::<f32>().unwrap();
-            assert_vec_approx_eq(result_values, orig_values, 1e-6);
+            if orig_data.num_elements() == 0 {
+                // Empty tensors cannot pass `as_slice`'s alignment check on the cubecl backend.
+                assert_eq!(result_data.num_elements(), 0);
+            } else {
+                let orig_values = orig_data.as_slice::<f32>().unwrap();
+                let result_values = result_data.as_slice::<f32>().unwrap();
+                assert_vec_approx_eq(result_values, orig_values, 1e-6);
+            }
         }
     }
 
@@ -458,9 +419,14 @@ mod tests {
             // Should return original tensor for size <= 1
             let orig_data = tensor.into_data();
             let flipped_data = flipped.into_data();
-            let orig_values = orig_data.as_slice::<f32>().unwrap();
-            let flipped_values = flipped_data.as_slice::<f32>().unwrap();
-            assert_vec_approx_eq(flipped_values, orig_values, 1e-6);
+            if orig_data.num_elements() == 0 {
+                // Empty tensors cannot pass `as_slice`'s alignment check on the cubecl backend.
+                assert_eq!(flipped_data.num_elements(), 0);
+            } else {
+                let orig_values = orig_data.as_slice::<f32>().unwrap();
+                let flipped_values = flipped_data.as_slice::<f32>().unwrap();
+                assert_vec_approx_eq(flipped_values, orig_values, 1e-6);
+            }
         }
     }
 

@@ -19,7 +19,6 @@
 //! and various other features from the original BiRefNet paper.
 
 use burn::{
-    module::Ignored,
     nn::{
         BatchNorm, BatchNormConfig, PaddingConfig2d, Relu,
         conv::{Conv2d, Conv2dConfig},
@@ -284,7 +283,7 @@ impl DecoderConfig {
             .with_padding(PaddingConfig2d::Valid)
             .init(device);
 
-        let interpolation_strategy = Ignored(self.interpolation_strategy.clone());
+        let interpolation_strategy = self.interpolation_strategy.clone();
 
         Ok(Decoder {
             split,
@@ -387,7 +386,8 @@ pub struct Decoder<B: Backend> {
     gdt_convs_attn_3: Option<Conv2d<B>>,
     gdt_convs_attn_2: Option<Conv2d<B>>,
     /// Interpolation strategy for tensor resizing operations.
-    interpolation_strategy: Ignored<InterpolationStrategy>,
+    #[module(skip)]
+    interpolation_strategy: InterpolationStrategy,
 }
 
 impl<B: Backend> Decoder<B> {
@@ -413,7 +413,7 @@ impl<B: Backend> Decoder<B> {
                         blk.forward(intelligent_interpolate(
                             patches_batch,
                             [h, w],
-                            &self.interpolation_strategy.0,
+                            &self.interpolation_strategy,
                         )),
                     ],
                     1,
@@ -485,7 +485,7 @@ impl<B: Backend> Decoder<B> {
 
         // Interpolate and add lateral connection
         let [_, _, h3, w3] = x3.dims();
-        let p4_interp = intelligent_interpolate(p4, [h3, w3], &self.interpolation_strategy.0);
+        let p4_interp = intelligent_interpolate(p4, [h3, w3], &self.interpolation_strategy);
         let p3_lateral = p4_interp + self.process_lateral_block(&self.lateral_block4, x3);
 
         // Level 3: Process with IPT block 4
@@ -497,7 +497,7 @@ impl<B: Backend> Decoder<B> {
 
         // Interpolate and add lateral connection
         let [_, _, h2, w2] = x2.dims();
-        let p3_interp = intelligent_interpolate(p3, [h2, w2], &self.interpolation_strategy.0);
+        let p3_interp = intelligent_interpolate(p3, [h2, w2], &self.interpolation_strategy);
         let p2_lateral = p3_interp + self.process_lateral_block(&self.lateral_block3, x2);
 
         // Level 2: Process with IPT block 3
@@ -509,7 +509,7 @@ impl<B: Backend> Decoder<B> {
 
         // Interpolate and add lateral connection
         let [_, _, h1, w1] = x1.dims();
-        let p2_interp = intelligent_interpolate(p2, [h1, w1], &self.interpolation_strategy.0);
+        let p2_interp = intelligent_interpolate(p2, [h1, w1], &self.interpolation_strategy);
         let p1_lateral = p2_interp + self.process_lateral_block(&self.lateral_block2, x1);
 
         // Level 1: Process with IPT block 2
@@ -520,7 +520,7 @@ impl<B: Backend> Decoder<B> {
 
         // Final interpolation to original resolution
         let [_, _, h_orig, w_orig] = x.dims();
-        p1 = intelligent_interpolate(p1, [h_orig, w_orig], &self.interpolation_strategy.0);
+        p1 = intelligent_interpolate(p1, [h_orig, w_orig], &self.interpolation_strategy);
 
         // Final IPT processing
         let p1_final = self.process_ipt_block(&self.ipt_blk1, &x, p1);

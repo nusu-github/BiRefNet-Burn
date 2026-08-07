@@ -17,7 +17,7 @@ birefnet-model = { path = "../birefnet-model" }
 
 thiserror = { workspace = true }
 image = { workspace = true, features = ["jpeg", "png", "tiff", "bmp", "webp"] }
-hf-hub = { workspace = true }
+hf-hub = { workspace = true, features = ["blocking"] }
 
 [dev-dependencies]
 burn = { workspace = true, features = ["cpu"] }

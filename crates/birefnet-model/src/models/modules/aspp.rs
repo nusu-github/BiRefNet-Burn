@@ -4,7 +4,6 @@
 //! multi-scale contextual information for semantic segmentation tasks.
 
 use burn::{
-    module::Ignored,
     nn::{
         Dropout, DropoutConfig, PaddingConfig2d, Relu,
         conv::{Conv2d, Conv2dConfig},
@@ -224,7 +223,7 @@ impl ASPPConfig {
         let relu = Relu::new();
         let dropout = DropoutConfig::new(0.5).init();
 
-        let interpolation_strategy = Ignored(self.interpolation_strategy.clone());
+        let interpolation_strategy = self.interpolation_strategy.clone();
 
         ASPP {
             aspp1,
@@ -262,7 +261,8 @@ pub struct ASPP<B: Backend> {
     relu: Relu,
     dropout: Dropout,
     /// Interpolation strategy for tensor resizing operations.
-    interpolation_strategy: Ignored<InterpolationStrategy>,
+    #[module(skip)]
+    interpolation_strategy: InterpolationStrategy,
 }
 
 impl<B: Backend> ASPP<B> {
@@ -288,7 +288,7 @@ impl<B: Backend> ASPP<B> {
 
         // Interpolate to match x1 size using intelligent interpolation
         let [_, _, d3, d4] = x1.dims();
-        let x5 = intelligent_interpolate(x5, [d3, d4], &self.interpolation_strategy.0);
+        let x5 = intelligent_interpolate(x5, [d3, d4], &self.interpolation_strategy);
 
         // Concatenate all branches
         let x = Tensor::cat(vec![x1, x2, x3, x4, x5], 1);
@@ -425,7 +425,7 @@ impl ASPPDeformableConfig {
         let relu = Relu::new();
         let dropout = DropoutConfig::new(0.5).init();
 
-        let interpolation_strategy = Ignored(self.interpolation_strategy.clone());
+        let interpolation_strategy = self.interpolation_strategy.clone();
 
         Ok(ASPPDeformable {
             aspp1,
@@ -456,7 +456,8 @@ pub struct ASPPDeformable<B: Backend> {
     relu: Relu,
     dropout: Dropout,
     /// Interpolation strategy for tensor resizing operations.
-    interpolation_strategy: Ignored<InterpolationStrategy>,
+    #[module(skip)]
+    interpolation_strategy: InterpolationStrategy,
 }
 
 impl<B: Backend> ASPPDeformable<B> {
@@ -469,7 +470,7 @@ impl<B: Backend> ASPPDeformable<B> {
             .collect::<Vec<_>>();
         let x5 = self.global_avg_pool.forward(x);
         let [_, _, d3, d4] = x1.dims();
-        let x5 = intelligent_interpolate(x5, [d3, d4], &self.interpolation_strategy.0);
+        let x5 = intelligent_interpolate(x5, [d3, d4], &self.interpolation_strategy);
         let mut x_ = vec![x1];
         x_.extend(x_aspp_deforms);
         x_.push(x5);

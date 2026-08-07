@@ -420,8 +420,8 @@ mod tests {
         let batch = batcher.batch(items, &device);
 
         // Check batch dimensions
-        assert_eq!(batch.images.shape().dims, [2, 3, 32, 32]); // [B, C, H, W]
-        assert_eq!(batch.masks.shape().dims, [2, 1, 32, 32]); // [B, C, H, W]
+        assert_eq!(batch.images.shape().dims(), [2, 3, 32, 32]); // [B, C, H, W]
+        assert_eq!(batch.masks.shape().dims(), [2, 1, 32, 32]); // [B, C, H, W]
     }
 
     #[test]
@@ -433,8 +433,8 @@ mod tests {
 
         let batch = BiRefNetBatch { images, masks };
 
-        assert_eq!(batch.images.shape().dims, [4, 3, 64, 64]);
-        assert_eq!(batch.masks.shape().dims, [4, 1, 64, 64]);
+        assert_eq!(batch.images.shape().dims(), [4, 3, 64, 64]);
+        assert_eq!(batch.masks.shape().dims(), [4, 1, 64, 64]);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use burn::tensor::{Tensor, backend::Backend, module::avg_pool2d, s};
+use burn::tensor::{Tensor, backend::Backend, module::avg_pool2d, ops::PadMode};
 
 /// Small epsilon value to prevent division by zero in blur fusion calculations
 const EPSILON: f32 = 1e-5;
@@ -44,8 +44,7 @@ impl Padding {
 
 /// Apply replicate padding to a 4D tensor [B, C, H, W]
 ///
-/// This function replicates edge pixels since Burn only supports constant padding.
-/// Equivalent to PyTorch's F.pad with mode='replicate'.
+/// Burn 0.21 公式 PadMode::Edge による境界値複製（PyTorch F.pad mode='replicate' と等価）
 ///
 /// # Arguments
 /// * `tensor` - Input tensor of shape [B, C, H, W]
@@ -57,91 +56,19 @@ impl Padding {
 /// # Panics
 /// Panics if the input tensor is not 4-dimensional.
 fn pad_replicate<B: Backend>(tensor: Tensor<B, 4>, padding: Padding) -> Tensor<B, 4> {
-    let [batch_size, channels, height, width] = tensor.dims();
-
-    // If no padding needed, return original tensor
     if padding.is_zero() {
         return tensor;
     }
-
-    let new_height = height + padding.top + padding.bottom;
-    let new_width = width + padding.left + padding.right;
-
-    // Create output tensor with zeros
-    let device = tensor.device();
-    let mut result = Tensor::<B, 4>::zeros([batch_size, channels, new_height, new_width], &device);
-
-    // Copy original tensor to center
-    result = result.slice_assign(
-        s![
-            ..,
-            ..,
-            padding.top..padding.top + height,
-            padding.left..padding.left + width
+    // Burn 0.21 公式 PadMode::Edge = 境界値複製（PyTorch F.pad mode='replicate' と等価）
+    tensor.pad(
+        [
+            (0, 0),
+            (0, 0),
+            (padding.top, padding.bottom),
+            (padding.left, padding.right),
         ],
-        tensor.clone(),
-    );
-
-    // Replicate top edge
-    if padding.top > 0 {
-        let top_edge = tensor.clone().slice(s![.., .., 0..1, 0..width]);
-        for i in 0..padding.top {
-            result = result.slice_assign(
-                s![.., .., i..i + 1, padding.left..padding.left + width],
-                top_edge.clone(),
-            );
-        }
-    }
-
-    // Replicate bottom edge
-    if padding.bottom > 0 {
-        let bottom_edge = tensor.slice(s![.., .., height - 1..height, 0..width]);
-        for i in 0..padding.bottom {
-            result = result.slice_assign(
-                s![
-                    ..,
-                    ..,
-                    padding.top + height + i..padding.top + height + i + 1,
-                    padding.left..padding.left + width
-                ],
-                bottom_edge.clone(),
-            );
-        }
-    }
-
-    // Replicate left edge (including padded top/bottom)
-    if padding.left > 0 {
-        let left_edge =
-            result
-                .clone()
-                .slice(s![.., .., 0..new_height, padding.left..padding.left + 1]);
-        for i in 0..padding.left {
-            result = result.slice_assign(s![.., .., 0..new_height, i..i + 1], left_edge.clone());
-        }
-    }
-
-    // Replicate right edge (including padded top/bottom)
-    if padding.right > 0 {
-        let right_edge = result.clone().slice(s![
-            ..,
-            ..,
-            0..new_height,
-            padding.left + width - 1..padding.left + width
-        ]);
-        for i in 0..padding.right {
-            result = result.slice_assign(
-                s![
-                    ..,
-                    ..,
-                    0..new_height,
-                    padding.left + width + i..padding.left + width + i + 1
-                ],
-                right_edge.clone(),
-            );
-        }
-    }
-
-    result
+        PadMode::Edge,
+    )
 }
 
 /// Apply mean blur equivalent to cv2.blur
@@ -346,8 +273,8 @@ pub fn refine_foreground<B: Backend>(
     // Process with core function
     let refined_4d = refine_foreground_core(image_4d, mask_4d, radius);
 
-    // Remove batch dimension
-    refined_4d.squeeze()
+    // Remove batch dimension only (a plain `squeeze` would also drop a single channel)
+    refined_4d.squeeze_dim::<3>(0)
 }
 
 /// Refine foreground for batch inputs

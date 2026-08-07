@@ -42,6 +42,7 @@ use burn::{
     prelude::*,
     tensor::{
         activation::softmax,
+        grid::{IndexPos, meshgrid_stack},
         module::interpolate,
         ops::{InterpolateMode, InterpolateOptions},
     },
@@ -143,25 +144,16 @@ impl<B: Backend> Mlp<B> {
 
 /// Create a 2D coordinate grid matching PyTorch's torch.meshgrid([coords_h, coords_w], indexing='ij').
 /// PyTorch produces: coords shape [2, Wh, Ww] where coords[0] is height mesh, coords[1] is width mesh
-/// Uses stable tensor operations (arange, reshape, repeat_dim, stack) instead of complex operations.
+/// Uses the official Burn 0.21 meshgrid_stack op (indexing='ij' equivalent).
 fn create_coordinate_grid<B: Backend>(
     height: usize,
     width: usize,
     device: &Device<B>,
 ) -> Tensor<B, 3> {
-    // Create height coordinates (first dimension in PyTorch meshgrid)
-    let h_coords = Tensor::arange(0..height as i64, device)
-        .reshape([height, 1])
-        .repeat_dim(1, width)
-        .reshape([height, width]);
-    // Create width coordinates (second dimension in PyTorch meshgrid)
-    let w_coords = Tensor::arange(0..width as i64, device)
-        .reshape([1, width])
-        .repeat_dim(0, height)
-        .reshape([height, width]);
-
-    // Stack in [h, w] order with first dimension as stacking dim to match PyTorch [2, Wh, Ww]
-    Tensor::stack(vec![h_coords.float(), w_coords.float()], 0)
+    // Burn 0.21 公式 meshgrid_stack: [2, height, width] の座標グリッド（PyTorch meshgrid indexing='ij' と同型）
+    let h_coords = Tensor::arange(0..height as i64, device).float();
+    let w_coords = Tensor::arange(0..width as i64, device).float();
+    meshgrid_stack::<B, 2, 3, Float>(&[h_coords, w_coords], IndexPos::First)
 }
 
 /// Partitions input feature maps into non-overlapping windows.
@@ -298,9 +290,9 @@ impl WindowAttentionConfig {
             .slice([0..num_positions, 0..num_positions, 0..1]);
         let w_coords = relative_coords.slice([0..num_positions, 0..num_positions, 1..2]);
 
-        // Remove the last dimension using reshape
-        let h_coords = h_coords.reshape([num_positions, num_positions]);
-        let w_coords = w_coords.reshape([num_positions, num_positions]);
+        // Remove the size-1 last dimension with the official squeeze op
+        let h_coords: Tensor<B, 2> = h_coords.squeeze();
+        let w_coords: Tensor<B, 2> = w_coords.squeeze();
 
         // Apply shifts exactly as in PyTorch
         // relative_coords[:, :, 0] += self.window_size[0] - 1
@@ -405,19 +397,16 @@ impl<B: Backend> WindowAttention<B> {
             .forward(x)
             .reshape([b, n, 3, self.num_heads, c / self.num_heads])
             .permute([2, 0, 3, 1, 4]);
-        let [_, d2, d3, d4m, d5] = qkv.dims();
-        // Use reshape instead of squeeze to avoid backend-specific issues
+        // Remove the size-1 slice dimension with the official squeeze op
         let q: Tensor<B, 4> = qkv
             .clone()
             .slice(s![0..1, .., .., .., ..])
-            .reshape([d2, d3, d4m, d5]);
+            .squeeze_dim::<4>(0);
         let k: Tensor<B, 4> = qkv
             .clone()
             .slice(s![1..2, .., .., .., ..])
-            .reshape([d2, d3, d4m, d5]);
-        let v: Tensor<B, 4> = qkv
-            .slice(s![2..3, .., .., .., ..])
-            .reshape([d2, d3, d4m, d5]);
+            .squeeze_dim::<4>(0);
+        let v: Tensor<B, 4> = qkv.slice(s![2..3, .., .., .., ..]).squeeze_dim::<4>(0);
 
         let q = q * self.scale;
 
@@ -1491,10 +1480,7 @@ mod tests {
         let output_h = (height + patch_size - 1) / patch_size; // Ceiling division for padding
         let output_w = (width + patch_size - 1) / patch_size;
 
-        assert_eq!(
-            output.dims(),
-            [batch_size, embed_dim, output_h, output_w]
-        );
+        assert_eq!(output.dims(), [batch_size, embed_dim, output_h, output_w]);
 
         // Verify that the output dimensions make sense
         assert!(
@@ -1760,8 +1746,7 @@ mod tests {
 
             // Verify that spatial dimensions are reasonable (should be getting smaller)
             if stage > 0 {
-                let prev_spatial =
-                    outputs[stage - 1].dims()[2] * outputs[stage - 1].dims()[3];
+                let prev_spatial = outputs[stage - 1].dims()[2] * outputs[stage - 1].dims()[3];
                 let curr_spatial = dims[2] * dims[3];
                 assert!(
                     curr_spatial <= prev_spatial,

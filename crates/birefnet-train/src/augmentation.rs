@@ -13,8 +13,8 @@
 //! 7. Dynamic input size augmentation - per-batch size changes
 
 use image::{DynamicImage, GenericImageView, Rgb, buffer::ConvertBuffer, imageops::FilterType};
-use imageproc::geometric_transformations::{Interpolation, rotate_about_center};
-use rand::{Rng, SeedableRng};
+use imageproc::geometric_transformations::{Border, Interpolation, rotate_about_center};
+use rand::{RngExt, SeedableRng};
 
 /// Data augmentation configuration parameters
 #[derive(Debug, Clone)]
@@ -314,7 +314,7 @@ impl ImageAugmentor {
                 &gray_image,
                 angle,
                 Interpolation::Nearest,
-                image::Luma([0u8]),
+                Border::Constant(image::Luma([0u8])),
             );
             DynamicImage::ImageLuma8(rotated)
         } else {
@@ -324,7 +324,7 @@ impl ImageAugmentor {
                 &rgb_image,
                 angle,
                 Interpolation::Bicubic,
-                image::Rgb([0u8, 0u8, 0u8]),
+                Border::Constant(image::Rgb([0u8, 0u8, 0u8])),
             );
             DynamicImage::ImageRgb8(rotated)
         }

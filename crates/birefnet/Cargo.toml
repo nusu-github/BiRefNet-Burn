@@ -55,14 +55,10 @@ anyhow = { workspace = true }
 burn = { workspace = true }
 cfg-if = { workspace = true }
 clap = { workspace = true }
-mimalloc = "0.1"
 serde_json = { workspace = true }
 stacker = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-
-[lints]
-workspace = true
 
 [dev-dependencies]
 burn = { workspace = true, features = ["cpu"] }

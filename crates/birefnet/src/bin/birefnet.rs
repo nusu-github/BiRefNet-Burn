@@ -2,10 +2,6 @@ use anyhow::Result;
 use birefnet::burn_backend_types::{InferenceDevice, NAME};
 use birefnet_util::ManagedModel;
 use clap::{Parser, Subcommand};
-use mimalloc::MiMalloc;
-
-#[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
 
 #[derive(Parser)]
 #[command(name = "birefnet")]

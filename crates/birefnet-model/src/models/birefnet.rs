@@ -18,7 +18,7 @@ use birefnet_backbones::{
 };
 #[cfg(feature = "train")]
 use birefnet_loss::{BiRefNetLoss, BiRefNetLossConfig};
-use burn::{module::Ignored, prelude::*};
+use burn::prelude::*;
 #[cfg(feature = "train")]
 use burn::{
     tensor::backend::AutodiffBackend,
@@ -141,7 +141,7 @@ impl BiRefNetConfig {
             squeeze_module
         };
 
-        let mul_scl_ipt = Ignored(self.config.decoder.mul_scl_ipt.clone());
+        let mul_scl_ipt = self.config.decoder.mul_scl_ipt.clone();
 
         // Initialize refinement module based on configuration
         let refine = match self.config.refine.refine {
@@ -173,7 +173,7 @@ impl BiRefNetConfig {
             .clone()
             .map(|config| BiRefNetLoss::new(config));
 
-        let interpolation_strategy = Ignored(self.config.interpolation.clone());
+        let interpolation_strategy = self.config.interpolation.clone();
 
         Ok(BiRefNet {
             mul_scl_ipt,
@@ -217,7 +217,8 @@ impl BiRefNetConfig {
 #[derive(Module, Debug)]
 pub struct BiRefNet<B: Backend> {
     /// The multi-scale input handling strategy.
-    mul_scl_ipt: Ignored<MultiScaleInput>,
+    #[module(skip)]
+    mul_scl_ipt: MultiScaleInput,
     /// Context channel sizes.
     cxt: [usize; 3],
     /// The backbone encoder.
@@ -232,7 +233,8 @@ pub struct BiRefNet<B: Backend> {
     #[cfg(feature = "train")]
     loss: Option<BiRefNetLoss<B>>,
     /// Interpolation strategy for tensor resizing operations.
-    interpolation_strategy: Ignored<InterpolationStrategy>,
+    #[module(skip)]
+    interpolation_strategy: InterpolationStrategy,
 }
 
 impl<B: Backend> BiRefNet<B> {
@@ -249,24 +251,24 @@ impl<B: Backend> BiRefNet<B> {
     /// A result containing a 4-element array of hierarchical feature maps from different encoder stages with decreasing spatial resolutions
     pub fn forward_enc(&self, x: Tensor<B, 4>) -> BiRefNetResult<[Tensor<B, 4>; 4]> {
         let [x1, x2, x3, x4] = self.bb.forward(x.clone());
-        let [x1, x2, x3, x4] = match self.mul_scl_ipt.0 {
+        let [x1, x2, x3, x4] = match self.mul_scl_ipt {
             MultiScaleInput::None => [x1, x2, x3, x4],
             MultiScaleInput::Add => {
                 let [_, _, h, w] = x.dims();
                 let [x1_, x2_, x3_, x4_] = self.bb.forward(intelligent_interpolate(
                     x,
                     [h / 2, w / 2],
-                    &self.interpolation_strategy.0,
+                    &self.interpolation_strategy,
                 ));
 
                 let [_, _, h, w] = x1.dims();
-                let x1 = x1 + intelligent_interpolate(x1_, [h, w], &self.interpolation_strategy.0);
+                let x1 = x1 + intelligent_interpolate(x1_, [h, w], &self.interpolation_strategy);
                 let [_, _, h, w] = x2.dims();
-                let x2 = x2 + intelligent_interpolate(x2_, [h, w], &self.interpolation_strategy.0);
+                let x2 = x2 + intelligent_interpolate(x2_, [h, w], &self.interpolation_strategy);
                 let [_, _, h, w] = x3.dims();
-                let x3 = x3 + intelligent_interpolate(x3_, [h, w], &self.interpolation_strategy.0);
+                let x3 = x3 + intelligent_interpolate(x3_, [h, w], &self.interpolation_strategy);
                 let [_, _, h, w] = x4.dims();
-                let x4 = x4 + intelligent_interpolate(x4_, [h, w], &self.interpolation_strategy.0);
+                let x4 = x4 + intelligent_interpolate(x4_, [h, w], &self.interpolation_strategy);
 
                 [x1, x2, x3, x4]
             }
@@ -275,14 +277,14 @@ impl<B: Backend> BiRefNet<B> {
                 let [x1_, x2_, x3_, x4_] = self.bb.forward(intelligent_interpolate(
                     x,
                     [h / 2, w / 2],
-                    &self.interpolation_strategy.0,
+                    &self.interpolation_strategy,
                 ));
 
                 let [_, _, h, w] = x1.dims();
                 let x1 = Tensor::cat(
                     vec![
                         x1,
-                        intelligent_interpolate(x1_, [h, w], &self.interpolation_strategy.0),
+                        intelligent_interpolate(x1_, [h, w], &self.interpolation_strategy),
                     ],
                     1,
                 );
@@ -290,7 +292,7 @@ impl<B: Backend> BiRefNet<B> {
                 let x2 = Tensor::cat(
                     vec![
                         x2,
-                        intelligent_interpolate(x2_, [h, w], &self.interpolation_strategy.0),
+                        intelligent_interpolate(x2_, [h, w], &self.interpolation_strategy),
                     ],
                     1,
                 );
@@ -298,7 +300,7 @@ impl<B: Backend> BiRefNet<B> {
                 let x3 = Tensor::cat(
                     vec![
                         x3,
-                        intelligent_interpolate(x3_, [h, w], &self.interpolation_strategy.0),
+                        intelligent_interpolate(x3_, [h, w], &self.interpolation_strategy),
                     ],
                     1,
                 );
@@ -306,7 +308,7 @@ impl<B: Backend> BiRefNet<B> {
                 let x4 = Tensor::cat(
                     vec![
                         x4,
-                        intelligent_interpolate(x4_, [h, w], &self.interpolation_strategy.0),
+                        intelligent_interpolate(x4_, [h, w], &self.interpolation_strategy),
                     ],
                     1,
                 );
