@@ -6,7 +6,7 @@
 use std::f64::consts::PI;
 
 use burn::tensor::{
-    ElementConversion, Tensor,
+    Device, ElementConversion, Tensor,
     module::conv2d,
     ops::{ConvOptions, PadMode},
     s,

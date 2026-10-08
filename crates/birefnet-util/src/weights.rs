@@ -1,3 +1,4 @@
+use burn::tensor::Device;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -9,14 +10,10 @@ use birefnet_model::{
     Backbone, BackboneConfig, BiRefNetConfig, DecoderConfig, InterpolationStrategy, ModelConfig,
     Task, TaskConfig,
 };
-use burn::{
-    module::Module,
-    record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder},
-    tensor::DType,
-};
+use burn::{module::Module, tensor::DType};
 use burn_store::{
-    ModuleAdapter, ModuleSnapshot, ModuleStore, PyTorchToBurnAdapter, PytorchStore,
-    SafetensorsStore, TensorSnapshot,
+    BurnpackStore, ModuleAdapter, ModuleContext, ModuleSnapshot, ModuleStore, PyTorchToBurnAdapter,
+    PytorchStore, SafetensorsStore, bridge::map_data, burn_pack::Tensor as PackTensor,
 };
 use hf_hub::{HFClientSync, split_id};
 use thiserror::Error;
@@ -69,8 +66,8 @@ pub struct ModelSpec {
 struct UpcastHalfAdapter;
 
 impl ModuleAdapter for UpcastHalfAdapter {
-    fn adapt(&self, snapshot: &TensorSnapshot) -> TensorSnapshot {
-        match snapshot.dtype {
+    fn adapt(&self, tensor: PackTensor, _ctx: ModuleContext<'_>) -> PackTensor {
+        match tensor.dtype {
             DType::F16
             | DType::BF16
             | DType::F64
@@ -82,17 +79,12 @@ impl ModuleAdapter for UpcastHalfAdapter {
             | DType::U32
             | DType::U16
             | DType::U8 => {
-                let data_fn = snapshot.clone_data_fn();
-                TensorSnapshot::from_closure(
-                    Rc::new(move || Ok(data_fn()?.convert_dtype(DType::F32))),
-                    DType::F32,
-                    snapshot.shape.clone(),
-                    snapshot.path_stack.clone().unwrap_or_default(),
-                    snapshot.container_stack.clone().unwrap_or_default(),
-                    snapshot.tensor_id.unwrap_or_default(),
-                )
+                let (name, shape) = (tensor.name.clone(), tensor.shape.clone());
+                map_data(tensor, name, DType::F32, shape, |data| {
+                    data.convert_dtype(DType::F32)
+                })
             }
-            _ => snapshot.clone(),
+            _ => tensor,
         }
     }
 
@@ -445,9 +437,11 @@ pub enum WeightFormat {
     PyTorch,
     /// PyTorch SafeTensors .safetensors files
     SafeTensors,
-    /// Burn MessagePack .mpk files
+    /// Burn Burnpack .bpk files
+    Burnpack,
+    /// Legacy Burn MessagePack .mpk files (unsupported since Burn 0.22)
     MessagePack,
-    /// Burn Binary .bin files
+    /// Legacy Burn Binary .bin files (unsupported since Burn 0.22)
     Binary,
     /// Auto-detect from file extension
     Auto,
@@ -459,6 +453,7 @@ impl WeightFormat {
         match path.extension().and_then(|s| s.to_str()) {
             Some("pt") | Some("pth") => Self::PyTorch,
             Some("safetensors") => Self::SafeTensors,
+            Some("bpk") => Self::Burnpack,
             Some("mpk") => Self::MessagePack,
             Some("bin") => Self::Binary,
             _ => Self::Auto,
@@ -603,8 +598,10 @@ impl ModelLoader for ManagedModel {
         match format {
             WeightFormat::PyTorch => self.load_pytorch_model(model, &weights_path, device),
             WeightFormat::SafeTensors => self.load_safetensors_model(model, &weights_path, device),
-            WeightFormat::MessagePack => self.load_messagepack_model(model, &weights_path, device),
-            WeightFormat::Binary => self.load_binary_model(model, &weights_path, device),
+            WeightFormat::Burnpack => self.load_burnpack_model(model, &weights_path, device),
+            WeightFormat::MessagePack | WeightFormat::Binary => {
+                Err(legacy_format_error(&weights_path))
+            }
             WeightFormat::Auto => {
                 // Try different formats in order of preference
                 if let Ok(model) = self.load_pytorch_model(model.clone(), &weights_path, device) {
@@ -613,12 +610,8 @@ impl ModelLoader for ManagedModel {
                     self.load_safetensors_model(model.clone(), &weights_path, device)
                 {
                     Ok(model)
-                } else if let Ok(model) =
-                    self.load_messagepack_model(model.clone(), &weights_path, device)
-                {
-                    Ok(model)
                 } else {
-                    self.load_binary_model(model, &weights_path, device)
+                    self.load_burnpack_model(model, &weights_path, device)
                 }
             }
         }
@@ -696,34 +689,31 @@ impl ManagedModel {
         Ok(model)
     }
 
-    /// Load MessagePack format weights
-    fn load_messagepack_model<M: Module>(
+    /// Load Burnpack (.bpk) weights
+    fn load_burnpack_model<M: Module + ModuleSnapshot>(
         &self,
-        model: M,
+        mut model: M,
         weights_path: &Path,
-        device: &Device,
+        _device: &Device,
     ) -> Result<M, WeightError> {
-        let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
+        let mut store = BurnpackStore::from_file(weights_path);
         model
-            .load_file(weights_path, &recorder, device)
+            .load_from(&mut store)
             .map_err(|e| WeightError::ModelLoadError {
-                reason: format!("MessagePack model loading failed: {}", e),
-            })
+                reason: format!("Burnpack model loading failed: {}", e),
+            })?;
+        Ok(model)
     }
+}
 
-    /// Load Binary format weights
-    fn load_binary_model<M: Module>(
-        &self,
-        model: M,
-        weights_path: &Path,
-        device: &Device,
-    ) -> Result<M, WeightError> {
-        let recorder = BinFileRecorder::<FullPrecisionSettings>::new();
-        model
-            .load_file(weights_path, &recorder, device)
-            .map_err(|e| WeightError::ModelLoadError {
-                reason: format!("Binary model loading failed: {}", e),
-            })
+/// Burn 0.22 removed the recorder system, so `.mpk` / `.bin` files cannot be read directly.
+fn legacy_format_error(path: &Path) -> WeightError {
+    WeightError::UnsupportedFormat {
+        format: format!(
+            "{} (legacy recorder format; re-export with Burn 0.21 through burn-store's SafetensorsStore, \
+             then load the .safetensors file)",
+            path.display()
+        ),
     }
 }
 

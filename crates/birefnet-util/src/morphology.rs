@@ -3,7 +3,7 @@
 //! This module provides morphological image processing operations required for
 //! implementing computer vision evaluation metrics like HCE, MBA, and BIoU.
 
-use burn::tensor::{ElementConversion, Tensor, s};
+use burn::tensor::{Device, ElementConversion, Tensor, s};
 
 /// Structuring element for morphological operations
 #[derive(Debug, Clone)]

@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use burn::tensor::{DType, Tensor, TensorData};
+use burn::tensor::{DType, Device, Tensor, TensorData};
 use image::{
     DynamicImage, GenericImageView, ImageBuffer, ImageFormat, Luma, Rgb, Rgba,
     buffer::ConvertBuffer, imageops::FilterType,
@@ -330,7 +330,7 @@ pub fn from_raw_pixels_with_normalization(
     };
 
     let tensor_data = TensorData::new(normalized_data, [height as usize, width as usize, channels])
-        .convert::<B::FloatElem>();
+        .convert::<f32>();
 
     let tensor = Tensor::from_data(tensor_data, device);
     Ok(tensor.permute([2, 0, 1]).unsqueeze::<4>())
@@ -405,10 +405,10 @@ pub fn apply_imagenet_normalization(tensor: Tensor<4>) -> ImageResult<Tensor<4>>
     let device = tensor.device();
 
     // Create mean and std tensors with shape [1, 3, 1, 1] for broadcasting
-    let mean_data = TensorData::new(IMAGENET_MEAN.to_vec(), [1, 3, 1, 1]).convert::<B::FloatElem>();
+    let mean_data = TensorData::new(IMAGENET_MEAN.to_vec(), [1, 3, 1, 1]).convert::<f32>();
     let mean_tensor = Tensor::from_data(mean_data, &device);
 
-    let std_data = TensorData::new(IMAGENET_STD.to_vec(), [1, 3, 1, 1]).convert::<B::FloatElem>();
+    let std_data = TensorData::new(IMAGENET_STD.to_vec(), [1, 3, 1, 1]).convert::<f32>();
     let std_tensor = Tensor::from_data(std_data, &device);
 
     // Apply normalization: (tensor - mean) / std

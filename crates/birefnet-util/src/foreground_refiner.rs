@@ -1,4 +1,8 @@
-use burn::tensor::{Tensor, module::avg_pool2d, ops::PadMode};
+use burn::tensor::{
+    Tensor,
+    module::avg_pool2d,
+    ops::{AvgPoolOptions, PadMode},
+};
 
 /// Small epsilon value to prevent division by zero in blur fusion calculations
 const EPSILON: f32 = 1e-5;
@@ -101,11 +105,9 @@ fn mean_blur(x: Tensor<4>, kernel_size: usize) -> Tensor<4> {
     // Use avg_pool2d with count_include_pad=false to match cv2.blur behavior
     avg_pool2d(
         x_padded,
-        [kernel_size, kernel_size],
-        [1, 1], // stride = 1
-        [0, 0], // no additional padding
-        false,  // count_include_pad = false
-        false,  // ceil_mode = false
+        AvgPoolOptions::new([kernel_size, kernel_size])
+            .with_stride([1, 1])
+            .with_count_include_pad(false),
     )
 }
 

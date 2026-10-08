@@ -126,13 +126,13 @@ pub fn argwhere<const D: usize>(tensor: Tensor<D>) -> Vec<[usize; D]> {
     if data.num_elements() == 0 {
         return Vec::new();
     }
-    let values = data.as_slice::<B::IntElem>().unwrap();
+    let values: Vec<i64> = data.iter::<i64>().collect();
     values
         .chunks_exact(D)
         .map(|chunk| {
             let mut coords = [0; D];
             for (i, &v) in chunk.iter().enumerate() {
-                coords[i] = v.elem::<i64>() as usize;
+                coords[i] = v as usize;
             }
             coords
         })
