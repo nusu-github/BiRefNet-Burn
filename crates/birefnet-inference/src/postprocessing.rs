@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use birefnet_util::{dynamic_image_to_tensor, tensor_to_dynamic_image};
-use burn::tensor::Tensor;
+use burn::tensor::{Device, Tensor};
 use image::{self, imageops::FilterType};
 
 /// Apply threshold to create binary mask.

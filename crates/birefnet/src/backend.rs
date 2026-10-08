@@ -1,96 +1,180 @@
 //! Backend selection utilities for `BiRefNet`.
 //!
-//! This module provides a centralized way to handle backend selection
-//! based on feature flags for the main `BiRefNet` crate.
-//! <https://github.com/tracel-ai/burn-lm/blob/main/crates/burn-lm-inference/src/backends.rs>
+//! Burn 0.22 chooses the backend at run time through a [`Device`] value. The Cargo features of this
+//! crate decide which device constructor is compiled in; the top-level binary picks one here and
+//! hands the device to everything else.
 
-mod elems {
-    cfg_if::cfg_if! {
-        // NOTE: f16/bf16 is not always supported on wgpu depending on the hardware
-        // https://github.com/gfx-rs/wgpu/issues/7468
-        if #[cfg(all(feature = "f16", any(feature = "cuda", feature = "wgpu", feature = "vulkan", feature = "metal", feature = "rocm")))]{
-            pub type ElemType = burn::tensor::f16;
-            pub const DTYPE_NAME: &str = "f16";
+use burn::tensor::{Device, DeviceError, FloatDType};
+
+/// Device type used by inference and training.
+pub type InferenceDevice = Device;
+
+/// Name of the DType the device is configured with.
+#[cfg(feature = "f16")]
+pub const DTYPE_NAME: &str = "f16";
+/// Name of the DType the device is configured with.
+#[cfg(all(feature = "bf16", not(feature = "f16")))]
+pub const DTYPE_NAME: &str = "bf16";
+/// Name of the DType the device is configured with.
+#[cfg(not(any(feature = "f16", feature = "bf16")))]
+pub const DTYPE_NAME: &str = "f32";
+
+/// Backend selected at compile time (highest priority feature wins).
+pub mod burn_backend_types {
+    use super::{Device, DeviceError, FloatDType};
+
+    #[cfg(feature = "cuda")]
+    pub const NAME: &str = "cuda";
+    #[cfg(all(feature = "rocm", not(feature = "cuda")))]
+    pub const NAME: &str = "rocm";
+    #[cfg(all(feature = "metal", not(any(feature = "cuda", feature = "rocm"))))]
+    pub const NAME: &str = "metal";
+    #[cfg(all(
+        feature = "vulkan",
+        not(any(feature = "cuda", feature = "rocm", feature = "metal"))
+    ))]
+    pub const NAME: &str = "vulkan";
+    #[cfg(all(
+        feature = "wgpu",
+        not(any(
+            feature = "cuda",
+            feature = "rocm",
+            feature = "metal",
+            feature = "vulkan"
+        ))
+    ))]
+    pub const NAME: &str = "wgpu";
+    #[cfg(all(
+        feature = "flex",
+        not(any(
+            feature = "cuda",
+            feature = "rocm",
+            feature = "metal",
+            feature = "vulkan",
+            feature = "wgpu"
+        ))
+    ))]
+    pub const NAME: &str = "flex";
+    #[cfg(all(
+        feature = "cpu",
+        not(any(
+            feature = "cuda",
+            feature = "rocm",
+            feature = "metal",
+            feature = "vulkan",
+            feature = "wgpu",
+            feature = "flex"
+        ))
+    ))]
+    pub const NAME: &str = "cpu";
+
+    pub use super::InferenceDevice;
+
+    /// Creates the device of the compiled-in backend and applies the configured float precision.
+    ///
+    /// Burn's `Device::default()` is avoided on purpose: it depends on feature unification
+    /// across the whole dependency graph.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no backend feature is enabled.
+    #[must_use]
+    pub fn default_device() -> InferenceDevice {
+        let mut device = raw_device();
+        // Defaults lock on the first tensor created on the device, so configure first.
+        if let Err(error) = configure_dtype(&mut device) {
+            tracing::warn!(%error, "could not apply the requested float dtype; using device defaults");
         }
-        else if #[cfg(all(feature = "f16", any(feature = "cuda", feature = "wgpu", feature = "vulkan", feature = "metal", feature = "rocm")))]{
-            pub type ElemType = burn::tensor::bf16;
-            pub const DTYPE_NAME: &str = "bf16";
-        } else {
-            pub type ElemType = f32;
-            pub const DTYPE_NAME: &str = "f32";
-        }
+        device
+    }
+
+    #[cfg(feature = "cuda")]
+    fn raw_device() -> Device {
+        Device::cuda(0)
+    }
+    #[cfg(all(feature = "rocm", not(feature = "cuda")))]
+    fn raw_device() -> Device {
+        Device::rocm(0)
+    }
+    #[cfg(all(feature = "metal", not(any(feature = "cuda", feature = "rocm"))))]
+    fn raw_device() -> Device {
+        Device::metal(burn::tensor::DeviceKind::DefaultDevice)
+    }
+    #[cfg(all(
+        feature = "vulkan",
+        not(any(feature = "cuda", feature = "rocm", feature = "metal"))
+    ))]
+    fn raw_device() -> Device {
+        Device::vulkan(burn::tensor::DeviceKind::DefaultDevice)
+    }
+    #[cfg(all(
+        feature = "wgpu",
+        not(any(
+            feature = "cuda",
+            feature = "rocm",
+            feature = "metal",
+            feature = "vulkan"
+        ))
+    ))]
+    fn raw_device() -> Device {
+        Device::wgpu(burn::tensor::DeviceKind::DefaultDevice)
+    }
+    #[cfg(all(
+        feature = "flex",
+        not(any(
+            feature = "cuda",
+            feature = "rocm",
+            feature = "metal",
+            feature = "vulkan",
+            feature = "wgpu"
+        ))
+    ))]
+    fn raw_device() -> Device {
+        Device::flex()
+    }
+    #[cfg(all(
+        feature = "cpu",
+        not(any(
+            feature = "cuda",
+            feature = "rocm",
+            feature = "metal",
+            feature = "vulkan",
+            feature = "wgpu",
+            feature = "flex"
+        ))
+    ))]
+    fn raw_device() -> Device {
+        Device::cpu()
+    }
+    #[cfg(not(any(
+        feature = "cuda",
+        feature = "rocm",
+        feature = "metal",
+        feature = "vulkan",
+        feature = "wgpu",
+        feature = "flex",
+        feature = "cpu"
+    )))]
+    fn raw_device() -> Device {
+        panic!(
+            "no Burn backend feature enabled; enable one of: flex, cpu, wgpu, vulkan, metal, cuda, rocm"
+        )
+    }
+
+    #[cfg(feature = "f16")]
+    fn configure_dtype(device: &mut Device) -> Result<(), DeviceError> {
+        // NOTE: f16 is not supported on every wgpu adapter.
+        device.configure(FloatDType::F16)
+    }
+    #[cfg(all(feature = "bf16", not(feature = "f16")))]
+    fn configure_dtype(device: &mut Device) -> Result<(), DeviceError> {
+        device.configure(FloatDType::BF16)
+    }
+    #[cfg(not(any(feature = "f16", feature = "bf16")))]
+    fn configure_dtype(_device: &mut Device) -> Result<(), DeviceError> {
+        let _ = FloatDType::F32;
+        Ok(())
     }
 }
 
-pub use elems::{DTYPE_NAME, ElemType};
-
-// Cuda ----------------------------------------------------------------------
-
-#[cfg(feature = "cuda")]
-pub mod burn_backend_types {
-    use burn::backend::cuda::{Cuda, CudaDevice};
-
-    use super::ElemType;
-
-    pub type InferenceBackend = Cuda<ElemType>;
-    pub type InferenceDevice = CudaDevice;
-    pub const NAME: &str = "cuda";
-}
-
-// ROCm ----------------------------------------------------------------------
-
-#[cfg(feature = "rocm")]
-pub mod burn_backend_types {
-    use burn::backend::rocm::{Rocm, RocmDevice};
-
-    use super::ElemType;
-
-    pub type InferenceBackend = Rocm<ElemType>;
-    pub type InferenceDevice = RocmDevice;
-    pub const NAME: &str = "rocm";
-}
-
-// CubeCL CPU ----------------------------------------------------------------
-// This backend is used for testing and by default when no backend is selected.
-
-#[cfg(all(feature = "cpu", not(feature = "select_backend")))]
-pub mod burn_backend_types {
-    use burn::backend::cpu::{Cpu, CpuDevice};
-
-    use super::ElemType;
-
-    pub type InferenceBackend = Cpu<ElemType>;
-    pub type InferenceDevice = CpuDevice;
-    pub const NAME: &str = "cpu";
-}
-
-// NdArray CPU ---------------------------------------------------------------
-
-#[cfg(feature = "ndarray")]
-pub mod burn_backend_types {
-    use burn::backend::ndarray::{NdArray, NdArrayDevice};
-
-    use super::ElemType;
-
-    pub type InferenceBackend = NdArray<ElemType>;
-    pub type InferenceDevice = NdArrayDevice;
-    pub const NAME: &str = "ndarray";
-}
-
-// WebGPU --------------------------------------------------------------------
-
-#[cfg(any(feature = "wgpu", feature = "vulkan", feature = "metal"))]
-pub mod burn_backend_types {
-    use burn::backend::wgpu::{Wgpu, WgpuDevice};
-
-    use super::ElemType;
-
-    pub type InferenceBackend = Wgpu<ElemType>;
-    pub type InferenceDevice = WgpuDevice;
-    #[cfg(all(feature = "wgpu", not(feature = "vulkan"), not(feature = "metal")))]
-    pub const NAME: &str = "wgpu";
-    #[cfg(feature = "vulkan")]
-    pub const NAME: &str = "vulkan";
-    #[cfg(feature = "metal")]
-    pub const NAME: &str = "metal";
-}
+pub use burn_backend_types::default_device;

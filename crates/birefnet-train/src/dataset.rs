@@ -7,15 +7,17 @@
 
 use std::{
     fs,
-    marker::PhantomData,
     path::{Path, PathBuf},
 };
 
 use birefnet_model::{ModelConfig, Task, training::BiRefNetBatch};
 use birefnet_util::apply_imagenet_normalization;
 use burn::{
-    data::{dataloader::batcher::Batcher, dataset::Dataset},
-    tensor::{Tensor, TensorData},
+    data::{
+        dataloader::batcher::Batcher,
+        dataset::{Dataset, DatasetError as BurnDatasetError},
+    },
+    tensor::{Device, Tensor, TensorData},
 };
 use image::{DynamicImage, ImageFormat};
 
@@ -46,20 +48,16 @@ pub struct BiRefNetItem {
 /// This batcher handles the conversion from individual data items to batched tensors,
 /// following the same pattern as Burn's official examples.
 #[derive(Clone, Default)]
-pub struct BiRefNetBatcher {
-    _phantom: PhantomData,
-}
+pub struct BiRefNetBatcher {}
 
 impl BiRefNetBatcher {
     /// Create a new BiRefNet batcher.
     pub const fn new() -> Self {
-        Self {
-            _phantom: PhantomData,
-        }
+        Self {}
     }
 }
 
-impl Batcher<B, BiRefNetItem, BiRefNetBatch> for BiRefNetBatcher {
+impl Batcher<BiRefNetItem, BiRefNetBatch> for BiRefNetBatcher {
     fn batch(&self, items: Vec<BiRefNetItem>, device: &Device) -> BiRefNetBatch {
         let batch_size = items.len();
 
@@ -343,15 +341,18 @@ impl BiRefNetDataset {
 }
 
 impl Dataset<BiRefNetItem> for BiRefNetDataset {
-    fn get(&self, index: usize) -> Option<BiRefNetItem> {
-        let (image_path, mask_path) = self.items.get(index)?;
+    fn get(&self, index: usize) -> Result<BiRefNetItem, BurnDatasetError> {
+        // Burn 0.22: out-of-range access panics (like slice indexing); `Err` is for unreadable data.
+        let (image_path, mask_path) = &self.items[index];
 
         // Load image with proper error logging
         let image = match image::open(image_path) {
             Ok(img) => img,
             Err(e) => {
-                eprintln!("Failed to open image {}: {}", image_path.display(), e);
-                return None;
+                return Err(BurnDatasetError::new(std::io::Error::other(format!(
+                    "Failed to open image {}: {e}",
+                    image_path.display()
+                ))));
             }
         };
 
@@ -359,8 +360,10 @@ impl Dataset<BiRefNetItem> for BiRefNetDataset {
         let mask = match image::open(mask_path) {
             Ok(img) => img,
             Err(e) => {
-                eprintln!("Failed to open mask {}: {}", mask_path.display(), e);
-                return None;
+                return Err(BurnDatasetError::new(std::io::Error::other(format!(
+                    "Failed to open mask {}: {e}",
+                    mask_path.display()
+                ))));
             }
         };
 
@@ -373,7 +376,7 @@ impl Dataset<BiRefNetItem> for BiRefNetDataset {
         let image_data = self.image_to_array(image);
         let mask_data = self.mask_to_array(mask);
 
-        Some(BiRefNetItem {
+        Ok(BiRefNetItem {
             image: image_data,
             mask: mask_data,
             height,

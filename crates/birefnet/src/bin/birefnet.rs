@@ -1,5 +1,5 @@
 use anyhow::Result;
-use birefnet::burn_backend_types::{InferenceDevice, NAME};
+use birefnet::burn_backend_types::{NAME, default_device};
 use birefnet_util::ManagedModel;
 use clap::{Parser, Subcommand};
 
@@ -56,7 +56,7 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let device = InferenceDevice::default();
+    let device = default_device();
     tracing::info!(backend = NAME, "device initialized");
 
     match cli.command {

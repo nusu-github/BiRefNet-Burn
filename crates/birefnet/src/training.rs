@@ -4,17 +4,14 @@ use anyhow::Result;
 use birefnet_model::{BiRefNetConfig, InterpolationStrategy, ModelConfig, training::BiRefNetBatch};
 use birefnet_train::{BiRefNetDataset, dataset::BiRefNetBatcher};
 use burn::{
-    backend::Autodiff,
     config::Config,
     data::dataloader::{DataLoader, DataLoaderBuilder},
     optim::AdamConfig,
     prelude::*,
-    record::CompactRecorder,
-    tensor::backend::AutodiffBackend,
-    train::{LearnerBuilder, metric::LossMetric},
+    train::{Learner, SupervisedTraining, metric::LossMetric},
 };
 
-use crate::backend::burn_backend_types::{InferenceBackend, InferenceDevice, NAME};
+use crate::backend::burn_backend_types::{NAME, default_device};
 
 /// CLI arguments for the training subcommand.
 #[derive(Debug)]
@@ -164,46 +161,47 @@ pub fn run_training_on_device(
     device: Device,
     config: TrainingConfig,
     resume_checkpoint: Option<std::path::PathBuf>,
-) -> Result<()>
-where
-    B::InnerBackend: Backend,
-{
+) -> Result<()> {
     tracing::info!(?device, "initializing BiRefNet training");
 
-    B::seed(config.seed);
+    device.seed(config.seed);
+    // Autodiff is a run-time property of the device in Burn 0.22. The model must be created on
+    // the autodiff device; `SupervisedTraining` moves the data loaders to it by itself.
+    let autodiff_device = device.autodiff();
 
     let model_config = BiRefNetConfig::new(config.model.clone())
         .with_loss_config(Some(birefnet_loss::BiRefNetLossConfig::new()));
-    let model = model_config.init(&device)?;
+    let model = model_config.init(&autodiff_device)?;
 
     let optimizer = AdamConfig::new().init();
     tracing::info!(optimizer = %config.optimizer.optimizer_type, "optimizer created");
 
-    let learning_rate = config.learning_rate;
-
     let train_loader = create_train_dataloader(&config)?;
     let valid_loader = create_valid_dataloader(&config)?;
 
-    let learner_builder = LearnerBuilder::new("./artifacts")
-        .metric_train_numeric(LossMetric::new())
-        .metric_valid_numeric(LossMetric::new())
-        .with_file_checkpointer(CompactRecorder::new())
-        .devices(vec![device])
-        .num_epochs(config.num_epochs)
-        .summary();
-
-    if let Some(_checkpoint_path) = resume_checkpoint {
+    if resume_checkpoint.is_some() {
         // TODO: Implement checkpoint loading
         tracing::warn!("checkpoint resume not yet implemented");
     }
 
-    let learner = learner_builder.build(model, optimizer, learning_rate);
+    let training = SupervisedTraining::new("./artifacts", train_loader, valid_loader)
+        .metric_train_numeric(LossMetric::new())
+        .metric_valid_numeric(LossMetric::new())
+        .with_default_checkpointers()
+        .num_epochs(config.num_epochs)
+        .summary();
 
     tracing::info!(epochs = config.num_epochs, "starting training");
-    let trained_model = learner.fit(train_loader, valid_loader);
+    let result = training.launch(Learner::new(model, optimizer, config.learning_rate));
 
-    trained_model
-        .save_file("./artifacts/final_model", &CompactRecorder::new())
+    if let Some(error) = result.error {
+        anyhow::bail!("training failed: {error:?}");
+    }
+
+    // `result.model` is already in inference mode (`Module::valid`).
+    result
+        .model
+        .save_file("./artifacts/final_model")
         .map_err(|e| anyhow::anyhow!("failed to save final model: {e}"))?;
 
     tracing::info!("training completed successfully");
@@ -211,10 +209,7 @@ where
 }
 
 /// Creates the training dataloader.
-fn create_train_dataloader(config: &TrainingConfig) -> Result<Arc<dyn DataLoader<B, BiRefNetBatch>>>
-where
-    B::InnerBackend: Backend,
-{
+fn create_train_dataloader(config: &TrainingConfig) -> Result<Arc<dyn DataLoader<BiRefNetBatch>>> {
     let model_config = ModelConfig::new(InterpolationStrategy::Bilinear);
     let dataset = BiRefNetDataset::new(&model_config, "train")?;
     let batcher = BiRefNetBatcher::new();
@@ -229,15 +224,10 @@ where
 }
 
 /// Creates the validation dataloader.
-fn create_valid_dataloader(
-    config: &TrainingConfig,
-) -> Result<Arc<dyn DataLoader<B::InnerBackend, BiRefNetBatch<B::InnerBackend>>>>
-where
-    B::InnerBackend: Backend,
-{
+fn create_valid_dataloader(config: &TrainingConfig) -> Result<Arc<dyn DataLoader<BiRefNetBatch>>> {
     let model_config = ModelConfig::new(InterpolationStrategy::Bilinear);
     let dataset = BiRefNetDataset::new(&model_config, "val")?;
-    let batcher = BiRefNetBatcher::<B::InnerBackend>::new();
+    let batcher = BiRefNetBatcher::new();
 
     let dataloader = DataLoaderBuilder::new(batcher)
         .batch_size(config.batch_size)
@@ -291,9 +281,5 @@ pub fn run_training(args: TrainingCliArgs) -> Result<()> {
     );
 
     tracing::info!(backend = NAME, "starting training on backend");
-    run_training_on_device::<Autodiff<InferenceBackend>>(
-        InferenceDevice::default(),
-        training_config,
-        args.resume_checkpoint,
-    )
+    run_training_on_device(default_device(), training_config, args.resume_checkpoint)
 }

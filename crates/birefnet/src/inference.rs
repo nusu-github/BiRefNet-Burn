@@ -15,7 +15,7 @@ use burn::tensor::{
     ops::{InterpolateMode, InterpolateOptions},
 };
 
-use crate::burn_backend_types::{InferenceBackend, InferenceDevice};
+use crate::burn_backend_types::InferenceDevice;
 
 /// Model input resolution used for `BiRefNet` inference.
 ///
@@ -91,14 +91,14 @@ pub fn run_inference(config: &InferenceConfig, device: &InferenceDevice) -> Resu
         ManagedModel::from_pretrained(&config.model_spec)?
     };
 
-    if !<ManagedModel as ModelLoader<InferenceBackend>>::is_available(&managed_model) {
+    if !ModelLoader::is_available(&managed_model) {
         anyhow::bail!("Model weights are not available. Please check your model specification.");
     }
 
     let model_input_size = model_input_size(&managed_model);
 
     tracing::info!("loading model");
-    let model: BiRefNet<InferenceBackend> = BiRefNet::from_managed_model(&managed_model, device)?;
+    let model: BiRefNet = BiRefNet::from_managed_model(&managed_model, device)?;
     tracing::info!("model loaded successfully");
 
     fs::create_dir_all(&config.output_path)?;
@@ -129,7 +129,7 @@ pub fn run_inference(config: &InferenceConfig, device: &InferenceDevice) -> Resu
 
 /// Processes inference for a single image.
 fn process_single_image(
-    model: &birefnet_model::BiRefNet<InferenceBackend>,
+    model: &birefnet_model::BiRefNet,
     input_path: &Path,
     output_dir: &Path,
     device: &InferenceDevice,
@@ -182,7 +182,7 @@ fn process_single_image(
 
 /// Processes inference for all images in a directory.
 fn process_directory(
-    model: &birefnet_model::BiRefNet<InferenceBackend>,
+    model: &birefnet_model::BiRefNet,
     input_dir: &Path,
     output_dir: &Path,
     device: &InferenceDevice,
