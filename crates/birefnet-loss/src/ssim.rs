@@ -245,7 +245,7 @@ impl SSIMLoss {
         ssim_map
             .reshape([batch_size as i32, -1])
             .mean_dim(1)
-            .squeeze::<1>()
+            .squeeze_dim::<1>(1)
     }
 
     fn assertions(&self, predictions: &Tensor<4>, targets: &Tensor<4>) {

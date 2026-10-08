@@ -127,7 +127,7 @@ impl IoULoss {
 
         // IoU loss is (1 - IoU) [B, 1] -> [B]
         let loss = Tensor::ones_like(&iou) - iou;
-        loss.squeeze::<1>()
+        loss.squeeze_dim::<1>(1)
     }
 
     fn assertions(&self, predictions: &Tensor<4>, targets: &Tensor<4, Int>) {

@@ -212,7 +212,7 @@ impl StructureLoss {
             .reshape([batch_size as i32, channels as i32]);
 
         // Mean over channels: [B,C] -> [B,1] -> [B]
-        bce_avg.mean_dim(1).squeeze::<1>()
+        bce_avg.mean_dim(1).squeeze_dim::<1>(1)
     }
 
     /// Compute weighted IoU loss.
@@ -241,7 +241,7 @@ impl StructureLoss {
             / (union_flat - inter_flat.add_scalar(self.eps));
 
         // IoU loss = 1 - IoU, average over channels: [B,C] -> [B,1] -> [B]
-        (iou.ones_like() - iou).mean_dim(1).squeeze::<1>()
+        (iou.ones_like() - iou).mean_dim(1).squeeze_dim::<1>(1)
     }
 
     fn assertions(&self, predictions: &Tensor<4>, targets: &Tensor<4, Int>) {
