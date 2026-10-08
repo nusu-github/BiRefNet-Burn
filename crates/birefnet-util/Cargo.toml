@@ -12,7 +12,7 @@ default = []
 
 [dependencies]
 burn = { workspace = true }
-burn-store = "0.21.0"
+burn-store = "0.22.0"
 birefnet-model = { path = "../birefnet-model" }
 
 thiserror = { workspace = true }

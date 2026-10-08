@@ -7,7 +7,7 @@ use core::marker::PhantomData;
 use std::sync::Arc;
 
 use burn::{
-    tensor::{backend::Backend, cast::ToElement},
+    tensor::cast::ToElement,
     train::metric::{
         Metric, MetricMetadata, Numeric, NumericEntry,
         state::{FormatOptions, NumericMetricState},
@@ -19,13 +19,13 @@ use super::input::BiRefNetLossInput;
 // --- Loss Metric ---
 
 #[derive(Default, Clone)]
-pub struct LossMetric<B: Backend> {
+pub struct LossMetric {
     state: NumericMetricState,
     name: Arc<String>,
-    _b: PhantomData<B>,
+    _b: PhantomData,
 }
 
-impl<B: Backend> LossMetric<B> {
+impl LossMetric {
     pub fn new() -> Self {
         Self {
             state: NumericMetricState::default(),
@@ -35,8 +35,8 @@ impl<B: Backend> LossMetric<B> {
     }
 }
 
-impl<B: Backend> Metric for LossMetric<B> {
-    type Input = BiRefNetLossInput<B>;
+impl Metric for LossMetric {
+    type Input = BiRefNetLossInput;
 
     fn name(&self) -> Arc<String> {
         self.name.clone()
@@ -47,7 +47,7 @@ impl<B: Backend> Metric for LossMetric<B> {
         item: &Self::Input,
         _metadata: &MetricMetadata,
     ) -> burn::train::metric::SerializedEntry {
-        let loss = item.loss.clone().into_scalar().to_f64();
+        let loss = item.loss.clone().into_scalar::<f32>().to_f64();
         self.state.update(
             loss,
             item.batch_size,
@@ -60,7 +60,7 @@ impl<B: Backend> Metric for LossMetric<B> {
     }
 }
 
-impl<B: Backend> Numeric for LossMetric<B> {
+impl Numeric for LossMetric {
     fn value(&self) -> NumericEntry {
         self.state.current_value()
     }

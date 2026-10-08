@@ -12,7 +12,7 @@ use birefnet_model::{
 use burn::{
     module::Module,
     record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder},
-    tensor::{DType, backend::Backend},
+    tensor::DType,
 };
 use burn_store::{
     ModuleAdapter, ModuleSnapshot, ModuleStore, PyTorchToBurnAdapter, PytorchStore,
@@ -71,8 +71,17 @@ struct UpcastHalfAdapter;
 impl ModuleAdapter for UpcastHalfAdapter {
     fn adapt(&self, snapshot: &TensorSnapshot) -> TensorSnapshot {
         match snapshot.dtype {
-            DType::F16 | DType::BF16 | DType::F64 | DType::I64 | DType::I32 | DType::I16
-            | DType::I8 | DType::U64 | DType::U32 | DType::U16 | DType::U8 => {
+            DType::F16
+            | DType::BF16
+            | DType::F64
+            | DType::I64
+            | DType::I32
+            | DType::I16
+            | DType::I8
+            | DType::U64
+            | DType::U32
+            | DType::U16
+            | DType::U8 => {
                 let data_fn = snapshot.clone_data_fn();
                 TensorSnapshot::from_closure(
                     Rc::new(move || Ok(data_fn()?.convert_dtype(DType::F32))),
@@ -417,12 +426,12 @@ pub trait ModelRecord {
     fn weight_source(&self) -> &WeightSource;
 }
 
-pub trait ModelLoader<B: Backend> {
+pub trait ModelLoader {
     /// Load model weights into an existing model
-    fn load_model<M: Module<B> + ModuleSnapshot<B>>(
+    fn load_model<M: Module + ModuleSnapshot>(
         &self,
         model: M,
-        device: &B::Device,
+        device: &Device,
     ) -> Result<M, WeightError>;
 
     /// Check if the weight source is available
@@ -571,11 +580,11 @@ impl ManagedModel {
     }
 }
 
-impl<B: Backend> ModelLoader<B> for ManagedModel {
-    fn load_model<M: Module<B> + ModuleSnapshot<B>>(
+impl ModelLoader for ManagedModel {
+    fn load_model<M: Module + ModuleSnapshot>(
         &self,
         model: M,
-        device: &B::Device,
+        device: &Device,
     ) -> Result<M, WeightError> {
         let weights_path = self
             .get_weights_path()
@@ -627,26 +636,26 @@ impl<B: Backend> ModelLoader<B> for ManagedModel {
 }
 
 impl ManagedModel {
-    fn load_pytorch_model<B: Backend, M: Module<B> + ModuleSnapshot<B>>(
+    fn load_pytorch_model<M: Module + ModuleSnapshot>(
         &self,
         mut model: M,
         weights_path: &Path,
-        _device: &B::Device,
+        _device: &Device,
     ) -> Result<M, WeightError> {
         let mut store = PytorchStore::from_file(weights_path);
         store
-            .apply_to::<B, _>(&mut model)
+            .apply_to::<_>(&mut model)
             .map_err(|e| WeightError::ModelLoadError {
                 reason: format!("PyTorch model loading failed: {}", e),
             })?;
         Ok(model)
     }
 
-    fn load_safetensors_model<B: Backend, M: Module<B> + ModuleSnapshot<B>>(
+    fn load_safetensors_model<M: Module + ModuleSnapshot>(
         &self,
         mut model: M,
         weights_path: &Path,
-        _device: &B::Device,
+        _device: &Device,
     ) -> Result<M, WeightError> {
         let mut store = SafetensorsStore::from_file(weights_path)
             .skip_enum_variants(true)
@@ -680,7 +689,7 @@ impl ManagedModel {
             );
 
         store
-            .apply_to::<B, _>(&mut model)
+            .apply_to::<_>(&mut model)
             .map_err(|e| WeightError::ModelLoadError {
                 reason: format!("Safetensors model loading failed: {}", e),
             })?;
@@ -688,11 +697,11 @@ impl ManagedModel {
     }
 
     /// Load MessagePack format weights
-    fn load_messagepack_model<B: Backend, M: Module<B>>(
+    fn load_messagepack_model<M: Module>(
         &self,
         model: M,
         weights_path: &Path,
-        device: &B::Device,
+        device: &Device,
     ) -> Result<M, WeightError> {
         let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
         model
@@ -703,11 +712,11 @@ impl ManagedModel {
     }
 
     /// Load Binary format weights
-    fn load_binary_model<B: Backend, M: Module<B>>(
+    fn load_binary_model<M: Module>(
         &self,
         model: M,
         weights_path: &Path,
-        device: &B::Device,
+        device: &Device,
     ) -> Result<M, WeightError> {
         let recorder = BinFileRecorder::<FullPrecisionSettings>::new();
         model
@@ -722,7 +731,7 @@ impl ManagedModel {
 ///
 /// This trait adds weight loading capabilities to BiRefNet models without creating
 /// circular dependencies between crates.
-pub trait BiRefNetWeightLoading<B: Backend> {
+pub trait BiRefNetWeightLoading {
     /// Load weights from a managed model
     ///
     /// This convenience method allows loading pre-trained weights from various formats
@@ -740,11 +749,11 @@ pub trait BiRefNetWeightLoading<B: Backend> {
     fn load_weights_from_managed_model<M>(
         self,
         managed_model: &M,
-        device: &B::Device,
+        device: &Device,
     ) -> Result<Self, WeightError>
     where
-        Self: Sized + Module<B>,
-        M: ModelLoader<B>;
+        Self: Sized + Module,
+        M: ModelLoader;
 
     /// Create a new BiRefNet instance from a managed model
     ///
@@ -760,19 +769,16 @@ pub trait BiRefNetWeightLoading<B: Backend> {
     ///
     /// # Errors
     /// Returns an error if model creation or weight loading fails
-    fn from_managed_model<M>(managed_model: &M, device: &B::Device) -> Result<Self, WeightError>
+    fn from_managed_model<M>(managed_model: &M, device: &Device) -> Result<Self, WeightError>
     where
         Self: Sized,
-        M: ModelLoader<B> + ModelRecord;
+        M: ModelLoader + ModelRecord;
 }
 
 #[cfg(test)]
 mod tests {
-    use burn::backend::Cpu;
 
     use super::*;
-
-    type TestBackend = Cpu;
 
     #[test]
     fn test_managed_model_creation() {
@@ -784,9 +790,7 @@ mod tests {
 
         assert_eq!(managed_model.name().as_str(), "test-model");
         assert!(managed_model.config().is_none());
-        assert!(!<ManagedModel as ModelLoader<TestBackend>>::is_available(
-            &managed_model
-        ));
+        assert!(!<ManagedModel as ModelLoader>::is_available(&managed_model));
     }
 
     #[test]
@@ -878,21 +882,21 @@ mod tests {
     }
 }
 
-impl<B: Backend> BiRefNetWeightLoading<B> for birefnet_model::BiRefNet<B> {
+impl BiRefNetWeightLoading for birefnet_model::BiRefNet {
     fn load_weights_from_managed_model<M>(
         self,
         managed_model: &M,
-        device: &B::Device,
+        device: &Device,
     ) -> Result<Self, WeightError>
     where
-        M: ModelLoader<B>,
+        M: ModelLoader,
     {
         managed_model.load_model(self, device)
     }
 
-    fn from_managed_model<M>(managed_model: &M, device: &B::Device) -> Result<Self, WeightError>
+    fn from_managed_model<M>(managed_model: &M, device: &Device) -> Result<Self, WeightError>
     where
-        M: ModelLoader<B> + ModelRecord,
+        M: ModelLoader + ModelRecord,
     {
         // Get the configuration from the managed model
         let config = if let Some(config) = managed_model.config() {

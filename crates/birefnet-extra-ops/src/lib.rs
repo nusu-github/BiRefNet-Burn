@@ -17,10 +17,3 @@ pub use erfinv::{Erfinv, erfinv};
 pub use identity::Identity;
 #[doc(inline)]
 pub use trunc_normal::{trunc_normal, trunc_normal_};
-
-#[cfg(test)]
-mod tests {
-    use burn::backend::Cpu;
-
-    pub type TestBackend = Cpu;
-}

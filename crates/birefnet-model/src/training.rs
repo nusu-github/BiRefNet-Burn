@@ -4,20 +4,20 @@
 //! By placing these structures in the model crate, we avoid circular dependencies while
 //! maintaining clear separation of concerns.
 
+use burn::prelude::*;
 #[cfg(feature = "train")]
 use burn::train::metric::{Adaptor, ItemLazy, LossInput};
-use burn::{prelude::*, tensor::backend::Backend};
 
 /// Represents a batch of preprocessed data items from the BiRefNet dataset.
 ///
 /// This struct contains batched image and mask tensors suitable for training
 /// and validation with the Burn framework.
 #[derive(Debug, Clone)]
-pub struct BiRefNetBatch<B: Backend> {
+pub struct BiRefNetBatch {
     /// Batched input image tensor with shape [B, C, H, W] where B=batch_size, C=3 for RGB
-    pub images: Tensor<B, 4>,
+    pub images: Tensor<4>,
     /// Batched segmentation mask tensor with shape [B, C, H, W] where B=batch_size, C=1 for binary masks
-    pub masks: Tensor<B, 4>,
+    pub masks: Tensor<4>,
 }
 
 /// Output structure for BiRefNet training and validation steps.
@@ -25,59 +25,33 @@ pub struct BiRefNetBatch<B: Backend> {
 /// Following Burn's best practices, this struct provides the essential training outputs
 /// and implements proper metric adaptors for integration with the training framework.
 #[derive(Debug, Clone)]
-pub struct BiRefNetOutput<B: Backend> {
+pub struct BiRefNetOutput {
     /// The computed loss value
-    pub loss: Tensor<B, 1>,
+    pub loss: Tensor<1>,
     /// Model prediction logits (segmentation masks)
-    pub output: Tensor<B, 4>,
+    pub output: Tensor<4>,
     /// Ground truth target masks  
-    pub targets: Tensor<B, 4>,
+    pub targets: Tensor<4>,
 }
 
-#[cfg(all(feature = "train", feature = "cpu"))]
-impl<B: Backend> ItemLazy for BiRefNetOutput<B> {
-    type ItemSync = BiRefNetOutput<burn::backend::cpu::Cpu<f32>>;
+#[cfg(feature = "train")]
+impl ItemLazy for BiRefNetOutput {
+    fn sync(self) -> Result<Self, burn::tensor::ExecutionError> {
+        // No readback: metrics compute on the device and read back only final scalars.
+        // Flushing dispatches buffered work; dropping autodiff keeps the tape off the metric thread.
+        self.loss.device().flush()?;
 
-    fn sync(self) -> Self::ItemSync {
-        let [loss, output, targets] = burn::tensor::Transaction::default()
-            .register(self.loss)
-            .register(self.output)
-            .register(self.targets)
-            .execute()
-            .try_into()
-            .expect("Correct amount of tensor data");
-
-        let device = &Default::default();
-
-        BiRefNetOutput {
-            loss: Tensor::from_data(loss, device),
-            output: Tensor::from_data(output, device),
-            targets: Tensor::from_data(targets, device),
-        }
+        Ok(Self {
+            loss: self.loss.without_autodiff(),
+            output: self.output.without_autodiff(),
+            targets: self.targets.without_autodiff(),
+        })
     }
 }
 
-#[cfg(all(feature = "train", not(feature = "cpu")))]
-impl<B: Backend> ItemLazy for BiRefNetOutput<B> {
-    type ItemSync = Self;
-
-    fn sync(self) -> Self::ItemSync {
-        self
-    }
-}
-
-#[cfg(not(feature = "train"))]
-impl<B: Backend> ItemLazy for BiRefNetOutput<B> {
-    type ItemSync = Self;
-
-    fn sync(self) -> Self::ItemSync {
-        self
-    }
-}
-
-impl<B: Backend> BiRefNetBatch<B> {
+impl BiRefNetBatch {
     /// Create a new BiRefNet batch.
-    pub const fn new(images: Tensor<B, 4>, masks: Tensor<B, 4>) -> Self {
+    pub const fn new(images: Tensor<4>, masks: Tensor<4>) -> Self {
         Self { images, masks }
     }
 
@@ -87,9 +61,9 @@ impl<B: Backend> BiRefNetBatch<B> {
     }
 }
 
-impl<B: Backend> BiRefNetOutput<B> {
+impl BiRefNetOutput {
     /// Create a new BiRefNet output with proper field order.
-    pub const fn new(loss: Tensor<B, 1>, output: Tensor<B, 4>, targets: Tensor<B, 4>) -> Self {
+    pub const fn new(loss: Tensor<1>, output: Tensor<4>, targets: Tensor<4>) -> Self {
         Self {
             loss,
             output,
@@ -100,37 +74,24 @@ impl<B: Backend> BiRefNetOutput<B> {
 
 /// Adapter for Loss metric integration
 #[cfg(feature = "train")]
-impl<B: Backend> Adaptor<LossInput<B>> for BiRefNetOutput<B> {
-    fn adapt(&self) -> LossInput<B> {
+impl Adaptor<LossInput> for BiRefNetOutput {
+    fn adapt(&self) -> LossInput {
         LossInput::new(self.loss.clone())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use burn::{
-        backend::cpu::Cpu,
-        tensor::{Distribution, Tensor},
-    };
+    use burn::tensor::{Distribution, Tensor};
 
     use super::*;
 
-    type TestBackend = Cpu<f32>;
-
     #[test]
     fn birefnet_batch_new_creates_correct_structure() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
 
-        let images = Tensor::<TestBackend, 4>::random(
-            [4, 3, 64, 64],
-            Distribution::Normal(0.0, 1.0),
-            &device,
-        );
-        let masks = Tensor::<TestBackend, 4>::random(
-            [4, 1, 64, 64],
-            Distribution::Normal(0.0, 1.0),
-            &device,
-        );
+        let images = Tensor::<4>::random([4, 3, 64, 64], Distribution::Normal(0.0, 1.0), &device);
+        let masks = Tensor::<4>::random([4, 1, 64, 64], Distribution::Normal(0.0, 1.0), &device);
 
         let batch = BiRefNetBatch::new(images, masks);
 
@@ -141,19 +102,11 @@ mod tests {
 
     #[test]
     fn birefnet_output_new_creates_correct_structure() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
 
-        let logits = Tensor::<TestBackend, 4>::random(
-            [2, 1, 32, 32],
-            Distribution::Normal(0.0, 1.0),
-            &device,
-        );
-        let target = Tensor::<TestBackend, 4>::random(
-            [2, 1, 32, 32],
-            Distribution::Normal(0.0, 1.0),
-            &device,
-        );
-        let loss = Tensor::<TestBackend, 1>::random([1], Distribution::Normal(0.0, 1.0), &device);
+        let logits = Tensor::<4>::random([2, 1, 32, 32], Distribution::Normal(0.0, 1.0), &device);
+        let target = Tensor::<4>::random([2, 1, 32, 32], Distribution::Normal(0.0, 1.0), &device);
+        let loss = Tensor::<1>::random([1], Distribution::Normal(0.0, 1.0), &device);
 
         let output = BiRefNetOutput::new(loss, logits, target);
 

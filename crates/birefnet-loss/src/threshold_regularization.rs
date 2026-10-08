@@ -15,7 +15,7 @@ use burn::{
     config::Config,
     module::{Content, DisplaySettings, Module, ModuleDisplay},
     nn::loss::Reduction,
-    tensor::{Tensor, backend::Backend},
+    tensor::Tensor,
 };
 
 /// Configuration for creating a [Threshold Regularization loss](ThresholdRegularizationLoss).
@@ -49,7 +49,7 @@ impl ThresholdRegularizationLossConfig {
 /// This loss function encourages predictions to be close to either 0 or 1,
 /// which is particularly useful for binary segmentation tasks where
 /// intermediate values are not desired.
-#[derive(Module, Clone, Debug)]
+#[derive(Module, Debug)]
 #[module(custom_display)]
 pub struct ThresholdRegularizationLoss {
     /// Weight factor applied to the regularization loss.
@@ -86,11 +86,11 @@ impl ThresholdRegularizationLoss {
     ///
     /// - predictions: `[...dims]` (any shape)
     /// - output: `[1]`
-    pub fn forward<const D: usize, B: Backend>(
+    pub fn forward<const D: usize>(
         &self,
-        predictions: Tensor<B, D>,
+        predictions: Tensor<D>,
         reduction: Reduction,
-    ) -> Tensor<B, 1> {
+    ) -> Tensor<1> {
         let loss = self.forward_no_reduction(predictions);
         let reduced = crate::reduce_loss(loss, reduction);
 
@@ -104,10 +104,7 @@ impl ThresholdRegularizationLoss {
     ///
     /// - predictions: `[...dims]` (any shape)
     /// - output: `[...dims]` (same shape as input)
-    pub fn forward_no_reduction<const D: usize, B: Backend>(
-        &self,
-        predictions: Tensor<B, D>,
-    ) -> Tensor<B, D> {
+    pub fn forward_no_reduction<const D: usize>(&self, predictions: Tensor<D>) -> Tensor<D> {
         // Calculate threshold regularization: 1 - ((pred - 0)² + (pred - 1)²)
         // This encourages predictions to be close to 0 or 1 (binary values)
         // Maximum loss (0) when pred = 0 or pred = 1
@@ -126,26 +123,18 @@ impl ThresholdRegularizationLoss {
 
 #[cfg(test)]
 mod tests {
-    use burn::{
-        backend::Cpu,
-        tensor::{TensorData, Tolerance, Transaction, ops::FloatElem},
-    };
+    use burn::tensor::{TensorData, Tolerance, Transaction};
 
     use super::*;
 
-    type TestBackend = Cpu;
-    type FT = FloatElem<TestBackend>;
-
     #[test]
     fn thr_reg_loss_forward_binary_values_returns_zero_loss() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = ThresholdRegularizationLoss::new();
 
         // Perfect binary values (0 and 1) should give maximum reward (loss = 0)
-        let predictions = Tensor::<TestBackend, 2>::from_data(
-            TensorData::from([[0.0, 1.0], [1.0, 0.0]]),
-            &device,
-        );
+        let predictions =
+            Tensor::<2>::from_data(TensorData::from([[0.0, 1.0], [1.0, 0.0]]), &device);
 
         let result_mean = loss.forward(predictions.clone(), Reduction::Mean);
         let result_no_reduction = loss.forward_no_reduction(predictions);
@@ -160,23 +149,21 @@ mod tests {
         // For pred=0: 1 - (0² + (0-1)²) = 1 - (0 + 1) = 0
         // For pred=1: 1 - (1² + (1-1)²) = 1 - (1 + 0) = 0
         let expected_mean = TensorData::from([0.0]);
-        result_mean_data.assert_approx_eq::<FT>(&expected_mean, Tolerance::default());
+        result_mean_data.assert_approx_eq::<f32>(&expected_mean, Tolerance::default());
 
         let expected_no_reduction = TensorData::from([[0.0, 0.0], [0.0, 0.0]]);
         result_no_reduction_data
-            .assert_approx_eq::<FT>(&expected_no_reduction, Tolerance::default());
+            .assert_approx_eq::<f32>(&expected_no_reduction, Tolerance::default());
     }
 
     #[test]
     fn thr_reg_loss_forward_intermediate_values_gives_maximum_penalty() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = ThresholdRegularizationLoss::new();
 
         // Intermediate value (0.5) should give maximum penalty
-        let predictions = Tensor::<TestBackend, 2>::from_data(
-            TensorData::from([[0.5, 0.5], [0.5, 0.5]]),
-            &device,
-        );
+        let predictions =
+            Tensor::<2>::from_data(TensorData::from([[0.5, 0.5], [0.5, 0.5]]), &device);
 
         let result = loss.forward(predictions, Reduction::Mean);
 
@@ -184,19 +171,17 @@ mod tests {
         let expected = TensorData::from([0.5]);
         result
             .into_data()
-            .assert_approx_eq::<FT>(&expected, Tolerance::default());
+            .assert_approx_eq::<f32>(&expected, Tolerance::default());
     }
 
     #[test]
     fn thr_reg_loss_forward_mixed_binary_and_intermediate_computes_correct_mean() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = ThresholdRegularizationLoss::new();
 
         // Mix of binary and intermediate values
-        let predictions = Tensor::<TestBackend, 2>::from_data(
-            TensorData::from([[0.0, 1.0], [0.5, 0.25]]),
-            &device,
-        );
+        let predictions =
+            Tensor::<2>::from_data(TensorData::from([[0.0, 1.0], [0.5, 0.25]]), &device);
 
         let result_no_reduction = loss.forward_no_reduction(predictions.clone());
         let result_mean = loss.forward(predictions, Reduction::Mean);
@@ -214,22 +199,20 @@ mod tests {
         // pred=0.25: 1 - (0.0625 + 0.5625) = 0.375
         let expected_no_reduction = TensorData::from([[0.0, 0.0], [0.5, 0.375]]);
         result_no_reduction_data
-            .assert_approx_eq::<FT>(&expected_no_reduction, Tolerance::default());
+            .assert_approx_eq::<f32>(&expected_no_reduction, Tolerance::default());
 
         // Mean: (0 + 0 + 0.5 + 0.375) / 4 = 0.21875
         let expected_mean = TensorData::from([0.21875]);
-        result_mean_data.assert_approx_eq::<FT>(&expected_mean, Tolerance::default());
+        result_mean_data.assert_approx_eq::<f32>(&expected_mean, Tolerance::default());
     }
 
     #[test]
     fn thr_reg_loss_auto_mean_and_sum_reductions_work_correctly() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = ThresholdRegularizationLoss::new();
 
-        let predictions = Tensor::<TestBackend, 2>::from_data(
-            TensorData::from([[0.5, 0.5], [0.5, 0.5]]),
-            &device,
-        );
+        let predictions =
+            Tensor::<2>::from_data(TensorData::from([[0.5, 0.5], [0.5, 0.5]]), &device);
 
         let result_auto = loss.forward(predictions.clone(), Reduction::Auto);
         let result_mean = loss.forward(predictions.clone(), Reduction::Mean);
@@ -244,21 +227,20 @@ mod tests {
             .expect("Correct amount of tensor data");
 
         // Auto should equal Mean
-        result_auto_data.assert_approx_eq::<FT>(&result_mean_data, Tolerance::default());
+        result_auto_data.assert_approx_eq::<f32>(&result_mean_data, Tolerance::default());
 
         // Sum should be Mean * num_elements = 0.5 * 4 = 2.0
         let expected_sum = TensorData::from([2.0]);
-        result_sum_data.assert_approx_eq::<FT>(&expected_sum, Tolerance::default());
+        result_sum_data.assert_approx_eq::<f32>(&expected_sum, Tolerance::default());
     }
 
     #[test]
     fn thr_reg_loss_with_custom_weight_multiplies_default_result() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let config = ThresholdRegularizationLossConfig::new().with_weight(2.0);
         let loss = config.init();
 
-        let predictions =
-            Tensor::<TestBackend, 2>::from_data(TensorData::from([[0.5, 0.5]]), &device);
+        let predictions = Tensor::<2>::from_data(TensorData::from([[0.5, 0.5]]), &device);
 
         let result = loss.forward(predictions.clone(), Reduction::Mean);
 
@@ -274,37 +256,34 @@ mod tests {
             .try_into()
             .expect("Correct amount of tensor data");
 
-        result_data.assert_approx_eq::<FT>(&expected_data, Tolerance::default());
+        result_data.assert_approx_eq::<f32>(&expected_data, Tolerance::default());
     }
 
     #[test]
     fn thr_reg_loss_forward_different_tensor_dimensions_works() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = ThresholdRegularizationLoss::new();
 
         // Test 1D tensor
-        let pred_1d =
-            Tensor::<TestBackend, 1>::from_data(TensorData::from([0.0, 0.5, 1.0]), &device);
+        let pred_1d = Tensor::<1>::from_data(TensorData::from([0.0, 0.5, 1.0]), &device);
         let result_1d = loss.forward(pred_1d, Reduction::Mean);
 
         // (0 + 0.5 + 0) / 3 = 0.1667
         let expected_1d = TensorData::from([1.0 / 6.0]);
         result_1d
             .into_data()
-            .assert_approx_eq::<FT>(&expected_1d, Tolerance::relative(1e-4));
+            .assert_approx_eq::<f32>(&expected_1d, Tolerance::relative(1e-4));
 
         // Test 3D tensor
-        let pred_3d = Tensor::<TestBackend, 3>::from_data(
-            TensorData::from([[[0.0, 1.0]], [[0.5, 0.25]]]),
-            &device,
-        );
+        let pred_3d =
+            Tensor::<3>::from_data(TensorData::from([[[0.0, 1.0]], [[0.5, 0.25]]]), &device);
         let result_3d = loss.forward(pred_3d, Reduction::Mean);
 
         // (0 + 0 + 0.5 + 0.375) / 4 = 0.21875
         let expected_3d = TensorData::from([0.21875]);
         result_3d
             .into_data()
-            .assert_approx_eq::<FT>(&expected_3d, Tolerance::default());
+            .assert_approx_eq::<f32>(&expected_3d, Tolerance::default());
     }
 
     #[test]
@@ -317,14 +296,12 @@ mod tests {
 
     #[test]
     fn thr_reg_loss_forward_values_outside_range_handles_correctly() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = ThresholdRegularizationLoss::new();
 
         // Test values outside [0,1] range
-        let predictions = Tensor::<TestBackend, 2>::from_data(
-            TensorData::from([[-0.5, 1.5], [2.0, -1.0]]),
-            &device,
-        );
+        let predictions =
+            Tensor::<2>::from_data(TensorData::from([[-0.5, 1.5], [2.0, -1.0]]), &device);
 
         let result = loss.forward(predictions, Reduction::Mean);
 
@@ -336,7 +313,7 @@ mod tests {
         let expected = TensorData::from([-2.75]);
         result
             .into_data()
-            .assert_approx_eq::<FT>(&expected, Tolerance::default());
+            .assert_approx_eq::<f32>(&expected, Tolerance::default());
     }
 
     #[test]

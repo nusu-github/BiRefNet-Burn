@@ -12,7 +12,7 @@ homepage = "https://github.com/nusu-github/BiRefNet-Burn"
 
 [workspace.dependencies]
 # Core Burn dependencies
-burn = { version = "0.21.0", features = ["std"], default-features = false }
+burn = { version = "0.22.0", features = ["std"], default-features = false }
 
 # Error handling
 anyhow = "1"

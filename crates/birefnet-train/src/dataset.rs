@@ -15,7 +15,7 @@ use birefnet_model::{ModelConfig, Task, training::BiRefNetBatch};
 use birefnet_util::apply_imagenet_normalization;
 use burn::{
     data::{dataloader::batcher::Batcher, dataset::Dataset},
-    tensor::{Tensor, TensorData, backend::Backend},
+    tensor::{Tensor, TensorData},
 };
 use image::{DynamicImage, ImageFormat};
 
@@ -46,11 +46,11 @@ pub struct BiRefNetItem {
 /// This batcher handles the conversion from individual data items to batched tensors,
 /// following the same pattern as Burn's official examples.
 #[derive(Clone, Default)]
-pub struct BiRefNetBatcher<B: Backend> {
-    _phantom: PhantomData<B>,
+pub struct BiRefNetBatcher {
+    _phantom: PhantomData,
 }
 
-impl<B: Backend> BiRefNetBatcher<B> {
+impl BiRefNetBatcher {
     /// Create a new BiRefNet batcher.
     pub const fn new() -> Self {
         Self {
@@ -59,8 +59,8 @@ impl<B: Backend> BiRefNetBatcher<B> {
     }
 }
 
-impl<B: Backend> Batcher<B, BiRefNetItem, BiRefNetBatch<B>> for BiRefNetBatcher<B> {
-    fn batch(&self, items: Vec<BiRefNetItem>, device: &B::Device) -> BiRefNetBatch<B> {
+impl Batcher<B, BiRefNetItem, BiRefNetBatch> for BiRefNetBatcher {
+    fn batch(&self, items: Vec<BiRefNetItem>, device: &Device) -> BiRefNetBatch {
         let batch_size = items.len();
 
         // Pre-allocate vectors with known capacity to avoid reallocations
@@ -70,7 +70,7 @@ impl<B: Backend> Batcher<B, BiRefNetItem, BiRefNetBatch<B>> for BiRefNetBatcher<
         // Convert raw data to tensors and collect
         for item in items {
             // Convert image data to tensor [C, H, W]
-            let image_tensor = Tensor::<B, 3>::from_data(
+            let image_tensor = Tensor::<3>::from_data(
                 TensorData::new(item.image, [item.height, item.width, 3]),
                 device,
             )
@@ -83,7 +83,7 @@ impl<B: Backend> Batcher<B, BiRefNetItem, BiRefNetBatch<B>> for BiRefNetBatcher<
                 .squeeze::<3>(); // [1, C, H, W] -> [C, H, W]
 
             // Convert mask data to tensor [1, H, W]
-            let mask_tensor = Tensor::<B, 2>::from_data(
+            let mask_tensor = Tensor::<2>::from_data(
                 TensorData::new(item.mask, [item.height, item.width]),
                 device,
             )
@@ -392,12 +392,10 @@ mod tests {
 
     use super::*;
 
-    type TestBackend = burn::backend::cpu::Cpu<f32>;
-
     #[test]
     fn birefnet_batcher_creates_correct_batch_dimensions() {
-        let device = Default::default();
-        let batcher = BiRefNetBatcher::<TestBackend>::new();
+        let device = burn::tensor::Device::cpu();
+        let batcher = BiRefNetBatcher::new();
 
         let height = 32;
         let width = 32;
@@ -426,10 +424,10 @@ mod tests {
 
     #[test]
     fn birefnet_batch_creation_has_correct_tensor_shapes() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
 
-        let images = Tensor::<TestBackend, 4>::zeros([4, 3, 64, 64], &device);
-        let masks = Tensor::<TestBackend, 4>::zeros([4, 1, 64, 64], &device);
+        let images = Tensor::<4>::zeros([4, 3, 64, 64], &device);
+        let masks = Tensor::<4>::zeros([4, 1, 64, 64], &device);
 
         let batch = BiRefNetBatch { images, masks };
 

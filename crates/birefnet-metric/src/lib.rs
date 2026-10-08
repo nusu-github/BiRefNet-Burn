@@ -36,8 +36,8 @@
 //! let mut f_measure = FMeasureMetric::new();
 //!
 //! // Prepare input (4D tensors: [batch, channel, height, width])
-//! let predictions = Tensor::<B, 4>::zeros([1, 1, 256, 256], &Default::default());
-//! let targets = Tensor::<B, 4>::zeros([1, 1, 256, 256], &Default::default());
+//! let predictions = Tensor::<4>::zeros([1, 1, 256, 256], &Default::default());
+//! let targets = Tensor::<4>::zeros([1, 1, 256, 256], &Default::default());
 //!
 //! // Calculate F-measure
 //! let input = FMeasureInput::new(predictions, targets);
@@ -106,10 +106,3 @@ pub use utils::{AllMetricsResult, calculate_all_metrics};
 pub use weighted_f_measure::{
     WeightedFMeasureMetric, WeightedFMeasureMetricConfig, calculate_weighted_f_measure,
 };
-
-#[cfg(test)]
-mod tests {
-    use burn::backend::Cpu;
-
-    pub type TestBackend = Cpu;
-}

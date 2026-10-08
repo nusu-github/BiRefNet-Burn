@@ -1,4 +1,4 @@
-use burn::tensor::{Tensor, backend::Backend, module::avg_pool2d, ops::PadMode};
+use burn::tensor::{Tensor, module::avg_pool2d, ops::PadMode};
 
 /// Small epsilon value to prevent division by zero in blur fusion calculations
 const EPSILON: f32 = 1e-5;
@@ -55,7 +55,7 @@ impl Padding {
 ///
 /// # Panics
 /// Panics if the input tensor is not 4-dimensional.
-fn pad_replicate<B: Backend>(tensor: Tensor<B, 4>, padding: Padding) -> Tensor<B, 4> {
+fn pad_replicate(tensor: Tensor<4>, padding: Padding) -> Tensor<4> {
     if padding.is_zero() {
         return tensor;
     }
@@ -82,7 +82,7 @@ fn pad_replicate<B: Backend>(tensor: Tensor<B, 4>, padding: Padding) -> Tensor<B
 ///
 /// # Panics
 /// Panics if kernel_size is 0.
-fn mean_blur<B: Backend>(x: Tensor<B, 4>, kernel_size: usize) -> Tensor<B, 4> {
+fn mean_blur(x: Tensor<4>, kernel_size: usize) -> Tensor<4> {
     assert!(kernel_size > 0, "Kernel size must be greater than 0");
 
     let padding = if kernel_size.is_multiple_of(2) {
@@ -123,13 +123,13 @@ fn mean_blur<B: Backend>(x: Tensor<B, 4>, kernel_size: usize) -> Tensor<B, 4> {
 ///
 /// # Panics
 /// Panics if radius is 0 or if tensors have incompatible shapes.
-fn blur_fusion_estimator<B: Backend>(
-    image: Tensor<B, 4>,
-    fg: Tensor<B, 4>,
-    bg: Tensor<B, 4>,
-    alpha: Tensor<B, 4>,
+fn blur_fusion_estimator(
+    image: Tensor<4>,
+    fg: Tensor<4>,
+    bg: Tensor<4>,
+    alpha: Tensor<4>,
     radius: usize,
-) -> (Tensor<B, 4>, Tensor<B, 4>) {
+) -> (Tensor<4>, Tensor<4>) {
     assert!(radius > 0, "Blur radius must be greater than 0");
 
     // Apply blur operations
@@ -175,7 +175,7 @@ fn blur_fusion_estimator<B: Backend>(
 /// use burn::{backend::cpu::Cpu, tensor::Tensor};
 ///
 /// type Backend = Cpu<f32>;
-/// let device = Default::default();
+/// let device = burn::tensor::Device::cpu();
 ///
 /// // Create sample image and mask tensors
 /// let image = Tensor::<Backend, 4>::ones([1, 3, 64, 64], &device) * 0.8;
@@ -185,11 +185,7 @@ fn blur_fusion_estimator<B: Backend>(
 /// let refined = refine_foreground_core(image, mask, 90);
 /// assert_eq!(refined.dims(), [1, 3, 64, 64]);
 /// ```
-pub fn refine_foreground_core<B: Backend>(
-    image: Tensor<B, 4>,
-    mask: Tensor<B, 4>,
-    radius: usize,
-) -> Tensor<B, 4> {
+pub fn refine_foreground_core(image: Tensor<4>, mask: Tensor<4>, radius: usize) -> Tensor<4> {
     assert!(radius > 0, "Blur radius must be greater than 0");
 
     let image_dims = image.dims();
@@ -237,7 +233,7 @@ pub fn refine_foreground_core<B: Backend>(
 /// use burn::{backend::cpu::Cpu, tensor::Tensor};
 ///
 /// type Backend = Cpu<f32>;
-/// let device = Default::default();
+/// let device = burn::tensor::Device::cpu();
 ///
 /// // Create sample image [C, H, W] and mask [H, W]
 /// let image = Tensor::<Backend, 3>::ones([3, 256, 256], &device) * 0.7;
@@ -247,11 +243,7 @@ pub fn refine_foreground_core<B: Backend>(
 /// let refined = refine_foreground(image, mask, Some(45));
 /// assert_eq!(refined.dims(), [3, 256, 256]);
 /// ```
-pub fn refine_foreground<B: Backend>(
-    image: Tensor<B, 3>,
-    mask: Tensor<B, 2>,
-    radius: Option<usize>,
-) -> Tensor<B, 3> {
+pub fn refine_foreground(image: Tensor<3>, mask: Tensor<2>, radius: Option<usize>) -> Tensor<3> {
     let radius = radius.unwrap_or(90);
     assert!(radius > 0, "Blur radius must be greater than 0");
 
@@ -299,7 +291,7 @@ pub fn refine_foreground<B: Backend>(
 /// use burn::{backend::cpu::Cpu, tensor::Tensor};
 ///
 /// type Backend = Cpu<f32>;
-/// let device = Default::default();
+/// let device = burn::tensor::Device::cpu();
 ///
 /// // Create batch of images [B, C, H, W] and masks [B, 1, H, W]
 /// let images = Tensor::<Backend, 4>::ones([4, 3, 128, 128], &device) * 0.6;
@@ -309,27 +301,24 @@ pub fn refine_foreground<B: Backend>(
 /// let refined = refine_foreground_batch(images, masks, None);
 /// assert_eq!(refined.dims(), [4, 3, 128, 128]);
 /// ```
-pub fn refine_foreground_batch<B: Backend>(
-    images: Tensor<B, 4>,
-    masks: Tensor<B, 4>,
+pub fn refine_foreground_batch(
+    images: Tensor<4>,
+    masks: Tensor<4>,
     radius: Option<usize>,
-) -> Tensor<B, 4> {
+) -> Tensor<4> {
     let radius = radius.unwrap_or(90);
     refine_foreground_core(images, masks, radius)
 }
 
 #[cfg(test)]
 mod tests {
-    use burn::backend::cpu::Cpu;
 
     use super::*;
 
-    type TestBackend = Cpu<f32>;
-
     #[test]
     fn pad_replicate_uniform_padding_preserves_dimensions() {
-        let device = Default::default();
-        let tensor = Tensor::<TestBackend, 4>::from_data([[[[1.0, 2.0], [3.0, 4.0]]]], &device);
+        let device = burn::tensor::Device::cpu();
+        let tensor = Tensor::<4>::from_data([[[[1.0, 2.0], [3.0, 4.0]]]], &device);
 
         let padded = pad_replicate(tensor, Padding::uniform(1));
         let expected_shape = [1, 1, 4, 4];
@@ -347,8 +336,8 @@ mod tests {
 
     #[test]
     fn mean_blur_uniform_input_stays_uniform() {
-        let device = Default::default();
-        let tensor = Tensor::<TestBackend, 4>::from_data(
+        let device = burn::tensor::Device::cpu();
+        let tensor = Tensor::<4>::from_data(
             [[[[1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, 1.0]]]],
             &device,
         );
@@ -367,9 +356,9 @@ mod tests {
 
     #[test]
     fn refine_foreground_core_clamps_values_to_range() {
-        let device = Default::default();
-        let image = Tensor::<TestBackend, 4>::from_data([[[[0.5, 0.7], [0.3, 0.9]]]], &device);
-        let mask = Tensor::<TestBackend, 4>::from_data([[[[1.0, 0.8], [0.2, 0.6]]]], &device);
+        let device = burn::tensor::Device::cpu();
+        let image = Tensor::<4>::from_data([[[[0.5, 0.7], [0.3, 0.9]]]], &device);
+        let mask = Tensor::<4>::from_data([[[[1.0, 0.8], [0.2, 0.6]]]], &device);
 
         let refined = refine_foreground_core(image, mask, 3);
         let expected_shape = [1, 1, 2, 2];
@@ -385,15 +374,13 @@ mod tests {
 
     #[test]
     fn refine_foreground_single_image_clamps_to_range() {
-        let device = Default::default();
-        let image = Tensor::<TestBackend, 3>::from_data(
+        let device = burn::tensor::Device::cpu();
+        let image = Tensor::<3>::from_data(
             [[[0.5, 0.7, 0.2], [0.3, 0.9, 0.4], [0.8, 0.1, 0.6]]],
             &device,
         );
-        let mask = Tensor::<TestBackend, 2>::from_data(
-            [[1.0, 0.8, 0.3], [0.2, 0.6, 0.9], [0.7, 0.4, 0.5]],
-            &device,
-        );
+        let mask =
+            Tensor::<2>::from_data([[1.0, 0.8, 0.3], [0.2, 0.6, 0.9], [0.7, 0.4, 0.5]], &device);
 
         let refined = refine_foreground(image, mask, Some(5));
         let expected_shape = [1, 3, 3];
@@ -409,12 +396,12 @@ mod tests {
 
     #[test]
     fn refine_foreground_batch_preserves_shapes() {
-        let device = Default::default();
-        let images = Tensor::<TestBackend, 4>::from_data(
+        let device = burn::tensor::Device::cpu();
+        let images = Tensor::<4>::from_data(
             [[[[0.5, 0.7], [0.3, 0.9]]], [[[0.2, 0.8], [0.6, 0.4]]]],
             &device,
         );
-        let masks = Tensor::<TestBackend, 4>::from_data(
+        let masks = Tensor::<4>::from_data(
             [[[[1.0, 0.8], [0.2, 0.6]]], [[[0.9, 0.3], [0.7, 0.5]]]],
             &device,
         );
@@ -433,8 +420,8 @@ mod tests {
 
     #[test]
     fn pad_replicate_asymmetric_padding_replicates_edges_correctly() {
-        let device = Default::default();
-        let tensor = Tensor::<TestBackend, 4>::from_data([[[[1.0, 2.0], [3.0, 4.0]]]], &device);
+        let device = burn::tensor::Device::cpu();
+        let tensor = Tensor::<4>::from_data([[[[1.0, 2.0], [3.0, 4.0]]]], &device);
 
         let padded = pad_replicate(tensor, Padding::from_tuple((2, 1, 1, 2)));
         let expected_shape = [1, 1, 5, 5]; // Original 2x2 + padding (top=1, bottom=2, left=2, right=1)
@@ -472,8 +459,8 @@ mod tests {
 
     #[test]
     fn mean_blur_odd_and_even_kernels_produce_different_results() {
-        let device = Default::default();
-        let tensor = Tensor::<TestBackend, 4>::from_data(
+        let device = burn::tensor::Device::cpu();
+        let tensor = Tensor::<4>::from_data(
             [[[[1.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 1.0]]]],
             &device,
         );

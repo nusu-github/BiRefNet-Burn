@@ -10,72 +10,72 @@ use derive_new::new;
 
 /// F-measure metric input.
 #[derive(new, Debug, Clone)]
-pub struct FMeasureInput<B: Backend> {
+pub struct FMeasureInput {
     /// Predictions with shape `[batch_size, channels, height, width]`.
-    pub predictions: Tensor<B, 4>,
+    pub predictions: Tensor<4>,
     /// Ground truth with shape `[batch_size, channels, height, width]`.
-    pub targets: Tensor<B, 4>,
+    pub targets: Tensor<4>,
 }
 
 /// MAE metric input.
 #[derive(new, Debug, Clone)]
-pub struct MAEInput<B: Backend> {
+pub struct MAEInput {
     /// Predictions with shape `[batch_size, channels, height, width]`.
-    pub predictions: Tensor<B, 4>,
+    pub predictions: Tensor<4>,
     /// Ground truth with shape `[batch_size, channels, height, width]`.
-    pub targets: Tensor<B, 4>,
+    pub targets: Tensor<4>,
 }
 
 /// MSE metric input.
 #[derive(new, Debug, Clone)]
-pub struct MSEInput<B: Backend> {
+pub struct MSEInput {
     /// Predictions with shape `[batch_size, channels, height, width]`.
-    pub predictions: Tensor<B, 4>,
+    pub predictions: Tensor<4>,
     /// Ground truth with shape `[batch_size, channels, height, width]`.
-    pub targets: Tensor<B, 4>,
+    pub targets: Tensor<4>,
 }
 
 /// BIoU metric input.
 #[derive(new, Debug, Clone)]
-pub struct BIoUInput<B: Backend> {
+pub struct BIoUInput {
     /// Predictions with shape `[batch_size, channels, height, width]`.
-    pub predictions: Tensor<B, 4>,
+    pub predictions: Tensor<4>,
     /// Ground truth with shape `[batch_size, channels, height, width]`.
-    pub targets: Tensor<B, 4>,
+    pub targets: Tensor<4>,
 }
 
 /// Weighted F-measure metric input.
 #[derive(new, Debug, Clone)]
-pub struct WeightedFMeasureInput<B: Backend> {
+pub struct WeightedFMeasureInput {
     /// Predictions with shape `[batch_size, channels, height, width]`.
-    pub predictions: Tensor<B, 4>,
+    pub predictions: Tensor<4>,
     /// Ground truth with shape `[batch_size, channels, height, width]`.
-    pub targets: Tensor<B, 4>,
+    pub targets: Tensor<4>,
 }
 
 /// S-measure metric input.
 #[derive(new, Debug, Clone)]
-pub struct SMeasureInput<B: Backend> {
+pub struct SMeasureInput {
     /// Predictions with shape `[batch_size, channels, height, width]`.
-    pub predictions: Tensor<B, 4>,
+    pub predictions: Tensor<4>,
     /// Ground truth with shape `[batch_size, channels, height, width]`.
-    pub targets: Tensor<B, 4>,
+    pub targets: Tensor<4>,
 }
 
 /// E-measure metric input.
 #[derive(new, Debug, Clone)]
-pub struct EMeasureInput<B: Backend> {
+pub struct EMeasureInput {
     /// Predictions with shape `[batch_size, channels, height, width]`.
-    pub predictions: Tensor<B, 4>,
+    pub predictions: Tensor<4>,
     /// Ground truth with shape `[batch_size, channels, height, width]`.
-    pub targets: Tensor<B, 4>,
+    pub targets: Tensor<4>,
 }
 
 /// Loss metric input for BiRefNet.
 #[derive(new, Debug, Clone)]
-pub struct BiRefNetLossInput<B: Backend> {
+pub struct BiRefNetLossInput {
     /// Loss tensor with shape `[batch_size]` or scalar.
-    pub loss: Tensor<B, 1>,
+    pub loss: Tensor<1>,
     /// Batch size for averaging.
     pub batch_size: usize,
 }

@@ -145,8 +145,8 @@ fn process_single_image(
     tracing::info!("normalized image tensor");
     let image_tensor = interpolate(
         image_normalized,
-        [model_input_size, model_input_size],
-        InterpolateOptions::new(InterpolateMode::Bicubic),
+        InterpolateOptions::new(InterpolateMode::Bicubic)
+            .with_output_size([model_input_size, model_input_size]),
     );
     tracing::info!(size = model_input_size, "resized model input");
 
@@ -158,8 +158,7 @@ fn process_single_image(
 
     let mask = interpolate(
         mask,
-        [h, w],
-        InterpolateOptions::new(InterpolateMode::Bicubic),
+        InterpolateOptions::new(InterpolateMode::Bicubic).with_output_size([h, w]),
     );
     tracing::info!("resized mask");
 

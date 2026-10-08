@@ -3,7 +3,7 @@
 //! This module provides distance transform algorithms required for implementing
 //! evaluation metrics like WeightedFMeasure that depend on spatial distance calculations.
 
-use burn::tensor::{ElementConversion, Tensor, backend::Backend, s};
+use burn::tensor::{ElementConversion, Tensor, s};
 
 /// Euclidean distance transform with indices (simplified implementation)
 ///
@@ -18,9 +18,9 @@ use burn::tensor::{ElementConversion, Tensor, backend::Backend, s};
 /// - distance_tensor: [B, C, H, W] with distances to nearest foreground pixel
 /// - indices_y: [B, C, H, W] with y-coordinates of nearest foreground pixels  
 /// - indices_x: [B, C, H, W] with x-coordinates of nearest foreground pixels
-pub fn euclidean_distance_transform<B: Backend>(
-    binary_image: Tensor<B, 4>,
-) -> (Tensor<B, 4>, (Tensor<B, 4>, Tensor<B, 4>)) {
+pub fn euclidean_distance_transform(
+    binary_image: Tensor<4>,
+) -> (Tensor<4>, (Tensor<4>, Tensor<4>)) {
     let [batch_size, channels, height, width] = binary_image.dims();
     let device = binary_image.device();
 
@@ -28,9 +28,9 @@ pub fn euclidean_distance_transform<B: Backend>(
     // find the nearest foreground pixel by checking all foreground pixels
     let large_value = (height + width) as f32;
     let mut distances =
-        Tensor::<B, 4>::ones([batch_size, channels, height, width], &device) * large_value;
-    let mut indices_y = Tensor::<B, 4>::zeros([batch_size, channels, height, width], &device);
-    let mut indices_x = Tensor::<B, 4>::zeros([batch_size, channels, height, width], &device);
+        Tensor::<4>::ones([batch_size, channels, height, width], &device) * large_value;
+    let mut indices_y = Tensor::<4>::zeros([batch_size, channels, height, width], &device);
+    let mut indices_x = Tensor::<4>::zeros([batch_size, channels, height, width], &device);
 
     // Collect foreground pixel positions
     let mut fg_pixels = Vec::new();
@@ -42,7 +42,7 @@ pub fn euclidean_distance_transform<B: Backend>(
                     let pixel_val = binary_image
                         .clone()
                         .slice(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1])
-                        .into_scalar()
+                        .into_scalar::<f32>()
                         .elem::<f32>();
 
                     if pixel_val < 0.5 {
@@ -63,17 +63,17 @@ pub fn euclidean_distance_transform<B: Backend>(
                     let pixel_val = binary_image
                         .clone()
                         .slice(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1])
-                        .into_scalar()
+                        .into_scalar::<f32>()
                         .elem::<f32>();
 
                     if pixel_val < 0.5 {
                         // Foreground pixel - distance is 0, indices point to self
                         let zero_tensor =
-                            Tensor::<B, 1>::from_floats([0.0], &device).reshape([1, 1, 1, 1]);
+                            Tensor::<1>::from_floats([0.0], &device).reshape([1, 1, 1, 1]);
                         let y_tensor =
-                            Tensor::<B, 1>::from_floats([y as f32], &device).reshape([1, 1, 1, 1]);
+                            Tensor::<1>::from_floats([y as f32], &device).reshape([1, 1, 1, 1]);
                         let x_tensor =
-                            Tensor::<B, 1>::from_floats([x as f32], &device).reshape([1, 1, 1, 1]);
+                            Tensor::<1>::from_floats([x as f32], &device).reshape([1, 1, 1, 1]);
 
                         distances = distances
                             .slice_assign(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1], zero_tensor);
@@ -102,11 +102,11 @@ pub fn euclidean_distance_transform<B: Backend>(
                                 }
                             }
 
-                            let dist_tensor = Tensor::<B, 1>::from_floats([min_dist], &device)
+                            let dist_tensor =
+                                Tensor::<1>::from_floats([min_dist], &device).reshape([1, 1, 1, 1]);
+                            let y_tensor = Tensor::<1>::from_floats([best_y as f32], &device)
                                 .reshape([1, 1, 1, 1]);
-                            let y_tensor = Tensor::<B, 1>::from_floats([best_y as f32], &device)
-                                .reshape([1, 1, 1, 1]);
-                            let x_tensor = Tensor::<B, 1>::from_floats([best_x as f32], &device)
+                            let x_tensor = Tensor::<1>::from_floats([best_x as f32], &device)
                                 .reshape([1, 1, 1, 1]);
 
                             distances = distances.slice_assign(
@@ -136,17 +136,17 @@ pub fn euclidean_distance_transform<B: Backend>(
 ///
 /// # Returns
 /// Distance tensor [B, C, H, W] with Manhattan distances to nearest foreground pixel
-pub fn manhattan_distance_transform<B: Backend>(binary_image: Tensor<B, 4>) -> Tensor<B, 4> {
+pub fn manhattan_distance_transform(binary_image: Tensor<4>) -> Tensor<4> {
     let [batch_size, channels, height, width] = binary_image.dims();
     let device = binary_image.device();
 
     // Initialize distance tensor
     let large_value = (height + width) as f32;
     let mut distances =
-        Tensor::<B, 4>::ones([batch_size, channels, height, width], &device) * large_value;
+        Tensor::<4>::ones([batch_size, channels, height, width], &device) * large_value;
 
     // Set distance to 0 for foreground pixels
-    let zero_threshold = Tensor::<B, 4>::zeros_like(&binary_image) + 0.5;
+    let zero_threshold = Tensor::<4>::zeros_like(&binary_image) + 0.5;
     let foreground_mask = binary_image.lower(zero_threshold);
     distances = distances.mask_fill(foreground_mask, 0.0);
 
@@ -159,7 +159,7 @@ pub fn manhattan_distance_transform<B: Backend>(binary_image: Tensor<B, 4>) -> T
                     let current_dist = distances
                         .clone()
                         .slice(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1])
-                        .into_scalar()
+                        .into_scalar::<f32>()
                         .elem::<f32>();
 
                     let mut min_dist = current_dist;
@@ -169,7 +169,7 @@ pub fn manhattan_distance_transform<B: Backend>(binary_image: Tensor<B, 4>) -> T
                         let top_dist = distances
                             .clone()
                             .slice(s![b..b + 1, c..c + 1, y - 1..y, x..x + 1])
-                            .into_scalar()
+                            .into_scalar::<f32>()
                             .elem::<f32>();
                         min_dist = min_dist.min(top_dist + 1.0);
                     }
@@ -178,14 +178,14 @@ pub fn manhattan_distance_transform<B: Backend>(binary_image: Tensor<B, 4>) -> T
                         let left_dist = distances
                             .clone()
                             .slice(s![b..b + 1, c..c + 1, y..y + 1, x - 1..x])
-                            .into_scalar()
+                            .into_scalar::<f32>()
                             .elem::<f32>();
                         min_dist = min_dist.min(left_dist + 1.0);
                     }
 
                     if min_dist < current_dist {
                         let dist_tensor =
-                            Tensor::<B, 1>::from_floats([min_dist], &device).reshape([1, 1, 1, 1]);
+                            Tensor::<1>::from_floats([min_dist], &device).reshape([1, 1, 1, 1]);
                         distances = distances
                             .slice_assign(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1], dist_tensor);
                     }
@@ -202,7 +202,7 @@ pub fn manhattan_distance_transform<B: Backend>(binary_image: Tensor<B, 4>) -> T
                     let current_dist = distances
                         .clone()
                         .slice(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1])
-                        .into_scalar()
+                        .into_scalar::<f32>()
                         .elem::<f32>();
 
                     let mut min_dist = current_dist;
@@ -212,7 +212,7 @@ pub fn manhattan_distance_transform<B: Backend>(binary_image: Tensor<B, 4>) -> T
                         let bottom_dist = distances
                             .clone()
                             .slice(s![b..b + 1, c..c + 1, y + 1..y + 2, x..x + 1])
-                            .into_scalar()
+                            .into_scalar::<f32>()
                             .elem::<f32>();
                         min_dist = min_dist.min(bottom_dist + 1.0);
                     }
@@ -221,14 +221,14 @@ pub fn manhattan_distance_transform<B: Backend>(binary_image: Tensor<B, 4>) -> T
                         let right_dist = distances
                             .clone()
                             .slice(s![b..b + 1, c..c + 1, y..y + 1, x + 1..x + 2])
-                            .into_scalar()
+                            .into_scalar::<f32>()
                             .elem::<f32>();
                         min_dist = min_dist.min(right_dist + 1.0);
                     }
 
                     if min_dist < current_dist {
                         let dist_tensor =
-                            Tensor::<B, 1>::from_floats([min_dist], &device).reshape([1, 1, 1, 1]);
+                            Tensor::<1>::from_floats([min_dist], &device).reshape([1, 1, 1, 1]);
                         distances = distances
                             .slice_assign(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1], dist_tensor);
                     }
@@ -247,7 +247,7 @@ pub fn manhattan_distance_transform<B: Backend>(binary_image: Tensor<B, 4>) -> T
 ///
 /// # Returns
 /// Distance tensor [B, C, H, W] with Euclidean distances to nearest foreground pixel
-pub fn euclidean_distance_transform_simple<B: Backend>(binary_image: Tensor<B, 4>) -> Tensor<B, 4> {
+pub fn euclidean_distance_transform_simple(binary_image: Tensor<4>) -> Tensor<4> {
     let (distances, _indices) = euclidean_distance_transform(binary_image);
     distances
 }
@@ -263,10 +263,10 @@ pub fn euclidean_distance_transform_simple<B: Backend>(binary_image: Tensor<B, 4
 /// # Returns
 /// If return_indices is true: (distances, (indices_y, indices_x))
 /// If return_indices is false: distances only
-pub fn bwdist<B: Backend>(
-    binary_image: Tensor<B, 4>,
+pub fn bwdist(
+    binary_image: Tensor<4>,
     return_indices: bool,
-) -> (Tensor<B, 4>, Option<(Tensor<B, 4>, Tensor<B, 4>)>) {
+) -> (Tensor<4>, Option<(Tensor<4>, Tensor<4>)>) {
     if return_indices {
         let (dist, indices) = euclidean_distance_transform(binary_image);
         (dist, Some(indices))
@@ -278,28 +278,25 @@ pub fn bwdist<B: Backend>(
 
 #[cfg(test)]
 mod tests {
-    use burn::backend::Cpu;
 
     use super::*;
 
-    type TestBackend = Cpu;
-
     #[test]
     fn manhattan_distance_transform_single_point() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
 
         // Create 5x5 image with single foreground pixel at center
         let mut image_data = [[1.0; 5]; 5]; // All background
         image_data[2][2] = 0.0; // Center pixel is foreground
 
-        let image = Tensor::<TestBackend, 4>::from_data([[image_data]], &device);
+        let image = Tensor::<4>::from_data([[image_data]], &device);
         let distances = manhattan_distance_transform(image);
 
         // Check center distance is 0
         let center_dist = distances
             .clone()
             .slice(s![0..1, 0..1, 2..3, 2..3])
-            .into_scalar()
+            .into_scalar::<f32>()
             .elem::<f32>();
         assert!((center_dist - 0.0).abs() < 1e-6);
 
@@ -307,7 +304,7 @@ mod tests {
         let neighbor_dist = distances
             .clone()
             .slice(s![0..1, 0..1, 1..2, 2..3])
-            .into_scalar()
+            .into_scalar::<f32>()
             .elem::<f32>();
         assert!((neighbor_dist - 1.0).abs() < 1e-6);
 
@@ -315,27 +312,27 @@ mod tests {
         let corner_dist = distances
             .clone()
             .slice(s![0..1, 0..1, 0..1, 0..1])
-            .into_scalar()
+            .into_scalar::<f32>()
             .elem::<f32>();
         assert!((corner_dist - 4.0).abs() < 1e-6);
     }
 
     #[test]
     fn euclidean_distance_transform_single_point() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
 
         // Create 3x3 image with single foreground pixel at center
         let mut image_data = [[1.0; 3]; 3]; // All background
         image_data[1][1] = 0.0; // Center pixel is foreground
 
-        let image = Tensor::<TestBackend, 4>::from_data([[image_data]], &device);
+        let image = Tensor::<4>::from_data([[image_data]], &device);
         let (distances, (indices_y, indices_x)) = euclidean_distance_transform(image);
 
         // Check center distance is 0
         let center_dist = distances
             .clone()
             .slice(s![0..1, 0..1, 1..2, 1..2])
-            .into_scalar()
+            .into_scalar::<f32>()
             .elem::<f32>();
         assert!((center_dist - 0.0).abs() < 1e-6);
 
@@ -343,12 +340,12 @@ mod tests {
         let corner_idx_y = indices_y
             .clone()
             .slice(s![0..1, 0..1, 0..1, 0..1])
-            .into_scalar()
+            .into_scalar::<f32>()
             .elem::<f32>();
         let corner_idx_x = indices_x
             .clone()
             .slice(s![0..1, 0..1, 0..1, 0..1])
-            .into_scalar()
+            .into_scalar::<f32>()
             .elem::<f32>();
 
         assert!((corner_idx_y - 1.0).abs() < 1e-6); // Should point to center y=1
@@ -357,20 +354,20 @@ mod tests {
 
     #[test]
     fn euclidean_distance_transform_diagonal_distance() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
 
         // Create 3x3 image with single foreground pixel at center
         let mut image_data = [[1.0; 3]; 3];
         image_data[1][1] = 0.0; // Center at (1,1)
 
-        let image = Tensor::<TestBackend, 4>::from_data([[image_data]], &device);
+        let image = Tensor::<4>::from_data([[image_data]], &device);
         let (distances, _) = euclidean_distance_transform(image);
 
         // Check diagonal distance (should be sqrt(2) ≈ 1.414)
         let corner_dist = distances
             .clone()
             .slice(s![0..1, 0..1, 0..1, 0..1])
-            .into_scalar()
+            .into_scalar::<f32>()
             .elem::<f32>();
 
         let expected_diagonal = 2.0_f32.sqrt(); // sqrt(1^2 + 1^2)
@@ -379,12 +376,12 @@ mod tests {
 
     #[test]
     fn bwdist_compatibility_function_works() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
 
         let mut image_data = [[1.0; 3]; 3];
         image_data[1][1] = 0.0; // Center foreground
 
-        let image = Tensor::<TestBackend, 4>::from_data([[image_data]], &device);
+        let image = Tensor::<4>::from_data([[image_data]], &device);
 
         // Test without indices
         let (distances, indices_opt) = bwdist(image.clone(), false);
@@ -398,25 +395,25 @@ mod tests {
         let diff = (distances - distances_with_idx)
             .abs()
             .sum()
-            .into_scalar()
+            .into_scalar::<f32>()
             .elem::<f32>();
         assert!(diff < 1e-6);
     }
 
     #[test]
     fn distance_transforms_handle_all_foreground() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
 
         // Create image with all foreground pixels
         let image_data = [[0.0; 3]; 3]; // All foreground
-        let image = Tensor::<TestBackend, 4>::from_data([[image_data]], &device);
+        let image = Tensor::<4>::from_data([[image_data]], &device);
 
         let manhattan_dist = manhattan_distance_transform(image.clone());
         let euclidean_dist = euclidean_distance_transform_simple(image);
 
         // All distances should be 0
-        let manhattan_sum = manhattan_dist.sum().into_scalar().elem::<f32>();
-        let euclidean_sum = euclidean_dist.sum().into_scalar().elem::<f32>();
+        let manhattan_sum = manhattan_dist.sum().into_scalar::<f32>().elem::<f32>();
+        let euclidean_sum = euclidean_dist.sum().into_scalar::<f32>().elem::<f32>();
 
         assert!(manhattan_sum < 1e-6);
         assert!(euclidean_sum < 1e-6);

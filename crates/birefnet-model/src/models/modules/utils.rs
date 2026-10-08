@@ -13,14 +13,14 @@ use crate::{
 };
 
 #[derive(Module, Debug)]
-pub enum NormLayerEnum<B: Backend> {
+pub enum NormLayerEnum {
     ChannelsFirst(ChannelsFirst),
     ChannelsLast(ChannelsLast),
-    BatchNorm2d(BatchNorm<B>),
-    BasicDecBlk(LayerNorm<B>),
+    BatchNorm2d(BatchNorm),
+    BasicDecBlk(LayerNorm),
 }
 
-#[derive(Module, Debug, Clone)]
+#[derive(Module, Debug)]
 pub struct ChannelsFirst;
 
 impl Default for ChannelsFirst {
@@ -34,12 +34,12 @@ impl ChannelsFirst {
         Self {}
     }
 
-    pub fn forward<B: Backend>(&self, input: Tensor<B, 4>) -> Tensor<B, 4> {
+    pub fn forward(&self, input: Tensor<4>) -> Tensor<4> {
         input.permute([0, 3, 1, 2])
     }
 }
 
-#[derive(Module, Debug, Clone)]
+#[derive(Module, Debug)]
 pub struct ChannelsLast;
 
 impl Default for ChannelsLast {
@@ -53,19 +53,19 @@ impl ChannelsLast {
         Self {}
     }
 
-    pub fn forward<B: Backend>(&self, input: Tensor<B, 4>) -> Tensor<B, 4> {
+    pub fn forward(&self, input: Tensor<4>) -> Tensor<4> {
         input.permute([0, 2, 3, 1])
     }
 }
 
-pub fn build_norm_layer<B: Backend>(
+pub fn build_norm_layer(
     dim: usize,
     norm_layer: &str,
     in_format: bool,
     out_format: bool,
     eps: f64,
-    device: &Device<B>,
-) -> BiRefNetResult<Vec<NormLayerEnum<B>>> {
+    device: &Device,
+) -> BiRefNetResult<Vec<NormLayerEnum>> {
     match norm_layer {
         "BN" => {
             let mut layer = Vec::with_capacity(3);
@@ -122,15 +122,18 @@ pub enum ActLayerEnum {
 /// - During training (backward pass), Burn only supports Nearest interpolation
 /// - During inference, both Bilinear and Nearest are supported
 /// - The 'Auto' strategy automatically selects the appropriate mode
-pub fn intelligent_interpolate<B: Backend>(
-    tensor: Tensor<B, 4>,
+pub fn intelligent_interpolate(
+    tensor: Tensor<4>,
     size: [usize; 2],
     strategy: &InterpolationStrategy,
-) -> Tensor<B, 4> {
+) -> Tensor<4> {
     let interpolate_mode = match strategy {
         InterpolationStrategy::Bilinear => InterpolateMode::Bilinear,
         InterpolationStrategy::Nearest => InterpolateMode::Nearest,
     };
 
-    interpolate(tensor, size, InterpolateOptions::new(interpolate_mode))
+    interpolate(
+        tensor,
+        InterpolateOptions::new(interpolate_mode).with_output_size(size),
+    )
 }

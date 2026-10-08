@@ -9,7 +9,7 @@ use std::sync::Arc;
 use birefnet_util::{StructuringElement, erosion};
 use burn::{
     prelude::*,
-    tensor::{Tensor, backend::Backend, cast::ToElement},
+    tensor::{Tensor, cast::ToElement},
     train::metric::{
         Metric, MetricMetadata, Numeric, NumericEntry,
         state::{FormatOptions, NumericMetricState},
@@ -30,14 +30,14 @@ pub struct BIoUMetricConfig {
 
 /// BIoU metric.
 #[derive(Default, Clone)]
-pub struct BIoUMetric<B: Backend> {
+pub struct BIoUMetric {
     state: NumericMetricState,
     dilation_ratio: f64,
     name: Arc<String>,
-    _b: PhantomData<B>,
+    _b: PhantomData,
 }
 
-impl<B: Backend> BIoUMetric<B> {
+impl BIoUMetric {
     /// Creates a new BIoU metric.
     pub fn new() -> Self {
         Self {
@@ -59,8 +59,8 @@ impl<B: Backend> BIoUMetric<B> {
     }
 }
 
-impl<B: Backend> Metric for BIoUMetric<B> {
-    type Input = BIoUInput<B>;
+impl Metric for BIoUMetric {
+    type Input = BIoUInput;
 
     fn name(&self) -> Arc<String> {
         self.name.clone()
@@ -77,12 +77,12 @@ impl<B: Backend> Metric for BIoUMetric<B> {
 
         // Process each item in the batch
         for b in 0..batch_size {
-            let pred: Tensor<B, 3> = item
+            let pred: Tensor<3> = item
                 .predictions
                 .clone()
                 .slice(s![b..=b, .., .., ..])
                 .squeeze();
-            let gt: Tensor<B, 3> = item.targets.clone().slice(s![b..=b, .., .., ..]).squeeze();
+            let gt: Tensor<3> = item.targets.clone().slice(s![b..=b, .., .., ..]).squeeze();
 
             let biou_curve = calculate_biou_curve(pred, gt, self.dilation_ratio);
             total_biou_curves.push(biou_curve);
@@ -103,7 +103,7 @@ impl<B: Backend> Metric for BIoUMetric<B> {
     }
 }
 
-impl<B: Backend> Numeric for BIoUMetric<B> {
+impl Numeric for BIoUMetric {
     fn value(&self) -> NumericEntry {
         self.state.current_value()
     }
@@ -127,9 +127,9 @@ impl<B: Backend> Numeric for BIoUMetric<B> {
 ///
 /// # Returns
 /// Vector of IoU values across thresholds (256 values).
-fn calculate_biou_curve<B: Backend>(
-    predictions: Tensor<B, 3>,
-    targets: Tensor<B, 3>,
+fn calculate_biou_curve(
+    predictions: Tensor<3>,
+    targets: Tensor<3>,
     dilation_ratio: f64,
 ) -> Vec<f64> {
     // Prepare data following Python _prepare_data function
@@ -144,7 +144,7 @@ fn calculate_biou_curve<B: Backend>(
 }
 
 /// Prepares prediction and ground truth data following Python _prepare_data logic.
-fn prepare_data<B: Backend>(pred: Tensor<B, 3>, gt: Tensor<B, 3>) -> (Tensor<B, 3>, Tensor<B, 3>) {
+fn prepare_data(pred: Tensor<3>, gt: Tensor<3>) -> (Tensor<3>, Tensor<3>) {
     // gt = gt > 128 (binary ground truth)
     let gt_binary = gt.greater_elem(128).float();
 
@@ -156,10 +156,15 @@ fn prepare_data<B: Backend>(pred: Tensor<B, 3>, gt: Tensor<B, 3>) -> (Tensor<B, 
     let pred_max = pred_norm.clone().max();
     let range = pred_max - pred_min.clone();
 
-    let pred_final = if range.clone().greater_elem(1e-8).into_scalar().to_bool() {
+    let pred_final = if range
+        .clone()
+        .greater_elem(1e-8)
+        .into_scalar::<f32>()
+        .to_bool()
+    {
         // Normalize to [0, 1] if there's variation
-        let pred_min_scalar = pred_min.into_scalar().to_f64();
-        let range_scalar = range.into_scalar().to_f64();
+        let pred_min_scalar = pred_min.into_scalar::<f32>().to_f64();
+        let range_scalar = range.into_scalar::<f32>().to_f64();
         (pred_norm - pred_min_scalar) / range_scalar
     } else {
         // Use as-is if all values are the same
@@ -175,7 +180,7 @@ fn prepare_data<B: Backend>(pred: Tensor<B, 3>, gt: Tensor<B, 3>) -> (Tensor<B, 
 /// 1. Calculate dilation based on image diagonal and dilation_ratio
 /// 2. Apply erosion to get inner mask
 /// 3. Subtract to get boundary
-fn mask_to_boundary<B: Backend>(mask: Tensor<B, 3>, dilation_ratio: f64) -> Tensor<B, 3> {
+fn mask_to_boundary(mask: Tensor<3>, dilation_ratio: f64) -> Tensor<3> {
     let [_c, h, w] = mask.dims();
     let device = mask.device();
 
@@ -206,10 +211,7 @@ fn mask_to_boundary<B: Backend>(mask: Tensor<B, 3>, dilation_ratio: f64) -> Tens
 /// - Create 256 threshold bins from 0 to 255
 /// - Calculate true positives and false positives for each threshold
 /// - Compute IoU = TP / (T + FP) where T is total ground truth positives
-fn calculate_biou_histogram_curves<B: Backend>(
-    pred_boundary: Tensor<B, 3>,
-    gt_boundary: Tensor<B, 3>,
-) -> Vec<f64> {
+fn calculate_biou_histogram_curves(pred_boundary: Tensor<3>, gt_boundary: Tensor<3>) -> Vec<f64> {
     // Convert to uint8 range for histogram calculation
     let pred_u8 = pred_boundary.mul_scalar(255.0).clamp(0.0, 255.0);
     let gt_binary = gt_boundary.greater_elem(128);
@@ -226,9 +228,9 @@ fn calculate_biou_histogram_curves<B: Backend>(
             .sum();
         let t = gt_binary.clone().int().sum();
 
-        let tp_val = tp.into_scalar().to_f64();
-        let fp_val = fp.into_scalar().to_f64();
-        let t_val = t.into_scalar().to_f64().max(1.0); // Avoid division by zero
+        let tp_val = tp.into_scalar::<f32>().to_f64();
+        let fp_val = fp.into_scalar::<f32>().to_f64();
+        let t_val = t.into_scalar::<f32>().to_f64().max(1.0); // Avoid division by zero
 
         let iou = tp_val / (t_val + fp_val);
         ious.push(iou);
@@ -262,11 +264,7 @@ fn average_biou_curves(curves: Vec<Vec<f64>>) -> f64 {
 }
 
 /// Public function for external use.
-pub fn calculate_biou<B: Backend>(
-    predictions: Tensor<B, 2>,
-    targets: Tensor<B, 2>,
-    dilation_ratio: f64,
-) -> f64 {
+pub fn calculate_biou(predictions: Tensor<2>, targets: Tensor<2>, dilation_ratio: f64) -> f64 {
     // Convert 2D to 3D for internal processing
     let pred_3d = predictions.unsqueeze_dim(0);
     let gt_3d = targets.unsqueeze_dim(0);

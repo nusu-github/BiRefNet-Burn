@@ -14,7 +14,7 @@ use burn::{
     config::Config,
     module::{Content, DisplaySettings, Module, ModuleDisplay, Param},
     nn::{PaddingConfig2d, conv::Conv2dConfig, loss::Reduction},
-    tensor::{Tensor, backend::Backend},
+    tensor::{Device, Tensor},
 };
 
 /// Configuration for creating an [SSIM loss](SSIMLoss).
@@ -78,7 +78,7 @@ impl SSIMLossConfig {
 /// Computes the structural similarity between two images and returns
 /// the corresponding loss value. Uses a Gaussian window for local
 /// similarity computation and includes stability constants.
-#[derive(Module, Clone, Debug)]
+#[derive(Module, Debug)]
 #[module(custom_display)]
 pub struct SSIMLoss {
     /// Size of the Gaussian window.
@@ -127,12 +127,12 @@ impl SSIMLoss {
     /// - predictions: `[batch_size, channels, height, width]`
     /// - targets: `[batch_size, channels, height, width]`
     /// - output: `[1]`
-    pub fn forward<B: Backend>(
+    pub fn forward(
         &self,
-        predictions: Tensor<B, 4>,
-        targets: Tensor<B, 4>,
+        predictions: Tensor<4>,
+        targets: Tensor<4>,
         reduction: Reduction,
-    ) -> Tensor<B, 1> {
+    ) -> Tensor<1> {
         let loss = self.forward_no_reduction(predictions, targets);
         crate::reduce_loss(loss, reduction)
     }
@@ -144,18 +144,14 @@ impl SSIMLoss {
     /// - predictions: `[batch_size, channels, height, width]`
     /// - targets: `[batch_size, channels, height, width]`
     /// - output: `[batch_size]`
-    pub fn forward_no_reduction<B: Backend>(
-        &self,
-        predictions: Tensor<B, 4>,
-        targets: Tensor<B, 4>,
-    ) -> Tensor<B, 1> {
+    pub fn forward_no_reduction(&self, predictions: Tensor<4>, targets: Tensor<4>) -> Tensor<1> {
         self.assertions(&predictions, &targets);
 
         let [_, channels, ..] = predictions.dims();
         let device = predictions.device();
 
         // Create Gaussian window
-        let window = self.create_window::<B>(channels, &device);
+        let window = self.create_window(channels, &device);
 
         // SSIM constants (use f64 directly)
         let c1 = self.c1;
@@ -171,7 +167,7 @@ impl SSIMLoss {
     }
 
     /// Create Gaussian window for SSIM calculation.
-    fn create_window<B: Backend>(&self, channels: usize, device: &B::Device) -> Tensor<B, 4> {
+    fn create_window(&self, channels: usize, device: &Device) -> Tensor<4> {
         let window_size = self.window_size as i32;
         let mean = window_size / 2;
 
@@ -190,7 +186,7 @@ impl SSIMLoss {
         }
 
         // Convert to tensor and create 2D window
-        let window_1d = Tensor::<B, 1>::from_floats(gauss_1d.as_slice(), device);
+        let window_1d = Tensor::<1>::from_floats(gauss_1d.as_slice(), device);
         let window_1d = window_1d.unsqueeze::<2>();
         let window_2d = window_1d.clone().matmul(window_1d.transpose());
 
@@ -202,14 +198,14 @@ impl SSIMLoss {
     }
 
     /// Compute SSIM for batch of images.
-    fn compute_ssim_batch<B: Backend>(
+    fn compute_ssim_batch(
         &self,
-        img1: Tensor<B, 4>,
-        img2: Tensor<B, 4>,
-        window: Tensor<B, 4>,
+        img1: Tensor<4>,
+        img2: Tensor<4>,
+        window: Tensor<4>,
         c1: f64,
         c2: f64,
-    ) -> Tensor<B, 1> {
+    ) -> Tensor<1> {
         let [batch_size, channels, ..] = img1.dims();
         let device = img1.device();
         let padding = self.window_size / 2;
@@ -217,7 +213,9 @@ impl SSIMLoss {
         // Create convolution layer with Gaussian window
         let mut conv =
             Conv2dConfig::new([channels, channels], [self.window_size, self.window_size])
-                .with_padding(PaddingConfig2d::Explicit(padding, padding, padding, padding))
+                .with_padding(PaddingConfig2d::Explicit(
+                    padding, padding, padding, padding,
+                ))
                 .with_groups(channels)
                 .with_bias(false)
                 .init(&device);
@@ -250,7 +248,7 @@ impl SSIMLoss {
             .squeeze::<1>()
     }
 
-    fn assertions<B: Backend>(&self, predictions: &Tensor<B, 4>, targets: &Tensor<B, 4>) {
+    fn assertions(&self, predictions: &Tensor<4>, targets: &Tensor<4>) {
         let pred_dims = predictions.dims();
         let target_dims = targets.dims();
         assert_eq!(
@@ -265,70 +263,62 @@ mod tests {
     use burn::tensor::{TensorData, cast::ToElement};
 
     use super::*;
-    use crate::tests::TestBackend;
 
     #[test]
     fn ssim_loss_forward_identical_images_returns_low_loss() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = SSIMLoss::new();
 
         // Identical images should have SSIM ≈ 1, loss ≈ 0
-        let img1 = Tensor::<TestBackend, 4>::from_data(
-            TensorData::from([[[[0.5, 0.6], [0.7, 0.8]]]]),
-            &device,
-        );
+        let img1 = Tensor::<4>::from_data(TensorData::from([[[[0.5, 0.6], [0.7, 0.8]]]]), &device);
         let img2 = img1.clone();
 
         let result_mean = loss.forward(img1.clone(), img2.clone(), Reduction::Mean);
         let result_no_reduction = loss.forward_no_reduction(img1, img2);
 
         // Should be very low loss for identical images
-        assert!(result_mean.clone().into_scalar().to_f64() >= 0.0);
-        assert!(result_mean.into_scalar().to_f64() < 1.0);
+        assert!(result_mean.clone().into_scalar::<f32>().to_f64() >= 0.0);
+        assert!(result_mean.into_scalar::<f32>().to_f64() < 1.0);
 
         assert_eq!(result_no_reduction.dims(), [1]); // batch_size = 1
-        assert!(result_no_reduction.into_scalar().to_f64() >= 0.0);
+        assert!(result_no_reduction.into_scalar::<f32>().to_f64() >= 0.0);
     }
 
     #[test]
     fn ssim_loss_forward_different_images_returns_higher_loss() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = SSIMLoss::new();
 
         // Very different images
-        let img1 = Tensor::<TestBackend, 4>::from_data(
-            TensorData::from([[[[1.0, 1.0], [1.0, 1.0]]]]),
-            &device,
-        );
-        let img2 = Tensor::<TestBackend, 4>::from_data(
-            TensorData::from([[[[0.0, 0.0], [0.0, 0.0]]]]),
-            &device,
-        );
+        let img1 = Tensor::<4>::from_data(TensorData::from([[[[1.0, 1.0], [1.0, 1.0]]]]), &device);
+        let img2 = Tensor::<4>::from_data(TensorData::from([[[[0.0, 0.0], [0.0, 0.0]]]]), &device);
 
         let result_mean = loss.forward(img1.clone(), img2.clone(), Reduction::Mean);
         let result_sum = loss.forward(img1.clone(), img2.clone(), Reduction::Sum);
         let result_no_reduction = loss.forward_no_reduction(img1, img2);
 
         // Should be higher loss for different images
-        assert!(result_mean.clone().into_scalar().to_f64() > 0.0);
-        assert!(result_sum.into_scalar().to_f64() >= result_mean.into_scalar().to_f64());
+        assert!(result_mean.clone().into_scalar::<f32>().to_f64() > 0.0);
+        assert!(
+            result_sum.into_scalar::<f32>().to_f64() >= result_mean.into_scalar::<f32>().to_f64()
+        );
         assert_eq!(result_no_reduction.dims(), [1]);
     }
 
     #[test]
     fn ssim_loss_forward_batch_images_validates_range_and_shapes() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = SSIMLoss::new();
 
         // Batch of 2 images
-        let img1 = Tensor::<TestBackend, 4>::from_data(
+        let img1 = Tensor::<4>::from_data(
             TensorData::from([
                 [[[0.8, 0.2], [0.3, 0.9]]],    // Sample 1
                 [[[0.1, 0.95], [0.85, 0.05]]], // Sample 2
             ]),
             &device,
         );
-        let img2 = Tensor::<TestBackend, 4>::from_data(
+        let img2 = Tensor::<4>::from_data(
             TensorData::from([
                 [[[0.7, 0.3], [0.4, 0.8]]],    // Sample 1 (similar)
                 [[[0.9, 0.05], [0.15, 0.95]]], // Sample 2 (different)
@@ -344,12 +334,12 @@ mod tests {
         assert_eq!(result_no_reduction.dims(), [2]); // batch_size = 2
 
         // All values should be finite and in [0, 1] range
-        assert!(result_mean.into_scalar().to_f64().is_finite());
+        assert!(result_mean.into_scalar::<f32>().to_f64().is_finite());
         for i in 0..2 {
             let sample_loss = result_no_reduction
                 .clone()
                 .select(0, Tensor::from_data([i], &device))
-                .into_scalar()
+                .into_scalar::<f32>()
                 .to_f64();
             assert!(
                 (0.0..=1.0).contains(&sample_loss),
@@ -360,11 +350,11 @@ mod tests {
 
     #[test]
     fn ssim_loss_forward_multichannel_images_works() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = SSIMLoss::new();
 
         // RGB images (3 channels)
-        let img1 = Tensor::<TestBackend, 4>::from_data(
+        let img1 = Tensor::<4>::from_data(
             TensorData::from([[
                 [[0.8, 0.2], [0.3, 0.9]], // R channel
                 [[0.1, 0.7], [0.6, 0.4]], // G channel
@@ -372,7 +362,7 @@ mod tests {
             ]]),
             &device,
         );
-        let img2 = Tensor::<TestBackend, 4>::from_data(
+        let img2 = Tensor::<4>::from_data(
             TensorData::from([[
                 [[0.7, 0.3], [0.4, 0.8]], // R channel
                 [[0.2, 0.6], [0.7, 0.3]], // G channel
@@ -384,14 +374,14 @@ mod tests {
         let result = loss.forward(img1, img2, Reduction::Mean);
 
         // Should handle multi-channel input
-        assert!(result.clone().into_scalar().to_f64().is_finite());
-        assert!(result.clone().into_scalar().to_f64() >= 0.0);
-        assert!(result.into_scalar().to_f64() <= 1.0);
+        assert!(result.clone().into_scalar::<f32>().to_f64().is_finite());
+        assert!(result.clone().into_scalar::<f32>().to_f64() >= 0.0);
+        assert!(result.into_scalar::<f32>().to_f64() <= 1.0);
     }
 
     #[test]
     fn ssim_loss_with_custom_window_size_and_constants_works() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let config = SSIMLossConfig::new()
             .with_window_size(5)
             .with_sigma(1.0)
@@ -399,41 +389,29 @@ mod tests {
             .with_c2(0.0009);
         let loss = config.init();
 
-        let img1 = Tensor::<TestBackend, 4>::from_data(
-            TensorData::from([[[[0.5, 0.6], [0.7, 0.8]]]]),
-            &device,
-        );
-        let img2 = Tensor::<TestBackend, 4>::from_data(
-            TensorData::from([[[[0.4, 0.7], [0.6, 0.9]]]]),
-            &device,
-        );
+        let img1 = Tensor::<4>::from_data(TensorData::from([[[[0.5, 0.6], [0.7, 0.8]]]]), &device);
+        let img2 = Tensor::<4>::from_data(TensorData::from([[[[0.4, 0.7], [0.6, 0.9]]]]), &device);
 
         let result = loss.forward(img1, img2, Reduction::Mean);
 
         // Should work with custom parameters
-        assert!(result.clone().into_scalar().to_f64().is_finite());
-        assert!(result.into_scalar().to_f64() >= 0.0);
+        assert!(result.clone().into_scalar::<f32>().to_f64().is_finite());
+        assert!(result.into_scalar::<f32>().to_f64() >= 0.0);
     }
 
     #[test]
     fn ssim_loss_auto_reduction_equals_mean_reduction() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = SSIMLoss::new();
 
-        let img1 = Tensor::<TestBackend, 4>::from_data(
-            TensorData::from([[[[0.3, 0.7], [0.8, 0.2]]]]),
-            &device,
-        );
-        let img2 = Tensor::<TestBackend, 4>::from_data(
-            TensorData::from([[[[0.4, 0.6], [0.7, 0.3]]]]),
-            &device,
-        );
+        let img1 = Tensor::<4>::from_data(TensorData::from([[[[0.3, 0.7], [0.8, 0.2]]]]), &device);
+        let img2 = Tensor::<4>::from_data(TensorData::from([[[[0.4, 0.6], [0.7, 0.3]]]]), &device);
 
         let result_auto = loss.forward(img1.clone(), img2.clone(), Reduction::Auto);
         let result_mean = loss.forward(img1, img2, Reduction::Mean);
 
-        let auto_val = result_auto.into_scalar().to_f64();
-        let mean_val = result_mean.into_scalar().to_f64();
+        let auto_val = result_auto.into_scalar::<f32>().to_f64();
+        let mean_val = result_mean.into_scalar::<f32>().to_f64();
 
         assert!((auto_val - mean_val).abs() < 1e-6, "Auto should equal Mean");
     }
@@ -459,14 +437,11 @@ mod tests {
     #[test]
     #[should_panic = "Shape of predictions"]
     fn ssim_loss_forward_mismatched_shapes_panics() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = SSIMLoss::new();
 
-        let img1 = Tensor::<TestBackend, 4>::from_data(TensorData::from([[[[1.0, 2.0]]]]), &device);
-        let img2 = Tensor::<TestBackend, 4>::from_data(
-            TensorData::from([[[[1.0, 2.0], [3.0, 4.0]]]]),
-            &device,
-        );
+        let img1 = Tensor::<4>::from_data(TensorData::from([[[[1.0, 2.0]]]]), &device);
+        let img2 = Tensor::<4>::from_data(TensorData::from([[[[1.0, 2.0], [3.0, 4.0]]]]), &device);
 
         let _result = loss.forward_no_reduction(img1, img2);
     }

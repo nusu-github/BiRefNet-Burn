@@ -149,9 +149,9 @@ impl TrainingConfig {
 
 /// Simple training batch wrapper for Burn's learner.
 #[derive(Debug)]
-pub struct TrainingBatch<B: Backend> {
-    pub images: Tensor<B, 4>,
-    pub targets: Tensor<B, 4>,
+pub struct TrainingBatch {
+    pub images: Tensor<4>,
+    pub targets: Tensor<4>,
 }
 
 /// Runs the training loop on a specific device.
@@ -160,8 +160,8 @@ pub struct TrainingBatch<B: Backend> {
 ///
 /// Returns an error if model initialization, data loading, or
 /// checkpoint saving fails.
-pub fn run_training_on_device<B: AutodiffBackend>(
-    device: B::Device,
+pub fn run_training_on_device(
+    device: Device,
     config: TrainingConfig,
     resume_checkpoint: Option<std::path::PathBuf>,
 ) -> Result<()>
@@ -174,15 +174,15 @@ where
 
     let model_config = BiRefNetConfig::new(config.model.clone())
         .with_loss_config(Some(birefnet_loss::BiRefNetLossConfig::new()));
-    let model = model_config.init::<B>(&device)?;
+    let model = model_config.init(&device)?;
 
     let optimizer = AdamConfig::new().init();
     tracing::info!(optimizer = %config.optimizer.optimizer_type, "optimizer created");
 
     let learning_rate = config.learning_rate;
 
-    let train_loader = create_train_dataloader::<B>(&config)?;
-    let valid_loader = create_valid_dataloader::<B>(&config)?;
+    let train_loader = create_train_dataloader(&config)?;
+    let valid_loader = create_valid_dataloader(&config)?;
 
     let learner_builder = LearnerBuilder::new("./artifacts")
         .metric_train_numeric(LossMetric::new())
@@ -211,15 +211,13 @@ where
 }
 
 /// Creates the training dataloader.
-fn create_train_dataloader<B: AutodiffBackend>(
-    config: &TrainingConfig,
-) -> Result<Arc<dyn DataLoader<B, BiRefNetBatch<B>>>>
+fn create_train_dataloader(config: &TrainingConfig) -> Result<Arc<dyn DataLoader<B, BiRefNetBatch>>>
 where
     B::InnerBackend: Backend,
 {
     let model_config = ModelConfig::new(InterpolationStrategy::Bilinear);
     let dataset = BiRefNetDataset::new(&model_config, "train")?;
-    let batcher = BiRefNetBatcher::<B>::new();
+    let batcher = BiRefNetBatcher::new();
 
     let dataloader = DataLoaderBuilder::new(batcher)
         .batch_size(config.batch_size)
@@ -231,7 +229,7 @@ where
 }
 
 /// Creates the validation dataloader.
-fn create_valid_dataloader<B: AutodiffBackend>(
+fn create_valid_dataloader(
     config: &TrainingConfig,
 ) -> Result<Arc<dyn DataLoader<B::InnerBackend, BiRefNetBatch<B::InnerBackend>>>>
 where

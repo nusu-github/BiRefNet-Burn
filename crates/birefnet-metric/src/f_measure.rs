@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use burn::{
     prelude::*,
-    tensor::{Tensor, backend::Backend, cast::ToElement},
+    tensor::{Tensor, cast::ToElement},
     train::metric::{
         Metric, MetricMetadata, Numeric, NumericEntry,
         state::{FormatOptions, NumericMetricState},
@@ -30,7 +30,7 @@ pub struct FMeasureMetricConfig {
 
 /// F-measure metric.
 #[derive(Default, Clone)]
-pub struct FMeasureMetric<B: Backend> {
+pub struct FMeasureMetric {
     state: NumericMetricState,
     beta: f64,
     name: Arc<String>,
@@ -38,10 +38,10 @@ pub struct FMeasureMetric<B: Backend> {
     precision_curves: Vec<Vec<f64>>,
     recall_curves: Vec<Vec<f64>>,
     changeable_fms: Vec<Vec<f64>>,
-    _b: PhantomData<B>,
+    _b: PhantomData,
 }
 
-impl<B: Backend> FMeasureMetric<B> {
+impl FMeasureMetric {
     /// Creates a new F-measure metric with default beta=0.3.
     pub fn new() -> Self {
         Self {
@@ -79,8 +79,8 @@ impl<B: Backend> FMeasureMetric<B> {
     }
 }
 
-impl<B: Backend> Metric for FMeasureMetric<B> {
-    type Input = FMeasureInput<B>;
+impl Metric for FMeasureMetric {
+    type Input = FMeasureInput;
 
     fn name(&self) -> Arc<String> {
         self.name.clone()
@@ -95,12 +95,12 @@ impl<B: Backend> Metric for FMeasureMetric<B> {
 
         // Process each item in the batch
         for b in 0..batch_size {
-            let pred: Tensor<B, 3> = item
+            let pred: Tensor<3> = item
                 .predictions
                 .clone()
                 .slice(s![b..=b, .., .., ..])
                 .squeeze();
-            let gt: Tensor<B, 3> = item.targets.clone().slice(s![b..=b, .., .., ..]).squeeze();
+            let gt: Tensor<3> = item.targets.clone().slice(s![b..=b, .., .., ..]).squeeze();
 
             // Calculate adaptive F-measure
             let adaptive_fm = calculate_adaptive_fm(pred.clone(), gt.clone(), self.beta);
@@ -130,7 +130,7 @@ impl<B: Backend> Metric for FMeasureMetric<B> {
     }
 }
 
-impl<B: Backend> Numeric for FMeasureMetric<B> {
+impl Numeric for FMeasureMetric {
     fn value(&self) -> NumericEntry {
         NumericEntry::Value(self.adaptive_fm_value())
     }
@@ -147,16 +147,16 @@ impl<B: Backend> Numeric for FMeasureMetric<B> {
 /// 2. Binarize prediction using adaptive threshold
 /// 3. Calculate precision and recall on foreground regions
 /// 4. Calculate F-measure using beta parameter
-fn calculate_adaptive_fm<B: Backend, const D: usize>(
-    predictions: Tensor<B, D>,
-    targets: Tensor<B, D>,
+fn calculate_adaptive_fm<const D: usize>(
+    predictions: Tensor<D>,
+    targets: Tensor<D>,
     beta: f64,
 ) -> f64 {
     // Prepare data following Python _prepare_data function
     let (pred, gt) = prepare_data(predictions, targets);
 
     // Calculate adaptive threshold: min(2 * pred.mean(), 1.0)
-    let adaptive_threshold = (2.0 * pred.clone().mean().into_scalar().to_f64()).min(1.0);
+    let adaptive_threshold = (2.0 * pred.clone().mean().into_scalar::<f32>().to_f64()).min(1.0);
 
     // Binarize prediction using adaptive threshold
     let binary_pred = pred.greater_equal_elem(adaptive_threshold);
@@ -168,7 +168,7 @@ fn calculate_adaptive_fm<B: Backend, const D: usize>(
         .bool_and(gt_bool.clone())
         .int()
         .sum()
-        .into_scalar()
+        .into_scalar::<f32>()
         .to_f64();
 
     if intersection_count == 0.0 {
@@ -176,8 +176,13 @@ fn calculate_adaptive_fm<B: Backend, const D: usize>(
     }
 
     // Calculate precision and recall
-    let pred_positive_count = binary_pred.int().sum().into_scalar().to_f64().max(1.0);
-    let gt_positive_count = gt_bool.int().sum().into_scalar().to_f64().max(1.0);
+    let pred_positive_count = binary_pred
+        .int()
+        .sum()
+        .into_scalar::<f32>()
+        .to_f64()
+        .max(1.0);
+    let gt_positive_count = gt_bool.int().sum().into_scalar::<f32>().to_f64().max(1.0);
 
     let precision = intersection_count / pred_positive_count;
     let recall = intersection_count / gt_positive_count;
@@ -192,9 +197,9 @@ fn calculate_adaptive_fm<B: Backend, const D: usize>(
 /// - Create histograms for foreground and background pixels across 256 thresholds
 /// - Calculate cumulative true positives and false positives
 /// - Compute precision, recall, and F-measure curves
-fn calculate_pr_curves<B: Backend, const D: usize>(
-    predictions: Tensor<B, D>,
-    targets: Tensor<B, D>,
+fn calculate_pr_curves<const D: usize>(
+    predictions: Tensor<D>,
+    targets: Tensor<D>,
     beta: f64,
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     // Prepare data following Python _prepare_data function
@@ -217,10 +222,21 @@ fn calculate_pr_curves<B: Backend, const D: usize>(
             .bool_and(gt_bool.clone())
             .int()
             .sum()
-            .into_scalar()
+            .into_scalar::<f32>()
             .to_f64();
-        let pred_positives = pred_thresh.int().sum().into_scalar().to_f64().max(1.0);
-        let gt_positives = gt_bool.clone().int().sum().into_scalar().to_f64().max(1.0);
+        let pred_positives = pred_thresh
+            .int()
+            .sum()
+            .into_scalar::<f32>()
+            .to_f64()
+            .max(1.0);
+        let gt_positives = gt_bool
+            .clone()
+            .int()
+            .sum()
+            .into_scalar::<f32>()
+            .to_f64()
+            .max(1.0);
 
         let precision = tp / pred_positives;
         let recall = tp / gt_positives;
@@ -241,10 +257,7 @@ fn calculate_pr_curves<B: Backend, const D: usize>(
 }
 
 /// Prepares prediction and ground truth data following Python _prepare_data logic.
-fn prepare_data<B: Backend, const D: usize>(
-    pred: Tensor<B, D>,
-    gt: Tensor<B, D>,
-) -> (Tensor<B, D>, Tensor<B, D>) {
+fn prepare_data<const D: usize>(pred: Tensor<D>, gt: Tensor<D>) -> (Tensor<D>, Tensor<D>) {
     // gt = gt > 128 (binary ground truth)
     let gt_binary = gt.greater_elem(128).float();
 
@@ -256,10 +269,15 @@ fn prepare_data<B: Backend, const D: usize>(
     let pred_max = pred_norm.clone().max();
     let range = pred_max - pred_min.clone();
 
-    let pred_final = if range.clone().greater_elem(1e-8).into_scalar().to_bool() {
+    let pred_final = if range
+        .clone()
+        .greater_elem(1e-8)
+        .into_scalar::<f32>()
+        .to_bool()
+    {
         // Normalize to [0, 1] if there's variation
-        let pred_min_scalar = pred_min.into_scalar().to_f64();
-        let range_scalar = range.into_scalar().to_f64();
+        let pred_min_scalar = pred_min.into_scalar::<f32>().to_f64();
+        let range_scalar = range.into_scalar::<f32>().to_f64();
         (pred_norm - pred_min_scalar) / range_scalar
     } else {
         // Use as-is if all values are the same
@@ -270,10 +288,6 @@ fn prepare_data<B: Backend, const D: usize>(
 }
 
 /// Public function for external use.
-pub fn calculate_f_measure<B: Backend>(
-    predictions: Tensor<B, 2>,
-    targets: Tensor<B, 2>,
-    beta: f64,
-) -> f64 {
+pub fn calculate_f_measure(predictions: Tensor<2>, targets: Tensor<2>, beta: f64) -> f64 {
     calculate_adaptive_fm(predictions, targets, beta)
 }

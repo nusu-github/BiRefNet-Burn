@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use burn::{
     prelude::*,
-    tensor::{Tensor, backend::Backend, cast::ToElement},
+    tensor::{Tensor, cast::ToElement},
     train::metric::{
         Metric, MetricMetadata, Numeric, NumericEntry,
         state::{FormatOptions, NumericMetricState},
@@ -26,15 +26,15 @@ pub struct MAEMetricConfig {
 }
 
 #[derive(Clone)]
-pub struct MAEMetric<B: Backend> {
+pub struct MAEMetric {
     state: NumericMetricState,
     apply_sigmoid: bool,
     name: Arc<String>,
-    _b: PhantomData<B>,
+    _b: PhantomData,
 }
 
 impl MAEMetricConfig {
-    pub fn init<B: Backend>(&self) -> MAEMetric<B> {
+    pub fn init(&self) -> MAEMetric {
         MAEMetric {
             state: NumericMetricState::default(),
             apply_sigmoid: self.apply_sigmoid,
@@ -44,20 +44,20 @@ impl MAEMetricConfig {
     }
 }
 
-impl<B: Backend> Default for MAEMetric<B> {
+impl Default for MAEMetric {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<B: Backend> MAEMetric<B> {
+impl MAEMetric {
     pub fn new() -> Self {
         MAEMetricConfig::new().init()
     }
 }
 
-impl<B: Backend> Metric for MAEMetric<B> {
-    type Input = MAEInput<B>;
+impl Metric for MAEMetric {
+    type Input = MAEInput;
 
     fn name(&self) -> Arc<String> {
         self.name.clone()
@@ -74,12 +74,12 @@ impl<B: Backend> Metric for MAEMetric<B> {
 
         // Process each item in the batch
         for b in 0..batch_size {
-            let pred: Tensor<B, 3> = item
+            let pred: Tensor<3> = item
                 .predictions
                 .clone()
                 .slice(s![b..=b, .., .., ..])
                 .squeeze();
-            let gt: Tensor<B, 3> = item.targets.clone().slice(s![b..=b, .., .., ..]).squeeze();
+            let gt: Tensor<3> = item.targets.clone().slice(s![b..=b, .., .., ..]).squeeze();
 
             let mae = calculate_mae_single(pred, gt);
             total_mae += mae;
@@ -98,7 +98,7 @@ impl<B: Backend> Metric for MAEMetric<B> {
     }
 }
 
-impl<B: Backend> Numeric for MAEMetric<B> {
+impl Numeric for MAEMetric {
     fn value(&self) -> NumericEntry {
         self.state.current_value()
     }
@@ -121,23 +121,17 @@ impl<B: Backend> Numeric for MAEMetric<B> {
 ///
 /// # Returns
 /// The MAE value.
-fn calculate_mae_single<B: Backend, const D: usize>(
-    predictions: Tensor<B, D>,
-    targets: Tensor<B, D>,
-) -> f64 {
+fn calculate_mae_single<const D: usize>(predictions: Tensor<D>, targets: Tensor<D>) -> f64 {
     // Prepare data following Python _prepare_data function
     let (pred, gt) = prepare_data(predictions, targets);
 
     // Calculate MAE: np.mean(np.abs(pred - gt))
     let abs_error = (pred - gt).abs().mean();
-    abs_error.into_scalar().to_f64()
+    abs_error.into_scalar::<f32>().to_f64()
 }
 
 /// Prepares prediction and ground truth data following Python _prepare_data logic.
-fn prepare_data<B: Backend, const D: usize>(
-    pred: Tensor<B, D>,
-    gt: Tensor<B, D>,
-) -> (Tensor<B, D>, Tensor<B, D>) {
+fn prepare_data<const D: usize>(pred: Tensor<D>, gt: Tensor<D>) -> (Tensor<D>, Tensor<D>) {
     // gt = gt > 128 (binary ground truth)
     let gt_binary = gt.greater_elem(128).float();
 
@@ -149,10 +143,15 @@ fn prepare_data<B: Backend, const D: usize>(
     let pred_max = pred_norm.clone().max();
     let range = pred_max - pred_min.clone();
 
-    let pred_final = if range.clone().greater_elem(1e-8).into_scalar().to_bool() {
+    let pred_final = if range
+        .clone()
+        .greater_elem(1e-8)
+        .into_scalar::<f32>()
+        .to_bool()
+    {
         // Normalize to [0, 1] if there's variation
-        let pred_min_scalar = pred_min.into_scalar().to_f64();
-        let range_scalar = range.into_scalar().to_f64();
+        let pred_min_scalar = pred_min.into_scalar::<f32>().to_f64();
+        let range_scalar = range.into_scalar::<f32>().to_f64();
         (pred_norm - pred_min_scalar) / range_scalar
     } else {
         // Use as-is if all values are the same
@@ -163,6 +162,6 @@ fn prepare_data<B: Backend, const D: usize>(
 }
 
 /// Public function for external use.
-pub fn calculate_mae<B: Backend>(predictions: Tensor<B, 2>, targets: Tensor<B, 2>) -> f64 {
+pub fn calculate_mae(predictions: Tensor<2>, targets: Tensor<2>) -> f64 {
     calculate_mae_single(predictions, targets)
 }

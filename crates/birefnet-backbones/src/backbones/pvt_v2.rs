@@ -32,12 +32,12 @@ use burn::{
 
 /// Depth-wise convolution used in the MLP block.
 #[derive(Module, Debug)]
-pub struct DWConv<B: Backend> {
-    dwconv: Conv2d<B>,
+pub struct DWConv {
+    dwconv: Conv2d,
 }
 
-impl<B: Backend> DWConv<B> {
-    pub fn new(dim: usize, device: &B::Device) -> Self {
+impl DWConv {
+    pub fn new(dim: usize, device: &Device) -> Self {
         let fan_out = (3 * 3 * dim) / dim;
         let std = (2.0 / fan_out as f64).sqrt();
         let conv_initializer = Initializer::Normal { mean: 0.0, std };
@@ -52,7 +52,7 @@ impl<B: Backend> DWConv<B> {
         Self { dwconv: conv }
     }
 
-    pub fn forward(&self, x: Tensor<B, 3>, h: usize, w: usize) -> Tensor<B, 3> {
+    pub fn forward(&self, x: Tensor<3>, h: usize, w: usize) -> Tensor<3> {
         let [b, _, c] = x.dims();
         let x = x.transpose().reshape([b, c, h, w]);
         let x = self.dwconv.forward(x);
@@ -62,21 +62,21 @@ impl<B: Backend> DWConv<B> {
 
 /// Multi-Layer Perceptron (MLP) block for PVTv2.
 #[derive(Module, Debug)]
-pub struct Mlp<B: Backend> {
-    fc1: Linear<B>,
-    dwconv: DWConv<B>,
+pub struct Mlp {
+    fc1: Linear,
+    dwconv: DWConv,
     act: Gelu,
-    fc2: Linear<B>,
+    fc2: Linear,
     drop: Dropout,
 }
 
-impl<B: Backend> Mlp<B> {
+impl Mlp {
     pub fn new(
         in_features: usize,
         hidden_features: usize,
         out_features: usize,
         drop: f64,
-        device: &B::Device,
+        device: &Device,
     ) -> Self {
         let std = 0.02;
         let fc1 = {
@@ -117,7 +117,7 @@ impl<B: Backend> Mlp<B> {
         }
     }
 
-    pub fn forward(&self, x: Tensor<B, 3>, h: usize, w: usize) -> Tensor<B, 3> {
+    pub fn forward(&self, x: Tensor<3>, h: usize, w: usize) -> Tensor<3> {
         let x = self.fc1.forward(x);
         let x = self.dwconv.forward(x, h, w);
         let x = self.act.forward(x);
@@ -129,21 +129,21 @@ impl<B: Backend> Mlp<B> {
 
 /// Spatially-reductive attention mechanism for PVTv2.
 #[derive(Module, Debug)]
-pub struct Attention<B: Backend> {
+pub struct Attention {
     dim: usize,
     num_heads: usize,
     scale: f64,
-    q: Linear<B>,
-    kv: Linear<B>,
+    q: Linear,
+    kv: Linear,
     attn_drop: Dropout,
-    proj: Linear<B>,
+    proj: Linear,
     proj_drop: Dropout,
     sr_ratio: usize,
-    sr: Option<Conv2d<B>>,
-    norm: Option<LayerNorm<B>>,
+    sr: Option<Conv2d>,
+    norm: Option<LayerNorm>,
 }
 
-impl<B: Backend> Attention<B> {
+impl Attention {
     pub fn new(
         dim: usize,
         num_heads: usize,
@@ -153,7 +153,7 @@ impl<B: Backend> Attention<B> {
         proj_drop: f64,
         sr_ratio: usize,
         epsilon: f64,
-        device: &B::Device,
+        device: &Device,
     ) -> Self {
         let head_dim = dim / num_heads;
         let std = 0.02;
@@ -230,7 +230,7 @@ impl<B: Backend> Attention<B> {
         }
     }
 
-    pub fn forward(&self, x: Tensor<B, 3>, h: usize, w: usize) -> Tensor<B, 3> {
+    pub fn forward(&self, x: Tensor<3>, h: usize, w: usize) -> Tensor<3> {
         let [b, n, c] = x.dims();
         let q = self
             .q
@@ -281,15 +281,15 @@ impl<B: Backend> Attention<B> {
 
 /// Transformer block for PVTv2.
 #[derive(Module, Debug)]
-pub struct Block<B: Backend> {
-    norm1: LayerNorm<B>,
-    attn: Attention<B>,
+pub struct Block {
+    norm1: LayerNorm,
+    attn: Attention,
     drop_path: DropPath,
-    norm2: LayerNorm<B>,
-    mlp: Mlp<B>,
+    norm2: LayerNorm,
+    mlp: Mlp,
 }
 
-impl<B: Backend> Block<B> {
+impl Block {
     pub fn new(
         dim: usize,
         num_heads: usize,
@@ -301,7 +301,7 @@ impl<B: Backend> Block<B> {
         _drop_path: f64,
         sr_ratio: usize,
         epsilon: f64,
-        device: &B::Device,
+        device: &Device,
     ) -> Self {
         Self {
             norm1: LayerNormConfig::new(dim).with_epsilon(epsilon).init(device),
@@ -314,7 +314,7 @@ impl<B: Backend> Block<B> {
         }
     }
 
-    pub fn forward(&self, x: Tensor<B, 3>, h: usize, w: usize) -> Tensor<B, 3> {
+    pub fn forward(&self, x: Tensor<3>, h: usize, w: usize) -> Tensor<3> {
         let x = x.clone()
             + self
                 .drop_path
@@ -328,19 +328,19 @@ impl<B: Backend> Block<B> {
 
 /// Overlapping patch embedding for PVTv2.
 #[derive(Module, Debug)]
-pub struct OverlapPatchEmbed<B: Backend> {
-    proj: Conv2d<B>,
-    norm: LayerNorm<B>,
+pub struct OverlapPatchEmbed {
+    proj: Conv2d,
+    norm: LayerNorm,
 }
 
-impl<B: Backend> OverlapPatchEmbed<B> {
+impl OverlapPatchEmbed {
     pub fn new(
         patch_size: usize,
         stride: usize,
         in_channels: usize,
         embed_dim: usize,
         epsilon: f64,
-        device: &B::Device,
+        device: &Device,
     ) -> Self {
         let fan_out = (patch_size * patch_size * embed_dim) as f64;
         let std = (2.0 / fan_out).sqrt();
@@ -363,7 +363,7 @@ impl<B: Backend> OverlapPatchEmbed<B> {
         }
     }
 
-    pub fn forward(&self, x: Tensor<B, 4>) -> (Tensor<B, 3>, usize, usize) {
+    pub fn forward(&self, x: Tensor<4>) -> (Tensor<3>, usize, usize) {
         let x = self.proj.forward(x);
         let [_, _, h, w] = x.dims();
         let x = x.flatten(2, 3).transpose();
@@ -374,24 +374,24 @@ impl<B: Backend> OverlapPatchEmbed<B> {
 
 /// Pyramid Vision Transformer v2 (PVTv2) model.
 #[derive(Module, Debug)]
-pub struct PyramidVisionTransformerImpr<B: Backend> {
-    patch_embed1: OverlapPatchEmbed<B>,
-    patch_embed2: OverlapPatchEmbed<B>,
-    patch_embed3: OverlapPatchEmbed<B>,
-    patch_embed4: OverlapPatchEmbed<B>,
-    block1: Vec<Block<B>>,
-    norm1: LayerNorm<B>,
-    block2: Vec<Block<B>>,
-    norm2: LayerNorm<B>,
-    block3: Vec<Block<B>>,
-    norm3: LayerNorm<B>,
-    block4: Vec<Block<B>>,
-    norm4: LayerNorm<B>,
+pub struct PyramidVisionTransformerImpr {
+    patch_embed1: OverlapPatchEmbed,
+    patch_embed2: OverlapPatchEmbed,
+    patch_embed3: OverlapPatchEmbed,
+    patch_embed4: OverlapPatchEmbed,
+    block1: Vec<Block>,
+    norm1: LayerNorm,
+    block2: Vec<Block>,
+    norm2: LayerNorm,
+    block3: Vec<Block>,
+    norm3: LayerNorm,
+    block4: Vec<Block>,
+    norm4: LayerNorm,
     embed_dims: [usize; 4],
 }
 
-impl<B: Backend> PyramidVisionTransformerImpr<B> {
-    pub fn forward(&self, x: Tensor<B, 4>) -> [Tensor<B, 4>; 4] {
+impl PyramidVisionTransformerImpr {
+    pub fn forward(&self, x: Tensor<4>) -> [Tensor<4>; 4] {
         let b = x.dims()[0];
 
         // Stage 1
@@ -461,7 +461,7 @@ pub struct PvtV2Config {
 }
 
 impl PvtV2Config {
-    pub fn init<B: Backend>(&self, device: &B::Device) -> PyramidVisionTransformerImpr<B> {
+    pub fn init(&self, device: &Device) -> PyramidVisionTransformerImpr {
         let patch_embed1 = OverlapPatchEmbed::new(
             7,
             4,
@@ -702,19 +702,14 @@ mod tests {
     use burn::tensor::Distribution;
 
     use super::*;
-    use crate::tests::TestBackend;
 
     #[test]
     fn pvt_v2_b2_forward_returns_hierarchical_features() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let config = PvtV2Config::b2(3);
-        let model = config.init::<TestBackend>(&device);
+        let model = config.init(&device);
 
-        let input = Tensor::<TestBackend, 4>::random(
-            [1, 3, 224, 224],
-            Distribution::Normal(0.0, 1.0),
-            &device,
-        );
+        let input = Tensor::<4>::random([1, 3, 224, 224], Distribution::Normal(0.0, 1.0), &device);
         let output = model.forward(input);
 
         // Check output shapes for PVTv2-B2
@@ -726,14 +721,10 @@ mod tests {
 
     #[test]
     fn overlap_patch_embed_calculates_correct_output_dimensions() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let patch_embed = OverlapPatchEmbed::new(7, 4, 3, 64, 1e-6, &device);
 
-        let input = Tensor::<TestBackend, 4>::random(
-            [1, 3, 224, 224],
-            Distribution::Normal(0.0, 1.0),
-            &device,
-        );
+        let input = Tensor::<4>::random([1, 3, 224, 224], Distribution::Normal(0.0, 1.0), &device);
 
         let (output, h, w) = patch_embed.forward(input);
 

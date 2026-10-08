@@ -17,7 +17,7 @@ use burn::{
     config::Config,
     module::{Content, DisplaySettings, Module, ModuleDisplay},
     nn::loss::Reduction,
-    tensor::{Int, Tensor, backend::Backend},
+    tensor::{Int, Tensor},
 };
 
 use super::iou::IoULoss;
@@ -74,7 +74,7 @@ impl PatchIoULossConfig {
 /// computes IoU loss for each patch individually. This approach helps
 /// to emphasize local consistency and can detect errors that might be
 /// missed by global IoU computation.
-#[derive(Module, Clone, Debug)]
+#[derive(Module, Debug)]
 #[module(custom_display)]
 pub struct PatchIoULoss {
     /// Height of each patch window.
@@ -120,12 +120,12 @@ impl PatchIoULoss {
     /// - predictions: `[batch_size, channels, height, width]`
     /// - targets: `[batch_size, channels, height, width]`
     /// - output: `[1]`
-    pub fn forward<B: Backend>(
+    pub fn forward(
         &self,
-        predictions: Tensor<B, 4>,
-        targets: Tensor<B, 4, Int>,
+        predictions: Tensor<4>,
+        targets: Tensor<4, Int>,
         reduction: Reduction,
-    ) -> Tensor<B, 1> {
+    ) -> Tensor<1> {
         let loss = self.forward_no_reduction(predictions, targets);
         crate::reduce_loss(loss, reduction)
     }
@@ -137,11 +137,11 @@ impl PatchIoULoss {
     /// - predictions: `[batch_size, channels, height, width]`
     /// - targets: `[batch_size, channels, height, width]`
     /// - output: `[num_patches]`
-    pub fn forward_no_reduction<B: Backend>(
+    pub fn forward_no_reduction(
         &self,
-        predictions: Tensor<B, 4>,
-        targets: Tensor<B, 4, Int>,
-    ) -> Tensor<B, 1> {
+        predictions: Tensor<4>,
+        targets: Tensor<4, Int>,
+    ) -> Tensor<1> {
         self.assertions(&predictions, &targets);
 
         let [batch_size, channels, height, width] = predictions.dims();
@@ -193,7 +193,7 @@ impl PatchIoULoss {
         }
     }
 
-    fn assertions<B: Backend>(&self, predictions: &Tensor<B, 4>, targets: &Tensor<B, 4, Int>) {
+    fn assertions(&self, predictions: &Tensor<4>, targets: &Tensor<4, Int>) {
         let pred_dims = predictions.dims();
         let target_dims = targets.dims();
         assert_eq!(
@@ -216,35 +216,30 @@ mod tests {
     use burn::tensor::{TensorData, cast::ToElement};
 
     use super::*;
-    use crate::tests::TestBackend;
 
     #[test]
     fn patch_iou_loss_forward_perfect_overlap_returns_near_zero() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = PatchIoULoss::new();
 
         // Perfect overlap across all patches
-        let predictions =
-            Tensor::<TestBackend, 4>::from_data(TensorData::from([[[[1.0; 128]; 128]]]), &device);
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
-            TensorData::from([[[[1; 128]; 128]]]),
-            &device,
-        );
+        let predictions = Tensor::<4>::from_data(TensorData::from([[[[1.0; 128]; 128]]]), &device);
+        let targets = Tensor::<4, Int>::from_data(TensorData::from([[[[1; 128]; 128]]]), &device);
 
         let result_mean = loss.forward(predictions.clone(), targets.clone(), Reduction::Mean);
         let result_no_reduction = loss.forward_no_reduction(predictions, targets);
 
         // Perfect IoU should give loss ≈ 0
         assert!(
-            result_mean.into_scalar().to_f64() < 1e-5,
+            result_mean.into_scalar::<f32>().to_f64() < 1e-5,
             "Loss should be near zero for perfect overlap"
         );
-        assert!(result_no_reduction.into_scalar().to_f64() < 1e-5);
+        assert!(result_no_reduction.into_scalar::<f32>().to_f64() < 1e-5);
     }
 
     #[test]
     fn patch_iou_loss_forward_no_overlap_returns_high_loss() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = PatchIoULoss::new();
 
         // Create checkerboard pattern with no overlap
@@ -259,29 +254,28 @@ mod tests {
             }
         }
 
-        let predictions = Tensor::<TestBackend, 4>::from_data(TensorData::from(pred_data), &device);
-        let targets =
-            Tensor::<TestBackend, 4, Int>::from_data(TensorData::from(target_data), &device);
+        let predictions = Tensor::<4>::from_data(TensorData::from(pred_data), &device);
+        let targets = Tensor::<4, Int>::from_data(TensorData::from(target_data), &device);
 
         let result = loss.forward(predictions, targets, Reduction::Mean);
 
         // Should have high loss for no overlap
         assert!(
-            result.into_scalar().to_f64() > 0.5,
+            result.into_scalar::<f32>().to_f64() > 0.5,
             "Loss should be high for no overlap"
         );
     }
 
     #[test]
     fn patch_iou_loss_forward_small_input_with_2x2_patches_works() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let config = PatchIoULossConfig::new()
             .with_patch_height(2)
             .with_patch_width(2);
         let loss = config.init();
 
         // Small 4x4 input
-        let predictions = Tensor::<TestBackend, 4>::from_data(
+        let predictions = Tensor::<4>::from_data(
             TensorData::from([[[
                 [0.8, 0.2, 0.9, 0.1],
                 [0.3, 0.7, 0.4, 0.6],
@@ -290,7 +284,7 @@ mod tests {
             ]]]),
             &device,
         );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
+        let targets = Tensor::<4, Int>::from_data(
             TensorData::from([[[[1, 0, 1, 0], [0, 1, 0, 1], [1, 0, 1, 0], [0, 1, 0, 1]]]]),
             &device,
         );
@@ -300,31 +294,44 @@ mod tests {
         let result_no_reduction = loss.forward_no_reduction(predictions, targets);
 
         // All should be valid finite values
-        assert!(result_mean.clone().into_scalar().to_f64().is_finite());
-        assert!(result_sum.clone().into_scalar().to_f64().is_finite());
-        assert!(result_no_reduction.into_scalar().to_f64().is_finite());
+        assert!(
+            result_mean
+                .clone()
+                .into_scalar::<f32>()
+                .to_f64()
+                .is_finite()
+        );
+        assert!(result_sum.clone().into_scalar::<f32>().to_f64().is_finite());
+        assert!(
+            result_no_reduction
+                .into_scalar::<f32>()
+                .to_f64()
+                .is_finite()
+        );
 
         // Sum should be >= Mean (since we're summing patches)
-        assert!(result_sum.into_scalar().to_f64() >= result_mean.into_scalar().to_f64());
+        assert!(
+            result_sum.into_scalar::<f32>().to_f64() >= result_mean.into_scalar::<f32>().to_f64()
+        );
     }
 
     #[test]
     fn patch_iou_loss_forward_batch_processing_produces_valid_output() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let config = PatchIoULossConfig::new()
             .with_patch_height(4)
             .with_patch_width(4);
         let loss = config.init();
 
         // Batch of 2 samples, each 8x8
-        let predictions = Tensor::<TestBackend, 4>::from_data(
+        let predictions = Tensor::<4>::from_data(
             TensorData::from([
                 [[[0.8; 8]; 8]], // Sample 1: all high predictions
                 [[[0.2; 8]; 8]], // Sample 2: all low predictions
             ]),
             &device,
         );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
+        let targets = Tensor::<4, Int>::from_data(
             TensorData::from([
                 [[[1; 8]; 8]], // Sample 1: all targets
                 [[[0; 8]; 8]], // Sample 2: no targets
@@ -336,19 +343,19 @@ mod tests {
         let result_no_reduction = loss.forward_no_reduction(predictions, targets);
 
         // Both samples should have low loss (good predictions vs targets)
-        assert!(result_mean.into_scalar().to_f64() >= 0.0);
-        assert!(result_no_reduction.into_scalar().to_f64() >= 0.0);
+        assert!(result_mean.into_scalar::<f32>().to_f64() >= 0.0);
+        assert!(result_no_reduction.into_scalar::<f32>().to_f64() >= 0.0);
     }
 
     #[test]
     fn patch_iou_loss_auto_reduction_equals_mean_reduction() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let config = PatchIoULossConfig::new()
             .with_patch_height(4)
             .with_patch_width(4);
         let loss = config.init();
 
-        let predictions = Tensor::<TestBackend, 4>::from_data(
+        let predictions = Tensor::<4>::from_data(
             TensorData::from([[[
                 [0.3, 0.7, 0.8, 0.2],
                 [0.9, 0.1, 0.4, 0.6],
@@ -357,7 +364,7 @@ mod tests {
             ]]]),
             &device,
         );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
+        let targets = Tensor::<4, Int>::from_data(
             TensorData::from([[[[0, 1, 1, 0], [1, 0, 0, 1], [1, 1, 1, 0], [0, 1, 0, 1]]]]),
             &device,
         );
@@ -365,8 +372,8 @@ mod tests {
         let result_auto = loss.forward(predictions.clone(), targets.clone(), Reduction::Auto);
         let result_mean = loss.forward(predictions, targets, Reduction::Mean);
 
-        let auto_val = result_auto.into_scalar().to_f64();
-        let mean_val = result_mean.into_scalar().to_f64();
+        let auto_val = result_auto.into_scalar::<f32>().to_f64();
+        let mean_val = result_mean.into_scalar::<f32>().to_f64();
 
         assert!((auto_val - mean_val).abs() < 1e-6, "Auto should equal Mean");
     }
@@ -386,18 +393,13 @@ mod tests {
     #[test]
     #[should_panic = "Input dimensions"]
     fn patch_iou_loss_forward_input_smaller_than_patch_panics() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = PatchIoULoss::new(); // Default 64x64 patches
 
         // Input smaller than patch size
-        let predictions = Tensor::<TestBackend, 4>::from_data(
-            TensorData::from([[[[0.5, 0.5], [0.5, 0.5]]]]),
-            &device,
-        );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
-            TensorData::from([[[[1, 0], [0, 1]]]]),
-            &device,
-        );
+        let predictions =
+            Tensor::<4>::from_data(TensorData::from([[[[0.5, 0.5], [0.5, 0.5]]]]), &device);
+        let targets = Tensor::<4, Int>::from_data(TensorData::from([[[[1, 0], [0, 1]]]]), &device);
 
         let _result = loss.forward_no_reduction(predictions, targets);
     }
@@ -405,13 +407,11 @@ mod tests {
     #[test]
     #[should_panic = "Shape of predictions"]
     fn patch_iou_loss_forward_mismatched_shapes_panics() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = PatchIoULoss::new();
 
-        let predictions =
-            Tensor::<TestBackend, 4>::from_data(TensorData::from([[[[1.0; 64]; 64]]]), &device);
-        let targets =
-            Tensor::<TestBackend, 4, Int>::from_data(TensorData::from([[[[1; 32]; 32]]]), &device);
+        let predictions = Tensor::<4>::from_data(TensorData::from([[[[1.0; 64]; 64]]]), &device);
+        let targets = Tensor::<4, Int>::from_data(TensorData::from([[[[1; 32]; 32]]]), &device);
 
         let _result = loss.forward_no_reduction(predictions, targets);
     }

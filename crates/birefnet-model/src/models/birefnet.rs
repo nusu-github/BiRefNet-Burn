@@ -20,10 +20,7 @@ use birefnet_backbones::{
 use birefnet_loss::{BiRefNetLoss, BiRefNetLossConfig};
 use burn::prelude::*;
 #[cfg(feature = "train")]
-use burn::{
-    tensor::backend::AutodiffBackend,
-    train::{InferenceStep, TrainOutput, TrainStep},
-};
+use burn::train::{InferenceStep, TrainOutput, TrainStep};
 
 use super::{
     decoder::{Decoder, DecoderConfig},
@@ -46,19 +43,19 @@ use crate::{
 
 /// An enum to wrap different types of squeeze blocks used in the decoder.
 #[derive(Module, Debug)]
-pub enum SqueezeBlockModule<B: Backend> {
-    BasicDecBlk(BasicDecBlk<B>),
-    ResBlk(ResBlk<B>),
-    ASPP(ASPP<B>),
-    ASPPDeformable(ASPPDeformable<B>),
+pub enum SqueezeBlockModule {
+    BasicDecBlk(BasicDecBlk),
+    ResBlk(ResBlk),
+    ASPP(ASPP),
+    ASPPDeformable(ASPPDeformable),
 }
 
 /// An enum to wrap different types of refinement modules.
 #[derive(Module, Debug)]
-pub enum RefineModule<B: Backend> {
-    RefUNet(RefUNet<B>),
-    Refiner(Refiner<B>),
-    RefinerPVTInChannels4(RefinerPVTInChannels4<B>),
+pub enum RefineModule {
+    RefUNet(RefUNet),
+    Refiner(Refiner),
+    RefinerPVTInChannels4(RefinerPVTInChannels4),
 }
 
 /// Configuration for the `BiRefNet` model.
@@ -81,7 +78,7 @@ impl BiRefNetConfig {
     /// # Errors
     ///
     /// Returns an error if the configuration is invalid or model initialization fails.
-    pub fn init<B: Backend>(&self, device: &Device<B>) -> BiRefNetResult<BiRefNet<B>> {
+    pub fn init(&self, device: &Device) -> BiRefNetResult<BiRefNet> {
         let backbone_type = self.convert_backbone_config()?;
         let bb = create_backbone(backbone_type, device);
         let channels = self.config.lateral_channels_in_collection();
@@ -215,29 +212,29 @@ impl BiRefNetConfig {
 
 /// The main BiRefNet model.
 #[derive(Module, Debug)]
-pub struct BiRefNet<B: Backend> {
+pub struct BiRefNet {
     /// The multi-scale input handling strategy.
     #[module(skip)]
     mul_scl_ipt: MultiScaleInput,
     /// Context channel sizes.
     cxt: [usize; 3],
     /// The backbone encoder.
-    bb: BackboneWrapper<B>,
+    bb: BackboneWrapper,
     /// The squeeze module applied to the deepest encoder feature.
-    squeeze_module: Vec<SqueezeBlockModule<B>>,
+    squeeze_module: Vec<SqueezeBlockModule>,
     /// The decoder module.
-    decoder: Decoder<B>,
+    decoder: Decoder,
     /// The refinement module.
-    refine: Option<RefineModule<B>>,
+    refine: Option<RefineModule>,
     /// The loss function used for training.
     #[cfg(feature = "train")]
-    loss: Option<BiRefNetLoss<B>>,
+    loss: Option<BiRefNetLoss>,
     /// Interpolation strategy for tensor resizing operations.
     #[module(skip)]
     interpolation_strategy: InterpolationStrategy,
 }
 
-impl<B: Backend> BiRefNet<B> {
+impl BiRefNet {
     /// Performs the forward pass through the encoder part of the network.
     ///
     /// # Shapes
@@ -249,7 +246,7 @@ impl<B: Backend> BiRefNet<B> {
     ///
     /// # Returns
     /// A result containing a 4-element array of hierarchical feature maps from different encoder stages with decreasing spatial resolutions
-    pub fn forward_enc(&self, x: Tensor<B, 4>) -> BiRefNetResult<[Tensor<B, 4>; 4]> {
+    pub fn forward_enc(&self, x: Tensor<4>) -> BiRefNetResult<[Tensor<4>; 4]> {
         let [x1, x2, x3, x4] = self.bb.forward(x.clone());
         let [x1, x2, x3, x4] = match self.mul_scl_ipt {
             MultiScaleInput::None => [x1, x2, x3, x4],
@@ -360,7 +357,7 @@ impl<B: Backend> BiRefNet<B> {
     ///
     /// # Returns
     /// A result containing the final segmentation map with values representing pixel-wise probabilities
-    pub fn forward_ori(&self, x: Tensor<B, 4>) -> BiRefNetResult<Tensor<B, 4>> {
+    pub fn forward_ori(&self, x: Tensor<4>) -> BiRefNetResult<Tensor<4>> {
         // ########## Encoder ##########
         let [x1, x2, x3, x4] = self.forward_enc(x.clone())?;
         let mut x4 = x4;
@@ -427,7 +424,7 @@ impl<B: Backend> BiRefNet<B> {
     ///
     /// # Returns
     /// A result containing the final binary segmentation map with probability values
-    pub fn forward(&self, x: Tensor<B, 4>) -> BiRefNetResult<Tensor<B, 4>> {
+    pub fn forward(&self, x: Tensor<4>) -> BiRefNetResult<Tensor<4>> {
         self.forward_ori(x)
     }
 
@@ -444,10 +441,7 @@ impl<B: Backend> BiRefNet<B> {
     /// # Returns
     /// A result containing the training output with predictions, targets, and computed loss
     #[cfg(feature = "train")]
-    pub fn forward_classification(
-        &self,
-        batch: BiRefNetBatch<B>,
-    ) -> BiRefNetResult<BiRefNetOutput<B>> {
+    pub fn forward_classification(&self, batch: BiRefNetBatch) -> BiRefNetResult<BiRefNetOutput> {
         // 1. Forward pass through the model to get predictions
         let prediction = self.forward(batch.images.clone())?;
 
@@ -471,11 +465,11 @@ impl<B: Backend> BiRefNet<B> {
 }
 
 #[cfg(feature = "train")]
-impl<B: AutodiffBackend> TrainStep for BiRefNet<B> {
-    type Input = BiRefNetBatch<B>;
-    type Output = BiRefNetOutput<B>;
+impl TrainStep for BiRefNet {
+    type Input = BiRefNetBatch;
+    type Output = BiRefNetOutput;
 
-    fn step(&self, batch: BiRefNetBatch<B>) -> TrainOutput<BiRefNetOutput<B>> {
+    fn step(&self, batch: BiRefNetBatch) -> TrainOutput<BiRefNetOutput> {
         // Use default loss configuration for training
         let item = self.forward_classification(batch).unwrap();
         TrainOutput::new(self, item.loss.backward(), item)
@@ -483,11 +477,11 @@ impl<B: AutodiffBackend> TrainStep for BiRefNet<B> {
 }
 
 #[cfg(feature = "train")]
-impl<B: Backend> InferenceStep for BiRefNet<B> {
-    type Input = BiRefNetBatch<B>;
-    type Output = BiRefNetOutput<B>;
+impl InferenceStep for BiRefNet {
+    type Input = BiRefNetBatch;
+    type Output = BiRefNetOutput;
 
-    fn step(&self, batch: BiRefNetBatch<B>) -> BiRefNetOutput<B> {
+    fn step(&self, batch: BiRefNetBatch) -> BiRefNetOutput {
         // Use default loss configuration for validation
         self.forward_classification(batch).unwrap()
     }
@@ -504,24 +498,17 @@ mod tests {
     use super::BiRefNetConfig;
     #[cfg(feature = "train")]
     use crate::BiRefNetBatch;
-    use crate::{
-        config::{InterpolationStrategy, ModelConfig},
-        tests::{TestAutodiffBackend, TestBackend},
-    };
+    use crate::config::{InterpolationStrategy, ModelConfig};
 
     #[cfg(not(feature = "train"))]
     #[test]
     fn birefnet_forward_produces_correct_output_shape() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let config = BiRefNetConfig::new(ModelConfig::new(InterpolationStrategy::Nearest));
-        let model = config.init::<TestBackend>(&device).unwrap();
+        let model = config.init(&device).unwrap();
 
         // Create test input tensor [batch_size=1, channels=3, height=64, width=64]
-        let input = Tensor::<TestBackend, 4>::random(
-            [1, 3, 64, 64],
-            Distribution::Normal(0.0, 1.0),
-            &device,
-        );
+        let input = Tensor::<4>::random([1, 3, 64, 64], Distribution::Normal(0.0, 1.0), &device);
 
         // Test forward pass
         let output = model.forward(input);
@@ -535,22 +522,14 @@ mod tests {
     #[cfg(feature = "train")]
     #[test]
     fn birefnet_train_step_produces_finite_loss() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu().autodiff();
         let config = BiRefNetConfig::new(ModelConfig::new(InterpolationStrategy::Nearest))
             .with_loss_config(Option::from(BiRefNetLossConfig::new()));
-        let model = config.init::<TestAutodiffBackend>(&device).unwrap();
+        let model = config.init(&device).unwrap();
 
         // Create test batch
-        let images = Tensor::<TestAutodiffBackend, 4>::random(
-            [2, 3, 64, 64],
-            Distribution::Normal(0.0, 1.0),
-            &device,
-        );
-        let masks = Tensor::<TestAutodiffBackend, 4>::random(
-            [2, 1, 64, 64],
-            Distribution::Uniform(0.0, 1.0),
-            &device,
-        );
+        let images = Tensor::<4>::random([2, 3, 64, 64], Distribution::Normal(0.0, 1.0), &device);
+        let masks = Tensor::<4>::random([2, 1, 64, 64], Distribution::Uniform(0.0, 1.0), &device);
 
         let batch = BiRefNetBatch { images, masks };
 
@@ -558,7 +537,7 @@ mod tests {
         let train_output = TrainStep::step(&model, batch);
 
         // Should have valid output
-        assert!(train_output.item.loss.into_scalar().is_finite());
+        assert!(train_output.item.loss.into_scalar::<f32>().is_finite());
         assert_eq!(train_output.item.output.dims(), [2, 1, 64, 64]);
         assert_eq!(train_output.item.targets.dims(), [2, 1, 64, 64]);
     }
@@ -566,22 +545,14 @@ mod tests {
     #[cfg(feature = "train")]
     #[test]
     fn birefnet_valid_step_produces_finite_loss() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let config = BiRefNetConfig::new(ModelConfig::new(InterpolationStrategy::Nearest))
             .with_loss_config(Option::from(BiRefNetLossConfig::new()));
-        let model = config.init::<TestBackend>(&device).unwrap();
+        let model = config.init(&device).unwrap();
 
         // Create test batch
-        let images = Tensor::<TestBackend, 4>::random(
-            [2, 3, 64, 64],
-            Distribution::Normal(0.0, 1.0),
-            &device,
-        );
-        let masks = Tensor::<TestBackend, 4>::random(
-            [2, 1, 64, 64],
-            Distribution::Uniform(0.0, 1.0),
-            &device,
-        );
+        let images = Tensor::<4>::random([2, 3, 64, 64], Distribution::Normal(0.0, 1.0), &device);
+        let masks = Tensor::<4>::random([2, 1, 64, 64], Distribution::Uniform(0.0, 1.0), &device);
 
         let batch = BiRefNetBatch { images, masks };
 
@@ -589,7 +560,7 @@ mod tests {
         let output = InferenceStep::step(&model, batch);
 
         // Should have valid output
-        assert!(output.loss.into_scalar().is_finite());
+        assert!(output.loss.into_scalar::<f32>().is_finite());
         assert_eq!(output.output.dims(), [2, 1, 64, 64]);
         assert_eq!(output.targets.dims(), [2, 1, 64, 64]);
     }

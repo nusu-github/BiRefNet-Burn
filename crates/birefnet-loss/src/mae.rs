@@ -15,7 +15,7 @@ use burn::{
     config::Config,
     module::{Content, DisplaySettings, Module, ModuleDisplay},
     nn::loss::Reduction,
-    tensor::{Tensor, backend::Backend},
+    tensor::Tensor,
 };
 
 /// Configuration for creating a [Mean Absolute Error loss](MaeLoss).
@@ -48,7 +48,7 @@ impl MaeLossConfig {
 ///
 /// Calculates the mean absolute error between predictions and targets.
 /// Supports arbitrary tensor dimensions and reduction options.
-#[derive(Module, Clone, Debug)]
+#[derive(Module, Debug)]
 #[module(custom_display)]
 pub struct MaeLoss {
     /// Weight factor applied to the loss.
@@ -86,12 +86,12 @@ impl MaeLoss {
     /// - predictions: `[...dims]` (any shape)
     /// - targets: `[...dims]` (same shape as predictions)
     /// - output: `[1]`
-    pub fn forward<const D: usize, B: Backend>(
+    pub fn forward<const D: usize>(
         &self,
-        predictions: Tensor<B, D>,
-        targets: Tensor<B, D>,
+        predictions: Tensor<D>,
+        targets: Tensor<D>,
         reduction: Reduction,
-    ) -> Tensor<B, 1> {
+    ) -> Tensor<1> {
         let loss = self.forward_no_reduction(predictions, targets);
         let reduced = crate::reduce_loss(loss, reduction);
 
@@ -106,22 +106,18 @@ impl MaeLoss {
     /// - predictions: `[...dims]` (any shape)
     /// - targets: `[...dims]` (same shape as predictions)
     /// - output: `[...dims]` (same shape as input)
-    pub fn forward_no_reduction<const D: usize, B: Backend>(
+    pub fn forward_no_reduction<const D: usize>(
         &self,
-        predictions: Tensor<B, D>,
-        targets: Tensor<B, D>,
-    ) -> Tensor<B, D> {
+        predictions: Tensor<D>,
+        targets: Tensor<D>,
+    ) -> Tensor<D> {
         self.assertions(&predictions, &targets);
 
         // Compute absolute difference: |pred - target|
         (predictions - targets).abs()
     }
 
-    fn assertions<const D: usize, B: Backend>(
-        &self,
-        predictions: &Tensor<B, D>,
-        targets: &Tensor<B, D>,
-    ) {
+    fn assertions<const D: usize>(&self, predictions: &Tensor<D>, targets: &Tensor<D>) {
         let pred_dims = predictions.dims();
         let target_dims = targets.dims();
         assert_eq!(
@@ -133,29 +129,17 @@ impl MaeLoss {
 
 #[cfg(test)]
 mod tests {
-    use burn::{
-        backend::Cpu,
-        tensor::{TensorData, Tolerance, Transaction, ops::FloatElem},
-    };
+    use burn::tensor::{TensorData, Tolerance, Transaction};
 
     use super::*;
 
-    type TestBackend = Cpu;
-    type FT = FloatElem<TestBackend>;
-
     #[test]
     fn mae_loss_forward_identical_tensors_returns_zero() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = MaeLoss::new();
 
-        let pred = Tensor::<TestBackend, 2>::from_data(
-            TensorData::from([[1.0, 2.0], [3.0, 4.0]]),
-            &device,
-        );
-        let target = Tensor::<TestBackend, 2>::from_data(
-            TensorData::from([[1.0, 2.0], [3.0, 4.0]]),
-            &device,
-        );
+        let pred = Tensor::<2>::from_data(TensorData::from([[1.0, 2.0], [3.0, 4.0]]), &device);
+        let target = Tensor::<2>::from_data(TensorData::from([[1.0, 2.0], [3.0, 4.0]]), &device);
 
         let result = loss.forward(pred.clone(), target.clone(), Reduction::Mean);
         let result_no_reduction = loss.forward_no_reduction(pred, target);
@@ -168,26 +152,20 @@ mod tests {
             .expect("Correct amount of tensor data");
 
         let expected = TensorData::from([0.0]);
-        result_data.assert_approx_eq::<FT>(&expected, Tolerance::default());
+        result_data.assert_approx_eq::<f32>(&expected, Tolerance::default());
 
         let expected_no_reduction = TensorData::from([[0.0, 0.0], [0.0, 0.0]]);
         result_no_reduction_data
-            .assert_approx_eq::<FT>(&expected_no_reduction, Tolerance::default());
+            .assert_approx_eq::<f32>(&expected_no_reduction, Tolerance::default());
     }
 
     #[test]
     fn mae_loss_forward_different_tensors_computes_correct_mean() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = MaeLoss::new();
 
-        let pred = Tensor::<TestBackend, 2>::from_data(
-            TensorData::from([[2.0, 3.0], [4.0, 5.0]]),
-            &device,
-        );
-        let target = Tensor::<TestBackend, 2>::from_data(
-            TensorData::from([[1.0, 1.0], [1.0, 1.0]]),
-            &device,
-        );
+        let pred = Tensor::<2>::from_data(TensorData::from([[2.0, 3.0], [4.0, 5.0]]), &device);
+        let target = Tensor::<2>::from_data(TensorData::from([[1.0, 1.0], [1.0, 1.0]]), &device);
 
         let result_mean = loss.forward(pred.clone(), target.clone(), Reduction::Mean);
         let result_sum = loss.forward(pred.clone(), target.clone(), Reduction::Sum);
@@ -204,32 +182,26 @@ mod tests {
         // |2-1| + |3-1| + |4-1| + |5-1| = 1 + 2 + 3 + 4 = 10
         // Mean = 10/4 = 2.5
         let expected_mean = TensorData::from([2.5]);
-        result_mean_data.assert_approx_eq::<FT>(&expected_mean, Tolerance::default());
+        result_mean_data.assert_approx_eq::<f32>(&expected_mean, Tolerance::default());
 
         // Sum = 10
         let expected_sum = TensorData::from([10.0]);
-        result_sum_data.assert_approx_eq::<FT>(&expected_sum, Tolerance::default());
+        result_sum_data.assert_approx_eq::<f32>(&expected_sum, Tolerance::default());
 
         // No reduction: element-wise absolute differences
         let expected_no_reduction = TensorData::from([[1.0, 2.0], [3.0, 4.0]]);
         result_no_reduction_data
-            .assert_approx_eq::<FT>(&expected_no_reduction, Tolerance::default());
+            .assert_approx_eq::<f32>(&expected_no_reduction, Tolerance::default());
     }
 
     #[test]
     fn mae_loss_with_custom_weight_multiplies_result() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let config = MaeLossConfig::new().with_weight(2.0);
         let loss = config.init();
 
-        let pred = Tensor::<TestBackend, 2>::from_data(
-            TensorData::from([[2.0, 1.0], [3.0, 0.0]]),
-            &device,
-        );
-        let target = Tensor::<TestBackend, 2>::from_data(
-            TensorData::from([[1.0, 1.0], [1.0, 1.0]]),
-            &device,
-        );
+        let pred = Tensor::<2>::from_data(TensorData::from([[2.0, 1.0], [3.0, 0.0]]), &device);
+        let target = Tensor::<2>::from_data(TensorData::from([[1.0, 1.0], [1.0, 1.0]]), &device);
 
         let result = loss.forward(pred, target, Reduction::Mean);
 
@@ -238,19 +210,17 @@ mod tests {
         let expected = TensorData::from([2.0]);
         result
             .into_data()
-            .assert_approx_eq::<FT>(&expected, Tolerance::default());
+            .assert_approx_eq::<f32>(&expected, Tolerance::default());
     }
 
     #[test]
     fn mae_loss_forward_different_tensor_dimensions_works() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = MaeLoss::new();
 
         // Test 1D tensors
-        let pred_1d =
-            Tensor::<TestBackend, 1>::from_data(TensorData::from([2.0, 4.0, 6.0]), &device);
-        let target_1d =
-            Tensor::<TestBackend, 1>::from_data(TensorData::from([1.0, 2.0, 3.0]), &device);
+        let pred_1d = Tensor::<1>::from_data(TensorData::from([2.0, 4.0, 6.0]), &device);
+        let target_1d = Tensor::<1>::from_data(TensorData::from([1.0, 2.0, 3.0]), &device);
 
         let result_1d = loss.forward(pred_1d, target_1d, Reduction::Mean);
 
@@ -258,17 +228,13 @@ mod tests {
         let expected_1d = TensorData::from([2.0]);
         result_1d
             .into_data()
-            .assert_approx_eq::<FT>(&expected_1d, Tolerance::default());
+            .assert_approx_eq::<f32>(&expected_1d, Tolerance::default());
 
         // Test 3D tensors
-        let pred_3d = Tensor::<TestBackend, 3>::from_data(
-            TensorData::from([[[2.0, 4.0]], [[6.0, 8.0]]]),
-            &device,
-        );
-        let target_3d = Tensor::<TestBackend, 3>::from_data(
-            TensorData::from([[[1.0, 2.0]], [[3.0, 4.0]]]),
-            &device,
-        );
+        let pred_3d =
+            Tensor::<3>::from_data(TensorData::from([[[2.0, 4.0]], [[6.0, 8.0]]]), &device);
+        let target_3d =
+            Tensor::<3>::from_data(TensorData::from([[[1.0, 2.0]], [[3.0, 4.0]]]), &device);
 
         let result_3d = loss.forward(pred_3d, target_3d, Reduction::Mean);
 
@@ -276,22 +242,16 @@ mod tests {
         let expected_3d = TensorData::from([2.5]);
         result_3d
             .into_data()
-            .assert_approx_eq::<FT>(&expected_3d, Tolerance::default());
+            .assert_approx_eq::<f32>(&expected_3d, Tolerance::default());
     }
 
     #[test]
     fn mae_loss_auto_reduction_equals_mean_reduction() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = MaeLoss::new();
 
-        let pred = Tensor::<TestBackend, 2>::from_data(
-            TensorData::from([[2.0, 4.0], [6.0, 8.0]]),
-            &device,
-        );
-        let target = Tensor::<TestBackend, 2>::from_data(
-            TensorData::from([[1.0, 2.0], [3.0, 4.0]]),
-            &device,
-        );
+        let pred = Tensor::<2>::from_data(TensorData::from([[2.0, 4.0], [6.0, 8.0]]), &device);
+        let target = Tensor::<2>::from_data(TensorData::from([[1.0, 2.0], [3.0, 4.0]]), &device);
 
         let result_auto = loss.forward(pred.clone(), target.clone(), Reduction::Auto);
         let result_mean = loss.forward(pred, target, Reduction::Mean);
@@ -303,7 +263,7 @@ mod tests {
             .try_into()
             .expect("Correct amount of tensor data");
 
-        result_auto_data.assert_approx_eq::<FT>(&result_mean_data, Tolerance::default());
+        result_auto_data.assert_approx_eq::<f32>(&result_mean_data, Tolerance::default());
     }
 
     #[test]
@@ -315,14 +275,11 @@ mod tests {
     #[test]
     #[should_panic = "Shape of predictions"]
     fn mae_loss_forward_mismatched_shapes_panics() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = MaeLoss::new();
 
-        let pred = Tensor::<TestBackend, 2>::from_data(TensorData::from([[1.0, 2.0]]), &device);
-        let target = Tensor::<TestBackend, 2>::from_data(
-            TensorData::from([[1.0, 2.0], [3.0, 4.0]]),
-            &device,
-        );
+        let pred = Tensor::<2>::from_data(TensorData::from([[1.0, 2.0]]), &device);
+        let target = Tensor::<2>::from_data(TensorData::from([[1.0, 2.0], [3.0, 4.0]]), &device);
 
         let _result = loss.forward_no_reduction(pred, target);
     }

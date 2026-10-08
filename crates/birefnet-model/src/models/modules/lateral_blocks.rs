@@ -28,7 +28,7 @@ pub struct BasicLatBlkConfig {
 
 impl BasicLatBlkConfig {
     /// Initializes a new `BasicLatBlk` module.
-    pub fn init<B: Backend>(&self, device: &Device<B>) -> BasicLatBlk<B> {
+    pub fn init(&self, device: &Device) -> BasicLatBlk {
         BasicLatBlk {
             conv: Conv2dConfig::new([self.in_channels, self.out_channels], [1, 1])
                 .with_stride([1, 1])
@@ -40,12 +40,12 @@ impl BasicLatBlkConfig {
 
 /// A basic lateral block, consisting of a single 1x1 convolution.
 #[derive(Module, Debug)]
-pub struct BasicLatBlk<B: Backend> {
-    conv: Conv2d<B>,
+pub struct BasicLatBlk {
+    conv: Conv2d,
 }
 
-impl<B: Backend> BasicLatBlk<B> {
-    pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
+impl BasicLatBlk {
+    pub fn forward(&self, x: Tensor<4>) -> Tensor<4> {
         self.conv.forward(x)
     }
 }

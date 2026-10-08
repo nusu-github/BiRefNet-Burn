@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use burn::tensor::{DType, Tensor, TensorData, backend::Backend};
+use burn::tensor::{DType, Tensor, TensorData};
 use image::{
     DynamicImage, GenericImageView, ImageBuffer, ImageFormat, Luma, Rgb, Rgba,
     buffer::ConvertBuffer, imageops::FilterType,
@@ -104,10 +104,7 @@ pub const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 ///
 /// # Returns
 /// Tensor of shape [1, 3, height, width] with values in range [0, 1]
-pub fn load_image<B: Backend, P: AsRef<Path>>(
-    path: P,
-    device: &B::Device,
-) -> ImageResult<Tensor<B, 4>> {
+pub fn load_image<P: AsRef<Path>>(path: P, device: &Device) -> ImageResult<Tensor<4>> {
     let path_str = path.as_ref().display().to_string();
     let img = image::open(&path).map_err(|source| ImageError::ImageLoadError {
         path: path_str,
@@ -118,10 +115,7 @@ pub fn load_image<B: Backend, P: AsRef<Path>>(
 }
 
 /// Convert DynamicImage to tensor
-pub fn dynamic_image_to_tensor<B: Backend>(
-    img: DynamicImage,
-    device: &B::Device,
-) -> ImageResult<Tensor<B, 4>> {
+pub fn dynamic_image_to_tensor(img: DynamicImage, device: &Device) -> ImageResult<Tensor<4>> {
     let (width, height) = img.dimensions();
 
     // Use efficient direct f64 conversion for all formats
@@ -141,10 +135,7 @@ pub fn dynamic_image_to_tensor<B: Backend>(
 /// # Arguments
 /// * `tensor` - Tensor of shape [batch, channels, height, width]
 /// * `is_mask` - Whether the tensor is a mask (single channel)
-pub fn tensor_to_dynamic_image<B: Backend>(
-    tensor: Tensor<B, 4>,
-    is_mask: bool,
-) -> ImageResult<DynamicImage> {
+pub fn tensor_to_dynamic_image(tensor: Tensor<4>, is_mask: bool) -> ImageResult<DynamicImage> {
     let [batch, channels, height, width] = tensor.dims();
 
     if batch != 1 {
@@ -214,10 +205,7 @@ pub fn tensor_to_dynamic_image<B: Backend>(
 ///
 /// # Returns
 /// RGBA image tensor [batch, 4, height, width] with alpha channel from mask
-pub fn apply_mask<B: Backend>(
-    image: Tensor<B, 4>,
-    mask: Tensor<B, 4>,
-) -> ImageResult<Tensor<B, 4>> {
+pub fn apply_mask(image: Tensor<4>, mask: Tensor<4>) -> ImageResult<Tensor<4>> {
     let image_dims = image.dims();
     let mask_dims = mask.dims();
     let [batch, channels, height, width] = image_dims;
@@ -261,12 +249,12 @@ pub fn apply_mask<B: Backend>(
 ///
 /// # Returns
 /// Resized tensor of shape [1, 3, height, width]
-pub fn resize_image_file<B: Backend, P: AsRef<Path>>(
+pub fn resize_image_file<P: AsRef<Path>>(
     path: P,
     target_size: (u32, u32),
     filter: FilterType,
-    device: &B::Device,
-) -> ImageResult<Tensor<B, 4>> {
+    device: &Device,
+) -> ImageResult<Tensor<4>> {
     let path_str = path.as_ref().display().to_string();
     let img = image::open(&path).map_err(|source| ImageError::ImageLoadError {
         path: path_str,
@@ -288,13 +276,13 @@ pub fn resize_image_file<B: Backend, P: AsRef<Path>>(
 ///
 /// # Returns
 /// Tensor of shape [1, channels, height, width] with values normalized to [0,1]
-pub fn from_raw_pixels<B: Backend>(
+pub fn from_raw_pixels(
     data: Vec<u8>,
     width: u32,
     height: u32,
     channels: usize,
-    device: &B::Device,
-) -> ImageResult<Tensor<B, 4>> {
+    device: &Device,
+) -> ImageResult<Tensor<4>> {
     from_raw_pixels_with_normalization(data, width, height, channels, device, true)
 }
 
@@ -310,14 +298,14 @@ pub fn from_raw_pixels<B: Backend>(
 ///
 /// # Returns
 /// Tensor of shape [1, channels, height, width]
-pub fn from_raw_pixels_with_normalization<B: Backend>(
+pub fn from_raw_pixels_with_normalization(
     data: Vec<u8>,
     width: u32,
     height: u32,
     channels: usize,
-    device: &B::Device,
+    device: &Device,
     normalize: bool,
-) -> ImageResult<Tensor<B, 4>> {
+) -> ImageResult<Tensor<4>> {
     let expected_len = (width * height) as usize * channels;
     if data.len() != expected_len {
         return Err(ImageError::DataLengthMismatch {
@@ -356,10 +344,10 @@ pub fn from_raw_pixels_with_normalization<B: Backend>(
 ///
 /// # Returns
 /// Tensor of shape [batch_size, 3, height, width]
-pub fn load_image_batch<B: Backend, P: AsRef<Path> + Send + Sync>(
+pub fn load_image_batch<P: AsRef<Path> + Send + Sync>(
     paths: &[P],
-    device: &B::Device,
-) -> ImageResult<Tensor<B, 4>> {
+    device: &Device,
+) -> ImageResult<Tensor<4>> {
     if paths.is_empty() {
         return Err(ImageError::EmptyPathList);
     }
@@ -407,7 +395,7 @@ pub fn load_image_batch<B: Backend, P: AsRef<Path> + Send + Sync>(
 ///
 /// # Returns
 /// Tensor with ImageNet normalization applied: (pixel - mean) / std
-pub fn apply_imagenet_normalization<B: Backend>(tensor: Tensor<B, 4>) -> ImageResult<Tensor<B, 4>> {
+pub fn apply_imagenet_normalization(tensor: Tensor<4>) -> ImageResult<Tensor<4>> {
     let [_, channels, ..] = tensor.dims();
 
     if channels != 3 {
@@ -437,10 +425,10 @@ pub fn apply_imagenet_normalization<B: Backend>(tensor: Tensor<B, 4>) -> ImageRe
 ///
 /// # Returns
 /// Tensor of shape [1, 3, height, width] with ImageNet normalization applied
-pub fn load_image_with_imagenet_normalization<B: Backend, P: AsRef<Path>>(
+pub fn load_image_with_imagenet_normalization<P: AsRef<Path>>(
     path: P,
-    device: &B::Device,
-) -> ImageResult<Tensor<B, 4>> {
+    device: &Device,
+) -> ImageResult<Tensor<4>> {
     // First load image with standard [0, 1] normalization
     let tensor = load_image(path, device)?;
 
@@ -456,10 +444,10 @@ pub fn load_image_with_imagenet_normalization<B: Backend, P: AsRef<Path>>(
 ///
 /// # Returns
 /// Tensor of shape [1, 3, height, width] with ImageNet normalization applied
-pub fn dynamic_image_to_tensor_with_imagenet_normalization<B: Backend>(
+pub fn dynamic_image_to_tensor_with_imagenet_normalization(
     img: DynamicImage,
-    device: &B::Device,
-) -> ImageResult<Tensor<B, 4>> {
+    device: &Device,
+) -> ImageResult<Tensor<4>> {
     // First convert to standard [0, 1] tensor
     let tensor = dynamic_image_to_tensor(img, device)?;
 
@@ -475,10 +463,10 @@ pub fn dynamic_image_to_tensor_with_imagenet_normalization<B: Backend>(
 ///
 /// # Returns
 /// Tensor of shape [batch_size, 3, height, width] with ImageNet normalization applied
-pub fn load_image_batch_with_imagenet_normalization<B: Backend, P: AsRef<Path> + Send + Sync>(
+pub fn load_image_batch_with_imagenet_normalization<P: AsRef<Path> + Send + Sync>(
     paths: &[P],
-    device: &B::Device,
-) -> ImageResult<Tensor<B, 4>> {
+    device: &Device,
+) -> ImageResult<Tensor<4>> {
     // First load batch with standard [0, 1] normalization
     let tensor = load_image_batch(paths, device)?;
 
@@ -564,18 +552,15 @@ pub fn get_supported_formats() -> Vec<ImageFormat> {
 
 #[cfg(test)]
 mod tests {
-    use burn::backend::Cpu;
 
     use super::*;
 
-    type TestBackend = Cpu;
-
     #[test]
     fn from_raw_pixels_invalid_data_returns_error() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
 
         // Test invalid data length
-        let result = from_raw_pixels::<TestBackend>(
+        let result = from_raw_pixels(
             vec![255_u8; 10], // Invalid length
             2,
             2,
@@ -588,7 +573,7 @@ mod tests {
         ));
 
         // Test invalid channel count
-        let result = from_raw_pixels::<TestBackend>(
+        let result = from_raw_pixels(
             vec![255_u8; 8],
             2,
             2,
@@ -603,11 +588,11 @@ mod tests {
 
     #[test]
     fn apply_mask_mismatched_dimensions_returns_error() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
 
         // Create test tensors with mismatched dimensions
-        let image = Tensor::<TestBackend, 4>::zeros([1, 3, 10, 10], &device);
-        let mask = Tensor::<TestBackend, 4>::zeros([1, 1, 5, 5], &device); // Wrong size
+        let image = Tensor::<4>::zeros([1, 3, 10, 10], &device);
+        let mask = Tensor::<4>::zeros([1, 1, 5, 5], &device); // Wrong size
 
         let result = apply_mask(image, mask);
         assert!(matches!(
@@ -618,27 +603,25 @@ mod tests {
 
     #[test]
     fn from_raw_pixels_with_normalization_works_correctly() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
 
         // Test with normalization
         let data = vec![0_u8, 127, 255]; // Should become [0.0, ~0.5, 1.0]
-        let result =
-            from_raw_pixels_with_normalization::<TestBackend>(data, 1, 1, 3, &device, true);
+        let result = from_raw_pixels_with_normalization(data, 1, 1, 3, &device, true);
         assert!(result.is_ok());
 
         // Test without normalization
         let data = vec![0_u8, 127, 255]; // Should remain [0.0, 127.0, 255.0]
-        let result =
-            from_raw_pixels_with_normalization::<TestBackend>(data, 1, 1, 3, &device, false);
+        let result = from_raw_pixels_with_normalization(data, 1, 1, 3, &device, false);
         assert!(result.is_ok());
     }
 
     #[test]
     fn apply_mask_creates_rgba_tensor() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
 
-        let image = Tensor::<TestBackend, 4>::zeros([1, 3, 10, 10], &device);
-        let mask = Tensor::<TestBackend, 4>::ones([1, 1, 10, 10], &device);
+        let image = Tensor::<4>::zeros([1, 3, 10, 10], &device);
+        let mask = Tensor::<4>::ones([1, 1, 10, 10], &device);
 
         let result = apply_mask(image, mask);
         assert!(result.is_ok());
@@ -653,16 +636,16 @@ mod tests {
 
     #[test]
     fn load_image_batch_empty_paths_returns_error() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let empty_paths: Vec<&str> = vec![];
 
-        let result = load_image_batch::<TestBackend, _>(&empty_paths, &device);
+        let result = load_image_batch::<_>(&empty_paths, &device);
         assert!(matches!(result.unwrap_err(), ImageError::EmptyPathList));
     }
 
     #[test]
     fn apply_imagenet_normalization_works_correctly() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
 
         // Create a test tensor with shape [1, 3, 2, 2]
         // Channel 0: ImageNet mean for R (0.485), then 1.0, 0.0, 0.5
@@ -676,7 +659,7 @@ mod tests {
         ];
 
         let tensor_data = TensorData::new(test_data, [1, 3, 2, 2]);
-        let tensor = Tensor::<TestBackend, 4>::from_data(tensor_data, &device);
+        let tensor = Tensor::<4>::from_data(tensor_data, &device);
 
         let normalized = apply_imagenet_normalization(tensor).unwrap();
         let result_data = normalized.into_data().to_vec::<f32>().unwrap();
@@ -710,10 +693,10 @@ mod tests {
 
     #[test]
     fn apply_imagenet_normalization_invalid_channels_returns_error() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
 
         // Create tensor with wrong number of channels (4 instead of 3)
-        let tensor = Tensor::<TestBackend, 4>::zeros([1, 4, 10, 10], &device);
+        let tensor = Tensor::<4>::zeros([1, 4, 10, 10], &device);
 
         let result = apply_imagenet_normalization(tensor);
         assert!(matches!(

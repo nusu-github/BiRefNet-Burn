@@ -35,18 +35,18 @@ pub struct RefinerDecoderConfig {
 
 /// Decoder used by Refiner modules
 #[derive(Module, Debug)]
-pub struct RefinerDecoder<B: Backend> {
-    decoder_block4: BasicDecBlk<B>,
-    decoder_block3: BasicDecBlk<B>,
-    decoder_block2: BasicDecBlk<B>,
-    decoder_block1: BasicDecBlk<B>,
-    lateral_block4: BasicLatBlk<B>,
-    lateral_block3: BasicLatBlk<B>,
-    lateral_block2: BasicLatBlk<B>,
-    conv_out1: Conv2d<B>,
-    conv_ms_spvn_4: Option<Conv2d<B>>,
-    conv_ms_spvn_3: Option<Conv2d<B>>,
-    conv_ms_spvn_2: Option<Conv2d<B>>,
+pub struct RefinerDecoder {
+    decoder_block4: BasicDecBlk,
+    decoder_block3: BasicDecBlk,
+    decoder_block2: BasicDecBlk,
+    decoder_block1: BasicDecBlk,
+    lateral_block4: BasicLatBlk,
+    lateral_block3: BasicLatBlk,
+    lateral_block2: BasicLatBlk,
+    conv_out1: Conv2d,
+    conv_ms_spvn_4: Option<Conv2d>,
+    conv_ms_spvn_3: Option<Conv2d>,
+    conv_ms_spvn_2: Option<Conv2d>,
     ms_supervision: bool,
     /// Interpolation strategy for tensor resizing operations.
     #[module(skip)]
@@ -54,7 +54,7 @@ pub struct RefinerDecoder<B: Backend> {
 }
 
 impl RefinerDecoderConfig {
-    pub fn init<B: Backend>(&self, device: &B::Device) -> BiRefNetResult<RefinerDecoder<B>> {
+    pub fn init(&self, device: &Device) -> BiRefNetResult<RefinerDecoder> {
         let squeeze_block = match self.config.decoder.dec_att {
             DecoderAttention::None => SqueezeBlock::None,
             DecoderAttention::ASPP => SqueezeBlock::ASPP(0),
@@ -146,8 +146,8 @@ impl RefinerDecoderConfig {
     }
 }
 
-impl<B: Backend> RefinerDecoder<B> {
-    pub fn forward(&self, features: [Tensor<B, 4>; 5]) -> Vec<Tensor<B, 4>> {
+impl RefinerDecoder {
+    pub fn forward(&self, features: [Tensor<4>; 5]) -> Vec<Tensor<4>> {
         let [x, x1, x2, x3, x4] = features;
         // Pre-allocate output vector - max 4 outputs (3 ms_supervision + 1 final)
         let mut outs = Vec::with_capacity(4);
@@ -196,22 +196,22 @@ impl<B: Backend> RefinerDecoder<B> {
 
 /// Stem layer for processing input
 #[derive(Module, Debug)]
-pub struct StemLayer<B: Backend> {
-    conv1: Conv2d<B>,
-    norm1: Vec<NormLayerEnum<B>>,
+pub struct StemLayer {
+    conv1: Conv2d,
+    norm1: Vec<NormLayerEnum>,
     #[module(skip)]
     act: ActLayerEnum,
-    conv2: Conv2d<B>,
-    norm2: Vec<NormLayerEnum<B>>,
+    conv2: Conv2d,
+    norm2: Vec<NormLayerEnum>,
 }
 
-impl<B: Backend> StemLayer<B> {
+impl StemLayer {
     pub fn new(
         in_channels: usize,
         inter_channels: usize,
         out_channels: usize,
         norm_layer: &str,
-        device: &B::Device,
+        device: &Device,
     ) -> BiRefNetResult<Self> {
         let conv1 = Conv2dConfig::new([in_channels, inter_channels], [3, 3])
             .with_stride([1, 1])
@@ -237,7 +237,7 @@ impl<B: Backend> StemLayer<B> {
         })
     }
 
-    pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
+    pub fn forward(&self, x: Tensor<4>) -> Tensor<4> {
         let mut x = self.conv1.forward(x);
 
         // Apply norm layers
@@ -300,14 +300,14 @@ pub struct RefinerPVTInChannels4Config {
 
 /// RefinerPVTInChannels4 module
 #[derive(Module, Debug)]
-pub struct RefinerPVTInChannels4<B: Backend> {
-    backbone: BackboneWrapper<B>,
-    squeeze_module: BasicDecBlk<B>,
-    decoder: RefinerDecoder<B>,
+pub struct RefinerPVTInChannels4 {
+    backbone: BackboneWrapper,
+    squeeze_module: BasicDecBlk,
+    decoder: RefinerDecoder,
 }
 
 impl RefinerPVTInChannels4Config {
-    pub fn init<B: Backend>(&self, device: &B::Device) -> BiRefNetResult<RefinerPVTInChannels4<B>> {
+    pub fn init(&self, device: &Device) -> BiRefNetResult<RefinerPVTInChannels4> {
         // Create PVTv2 backbone with specified variant
         let backbone = create_backbone(BackboneType::PvtV2(self.backbone_variant.clone()), device);
 
@@ -341,12 +341,12 @@ impl RefinerPVTInChannels4Config {
     }
 }
 
-impl<B: Backend> RefinerPVTInChannels4<B> {
+impl RefinerPVTInChannels4 {
     /// Forward pass for the refiner
     ///
     /// # Arguments
     /// * `x` - Input tensor of shape [batch_size, 4, height, width] (RGB + mask)
-    pub fn forward(&self, x: Tensor<B, 4>) -> Vec<Tensor<B, 4>> {
+    pub fn forward(&self, x: Tensor<4>) -> Vec<Tensor<4>> {
         // Handle channel mismatch: backbone expects 3 channels, but we have 4
         let x_rgb = if x.dims()[1] == 4 {
             // Take only RGB channels for backbone
@@ -387,15 +387,15 @@ pub struct RefinerConfig {
 
 /// Refiner module
 #[derive(Module, Debug)]
-pub struct Refiner<B: Backend> {
-    stem_layer: StemLayer<B>,
-    backbone: BackboneWrapper<B>,
-    squeeze_module: BasicDecBlk<B>,
-    decoder: RefinerDecoder<B>,
+pub struct Refiner {
+    stem_layer: StemLayer,
+    backbone: BackboneWrapper,
+    squeeze_module: BasicDecBlk,
+    decoder: RefinerDecoder,
 }
 
 impl RefinerConfig {
-    pub fn init<B: Backend>(&self, device: &B::Device) -> BiRefNetResult<Refiner<B>> {
+    pub fn init(&self, device: &Device) -> BiRefNetResult<Refiner> {
         // Default norm layer - use BatchNorm
         let norm_layer = "BN";
 
@@ -441,12 +441,12 @@ impl RefinerConfig {
     }
 }
 
-impl<B: Backend> Refiner<B> {
+impl Refiner {
     /// Forward pass for the refiner
     ///
     /// # Arguments
     /// * `x` - Input tensor of shape [batch_size, 4, height, width] (RGB + mask)
-    pub fn forward(&self, x: Tensor<B, 4>) -> Vec<Tensor<B, 4>> {
+    pub fn forward(&self, x: Tensor<4>) -> Vec<Tensor<4>> {
         // Apply stem layer to reduce channels and preprocess input
         let x_processed = self.stem_layer.forward(x);
 
@@ -476,29 +476,29 @@ pub struct RefUNetConfig {
 
 /// RefUNet module - U-Net based refinement
 #[derive(Module, Debug)]
-pub struct RefUNet<B: Backend> {
+pub struct RefUNet {
     // Encoder layers
-    encoder_1: (Conv2d<B>, Conv2d<B>, BatchNorm<B>, Relu),
-    encoder_2: (MaxPool2d, Conv2d<B>, BatchNorm<B>, Relu),
-    encoder_3: (MaxPool2d, Conv2d<B>, BatchNorm<B>, Relu),
-    encoder_4: (MaxPool2d, Conv2d<B>, BatchNorm<B>, Relu),
+    encoder_1: (Conv2d, Conv2d, BatchNorm, Relu),
+    encoder_2: (MaxPool2d, Conv2d, BatchNorm, Relu),
+    encoder_3: (MaxPool2d, Conv2d, BatchNorm, Relu),
+    encoder_4: (MaxPool2d, Conv2d, BatchNorm, Relu),
     pool4: MaxPool2d,
 
     // Decoder layers
-    decoder_5: (Conv2d<B>, BatchNorm<B>, Relu),
-    decoder_4: (Conv2d<B>, BatchNorm<B>, Relu),
-    decoder_3: (Conv2d<B>, BatchNorm<B>, Relu),
-    decoder_2: (Conv2d<B>, BatchNorm<B>, Relu),
-    decoder_1: (Conv2d<B>, BatchNorm<B>, Relu),
+    decoder_5: (Conv2d, BatchNorm, Relu),
+    decoder_4: (Conv2d, BatchNorm, Relu),
+    decoder_3: (Conv2d, BatchNorm, Relu),
+    decoder_2: (Conv2d, BatchNorm, Relu),
+    decoder_1: (Conv2d, BatchNorm, Relu),
 
-    conv_d0: Conv2d<B>,
+    conv_d0: Conv2d,
     /// Interpolation strategy for tensor resizing operations.
     #[module(skip)]
     interpolation_strategy: InterpolationStrategy,
 }
 
 impl RefUNetConfig {
-    pub fn init<B: Backend>(&self, device: &B::Device) -> RefUNet<B> {
+    pub fn init(&self, device: &Device) -> RefUNet {
         // Encoder
         let encoder_1 = (
             Conv2dConfig::new([self.in_channels, 64], [3, 3])
@@ -604,8 +604,8 @@ impl RefUNetConfig {
     }
 }
 
-impl<B: Backend> RefUNet<B> {
-    pub fn forward(&self, x: Vec<Tensor<B, 4>>) -> Vec<Tensor<B, 4>> {
+impl RefUNet {
+    pub fn forward(&self, x: Vec<Tensor<4>>) -> Vec<Tensor<4>> {
         // Pre-allocate output vector - only 1 output expected
         let mut outs = Vec::with_capacity(1);
 

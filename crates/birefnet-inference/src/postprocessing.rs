@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use birefnet_util::{dynamic_image_to_tensor, tensor_to_dynamic_image};
-use burn::tensor::{Tensor, backend::Backend};
+use burn::tensor::Tensor;
 use image::{self, imageops::FilterType};
 
 /// Apply threshold to create binary mask.
@@ -16,7 +16,7 @@ use image::{self, imageops::FilterType};
 ///
 /// # Returns
 /// Binary mask tensor
-pub fn apply_threshold<B: Backend>(mask: Tensor<B, 4>, threshold: f64) -> Tensor<B, 4> {
+pub fn apply_threshold(mask: Tensor<4>, threshold: f64) -> Tensor<4> {
     mask.greater_elem(threshold).float()
 }
 
@@ -29,11 +29,7 @@ pub fn apply_threshold<B: Backend>(mask: Tensor<B, 4>, threshold: f64) -> Tensor
 ///
 /// # Returns
 /// Blurred mask tensor
-pub fn gaussian_blur<B: Backend>(
-    mask: Tensor<B, 4>,
-    kernel_size: usize,
-    _sigma: f64,
-) -> Tensor<B, 4> {
+pub fn gaussian_blur(mask: Tensor<4>, kernel_size: usize, _sigma: f64) -> Tensor<4> {
     // TODO: Implement proper Gaussian blur using separable convolution
     // Current: Placeholder returning input mask unchanged
     // Should implement: Separable Gaussian kernel with proper convolution
@@ -41,7 +37,7 @@ pub fn gaussian_blur<B: Backend>(
     // In a real implementation, you would use proper Gaussian convolution
 
     // Create a simple averaging filter as approximation
-    let _kernel: Tensor<B, 4> = Tensor::ones([1, 1, kernel_size, kernel_size], &mask.device())
+    let _kernel: Tensor<4> = Tensor::ones([1, 1, kernel_size, kernel_size], &mask.device())
         / (kernel_size * kernel_size) as f64;
 
     // Apply convolution (simplified)
@@ -56,10 +52,7 @@ pub fn gaussian_blur<B: Backend>(
 ///
 /// # Returns
 /// Processed mask tensor
-pub const fn morphological_opening<B: Backend>(
-    mask: Tensor<B, 4>,
-    _kernel_size: usize,
-) -> Tensor<B, 4> {
+pub const fn morphological_opening(mask: Tensor<4>, _kernel_size: usize) -> Tensor<4> {
     // TODO: Implement proper morphological opening (erosion + dilation)
     // Current: Placeholder returning input unchanged
     // Should implement: Proper structuring element operations for noise removal
@@ -74,10 +67,7 @@ pub const fn morphological_opening<B: Backend>(
 ///
 /// # Returns
 /// Processed mask tensor
-pub const fn morphological_closing<B: Backend>(
-    mask: Tensor<B, 4>,
-    _kernel_size: usize,
-) -> Tensor<B, 4> {
+pub const fn morphological_closing(mask: Tensor<4>, _kernel_size: usize) -> Tensor<4> {
     // TODO: Implement proper morphological closing (dilation + erosion)
     // Current: Placeholder returning input unchanged
     // Should implement: Proper structuring element operations for gap filling
@@ -92,10 +82,7 @@ pub const fn morphological_closing<B: Backend>(
 ///
 /// # Returns
 /// Cleaned mask tensor
-pub const fn remove_small_components<B: Backend>(
-    mask: Tensor<B, 4>,
-    _min_size: usize,
-) -> Tensor<B, 4> {
+pub const fn remove_small_components(mask: Tensor<4>, _min_size: usize) -> Tensor<4> {
     // TODO: Implement connected component analysis and filtering
     // Current: Placeholder returning input unchanged
     // Should implement: Flood fill or union-find for component labeling and size filtering
@@ -109,7 +96,7 @@ pub const fn remove_small_components<B: Backend>(
 ///
 /// # Returns
 /// Mask with holes filled
-pub const fn fill_holes<B: Backend>(mask: Tensor<B, 4>) -> Tensor<B, 4> {
+pub const fn fill_holes(mask: Tensor<4>) -> Tensor<4> {
     // TODO: Implement hole filling using morphological reconstruction
     // Current: Placeholder returning input unchanged
     // Should implement: Flood fill from border or morphological reconstruction
@@ -129,15 +116,15 @@ pub const fn fill_holes<B: Backend>(mask: Tensor<B, 4>) -> Tensor<B, 4> {
 ///
 /// # Returns
 /// Processed mask tensor
-pub fn postprocess_mask<B: Backend>(
-    mask: Tensor<B, 4>,
+pub fn postprocess_mask(
+    mask: Tensor<4>,
     threshold: f64,
     blur_kernel_size: usize,
     blur_sigma: f64,
     morphology_kernel_size: usize,
     min_component_size: usize,
     fill_holes_flag: bool,
-) -> Tensor<B, 4> {
+) -> Tensor<4> {
     let mut processed = mask;
 
     // Apply threshold
@@ -174,7 +161,7 @@ pub fn postprocess_mask<B: Backend>(
 ///
 /// # Returns
 /// Vector of u8 pixel values
-pub fn tensor_to_image_data<B: Backend>(tensor: Tensor<B, 4>) -> Vec<u8> {
+pub fn tensor_to_image_data(tensor: Tensor<4>) -> Vec<u8> {
     let [_n, _c, h, w] = tensor.dims();
     let data = tensor.to_data();
 
@@ -195,12 +182,12 @@ pub fn tensor_to_image_data<B: Backend>(tensor: Tensor<B, 4>) -> Vec<u8> {
 ///
 /// # Returns
 /// Resized tensor
-pub fn resize_tensor<B: Backend>(
-    tensor: Tensor<B, 4>,
+pub fn resize_tensor(
+    tensor: Tensor<4>,
     target_height: usize,
     target_width: usize,
-    device: &B::Device,
-) -> Result<Tensor<B, 4>> {
+    device: &Device,
+) -> Result<Tensor<4>> {
     let [_batch_size, _channels, current_height, current_width] = tensor.dims();
 
     if current_height == target_height && current_width == target_width {

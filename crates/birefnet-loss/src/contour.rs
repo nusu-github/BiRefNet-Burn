@@ -17,7 +17,7 @@ use burn::{
     config::Config,
     module::{Content, DisplaySettings, Module, ModuleDisplay},
     nn::loss::Reduction,
-    tensor::{Int, Tensor, backend::Backend, s},
+    tensor::{Int, Tensor, s},
 };
 
 /// Configuration for creating a [Contour loss](ContourLoss).
@@ -61,7 +61,7 @@ impl ContourLossConfig {
 /// This loss combines a length term that encourages smooth contours
 /// and a region term that encourages accurate segmentation. It is particularly
 /// useful for tasks where boundary accuracy is critical.
-#[derive(Module, Clone, Debug)]
+#[derive(Module, Debug)]
 #[module(custom_display)]
 pub struct ContourLoss {
     /// Weight factor for the length term.
@@ -104,12 +104,12 @@ impl ContourLoss {
     /// - predictions: `[batch_size, channels, height, width]` (logits)
     /// - targets: `[batch_size, channels, height, width]` (binary values)
     /// - output: `[1]`
-    pub fn forward<B: Backend>(
+    pub fn forward(
         &self,
-        predictions: Tensor<B, 4>,
-        targets: Tensor<B, 4, Int>,
+        predictions: Tensor<4>,
+        targets: Tensor<4, Int>,
         reduction: Reduction,
-    ) -> Tensor<B, 1> {
+    ) -> Tensor<1> {
         let loss = self.forward_no_reduction(predictions, targets);
         crate::reduce_loss(loss, reduction)
     }
@@ -121,11 +121,11 @@ impl ContourLoss {
     /// - predictions: `[batch_size, channels, height, width]` (logits)
     /// - targets: `[batch_size, channels, height, width]` (binary values)
     /// - output: `[batch_size]`
-    pub fn forward_no_reduction<B: Backend>(
+    pub fn forward_no_reduction(
         &self,
-        predictions: Tensor<B, 4>,
-        targets: Tensor<B, 4, Int>,
-    ) -> Tensor<B, 1> {
+        predictions: Tensor<4>,
+        targets: Tensor<4, Int>,
+    ) -> Tensor<1> {
         self.assertions(&predictions, &targets);
 
         let [batch_size, _, height, width] = predictions.dims();
@@ -188,7 +188,7 @@ impl ContourLoss {
         length.mul_scalar(self.weight) + region
     }
 
-    fn assertions<B: Backend>(&self, predictions: &Tensor<B, 4>, targets: &Tensor<B, 4, Int>) {
+    fn assertions(&self, predictions: &Tensor<4>, targets: &Tensor<4, Int>) {
         let pred_dims = predictions.dims();
         let target_dims = targets.dims();
         assert_eq!(
@@ -203,19 +203,18 @@ mod tests {
     use burn::tensor::{TensorData, cast::ToElement};
 
     use super::*;
-    use crate::tests::TestBackend;
 
     #[test]
     fn contour_loss_forward_minimum_size_input_computes_finite_loss() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = ContourLoss::new();
 
         // Simple test case with 3x3 input (minimum size)
-        let predictions = Tensor::<TestBackend, 4>::from_data(
+        let predictions = Tensor::<4>::from_data(
             TensorData::from([[[[0.8, 0.9, 0.7], [0.6, 0.8, 0.9], [0.5, 0.7, 0.8]]]]),
             &device,
         );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
+        let targets = Tensor::<4, Int>::from_data(
             TensorData::from([[[[1, 1, 0], [1, 1, 1], [0, 1, 1]]]]),
             &device,
         );
@@ -230,18 +229,18 @@ mod tests {
         assert_eq!(result_no_reduction.dims(), [1]); // batch_size = 1
 
         // All values should be finite and non-negative
-        assert!(result_mean.into_scalar().to_f64().is_finite());
-        assert!(result_sum.into_scalar().to_f64().is_finite());
-        assert!(result_no_reduction.into_scalar().to_f64() >= 0.0);
+        assert!(result_mean.into_scalar::<f32>().to_f64().is_finite());
+        assert!(result_sum.into_scalar::<f32>().to_f64().is_finite());
+        assert!(result_no_reduction.into_scalar::<f32>().to_f64() >= 0.0);
     }
 
     #[test]
     fn contour_loss_forward_batch_samples_produces_correct_shapes() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = ContourLoss::new();
 
         // Batch of 2 samples, each 4x4
-        let predictions = Tensor::<TestBackend, 4>::from_data(
+        let predictions = Tensor::<4>::from_data(
             TensorData::from([
                 [[
                     [0.8, 0.9, 0.7, 0.6],
@@ -258,7 +257,7 @@ mod tests {
             ]),
             &device,
         );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
+        let targets = Tensor::<4, Int>::from_data(
             TensorData::from([
                 [[[1, 1, 0, 0], [1, 1, 1, 0], [0, 1, 1, 0], [0, 0, 1, 1]]], // Sample 1
                 [[[0, 0, 1, 1], [0, 1, 1, 1], [1, 1, 0, 0], [1, 0, 0, 0]]], // Sample 2
@@ -274,12 +273,12 @@ mod tests {
         assert_eq!(result_no_reduction.dims(), [2]); // batch_size = 2
 
         // All values should be finite and non-negative
-        assert!(result_mean.into_scalar().to_f64().is_finite());
+        assert!(result_mean.into_scalar::<f32>().to_f64().is_finite());
         for i in 0..2 {
             let sample_loss = result_no_reduction
                 .clone()
                 .select(0, Tensor::from_data([i], &device))
-                .into_scalar()
+                .into_scalar::<f32>()
                 .to_f64();
             assert!(sample_loss >= 0.0, "Sample {i} loss should be non-negative");
         }
@@ -287,25 +286,25 @@ mod tests {
 
     #[test]
     fn contour_loss_forward_smooth_and_rough_boundaries_returns_finite_values() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = ContourLoss::new();
 
         // Smooth boundary (should have lower loss)
-        let smooth_pred = Tensor::<TestBackend, 4>::from_data(
+        let smooth_pred = Tensor::<4>::from_data(
             TensorData::from([[[[0.9, 0.8, 0.7], [0.8, 0.7, 0.6], [0.7, 0.6, 0.5]]]]),
             &device,
         );
-        let smooth_targets = Tensor::<TestBackend, 4, Int>::from_data(
+        let smooth_targets = Tensor::<4, Int>::from_data(
             TensorData::from([[[[1, 1, 1], [1, 1, 0], [1, 0, 0]]]]),
             &device,
         );
 
         // Rough boundary (should have higher loss due to large gradients)
-        let rough_pred = Tensor::<TestBackend, 4>::from_data(
+        let rough_pred = Tensor::<4>::from_data(
             TensorData::from([[[[0.9, 0.1, 0.9], [0.1, 0.9, 0.1], [0.9, 0.1, 0.9]]]]),
             &device,
         );
-        let rough_targets = Tensor::<TestBackend, 4, Int>::from_data(
+        let rough_targets = Tensor::<4, Int>::from_data(
             TensorData::from([[[[1, 0, 1], [0, 1, 0], [1, 0, 1]]]]),
             &device,
         );
@@ -315,21 +314,21 @@ mod tests {
 
         // Rough boundaries should generally have higher loss due to length term
         // (Though this depends on how well the prediction matches the target)
-        assert!(smooth_loss.into_scalar().to_f64() >= 0.0);
-        assert!(rough_loss.into_scalar().to_f64() >= 0.0);
+        assert!(smooth_loss.into_scalar::<f32>().to_f64() >= 0.0);
+        assert!(rough_loss.into_scalar::<f32>().to_f64() >= 0.0);
     }
 
     #[test]
     fn contour_loss_with_custom_weight_and_eps_computes_finite_loss() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let config = ContourLossConfig::new().with_weight(5.0).with_eps(1e-6);
         let loss = config.init();
 
-        let predictions = Tensor::<TestBackend, 4>::from_data(
+        let predictions = Tensor::<4>::from_data(
             TensorData::from([[[[0.8, 0.9, 0.7], [0.6, 0.8, 0.9], [0.5, 0.7, 0.8]]]]),
             &device,
         );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
+        let targets = Tensor::<4, Int>::from_data(
             TensorData::from([[[[1, 1, 0], [1, 1, 1], [0, 1, 1]]]]),
             &device,
         );
@@ -337,20 +336,20 @@ mod tests {
         let result = loss.forward(predictions, targets, Reduction::Mean);
 
         // Should work with custom parameters
-        assert!(result.clone().into_scalar().to_f64().is_finite());
-        assert!(result.into_scalar().to_f64() >= 0.0);
+        assert!(result.clone().into_scalar::<f32>().to_f64().is_finite());
+        assert!(result.into_scalar::<f32>().to_f64() >= 0.0);
     }
 
     #[test]
     fn contour_loss_auto_reduction_equals_mean_reduction() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = ContourLoss::new();
 
-        let predictions = Tensor::<TestBackend, 4>::from_data(
+        let predictions = Tensor::<4>::from_data(
             TensorData::from([[[[0.3, 0.7, 0.8], [0.8, 0.2, 0.6], [0.4, 0.9, 0.1]]]]),
             &device,
         );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
+        let targets = Tensor::<4, Int>::from_data(
             TensorData::from([[[[0, 1, 1], [1, 0, 1], [0, 1, 0]]]]),
             &device,
         );
@@ -358,8 +357,8 @@ mod tests {
         let result_auto = loss.forward(predictions.clone(), targets.clone(), Reduction::Auto);
         let result_mean = loss.forward(predictions, targets, Reduction::Mean);
 
-        let auto_val = result_auto.into_scalar().to_f64();
-        let mean_val = result_mean.into_scalar().to_f64();
+        let auto_val = result_auto.into_scalar::<f32>().to_f64();
+        let mean_val = result_mean.into_scalar::<f32>().to_f64();
 
         assert!((auto_val - mean_val).abs() < 1e-6, "Auto should equal Mean");
     }
@@ -367,18 +366,13 @@ mod tests {
     #[test]
     #[should_panic = "ContourLoss requires input size >= 3x3"]
     fn contour_loss_forward_with_2x2_input_panics() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = ContourLoss::new();
 
         // 2x2 input should fail
-        let predictions = Tensor::<TestBackend, 4>::from_data(
-            TensorData::from([[[[0.8, 0.9], [0.6, 0.7]]]]),
-            &device,
-        );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
-            TensorData::from([[[[1, 1], [0, 1]]]]),
-            &device,
-        );
+        let predictions =
+            Tensor::<4>::from_data(TensorData::from([[[[0.8, 0.9], [0.6, 0.7]]]]), &device);
+        let targets = Tensor::<4, Int>::from_data(TensorData::from([[[[1, 1], [0, 1]]]]), &device);
 
         let _result = loss.forward_no_reduction(predictions, targets);
     }
@@ -398,15 +392,11 @@ mod tests {
     #[test]
     #[should_panic = "Shape of predictions"]
     fn contour_loss_forward_mismatched_shapes_panics() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let loss = ContourLoss::new();
 
-        let predictions =
-            Tensor::<TestBackend, 4>::from_data(TensorData::from([[[[1.0, 2.0, 3.0]]]]), &device);
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
-            TensorData::from([[[[1, 2], [3, 4]]]]),
-            &device,
-        );
+        let predictions = Tensor::<4>::from_data(TensorData::from([[[[1.0, 2.0, 3.0]]]]), &device);
+        let targets = Tensor::<4, Int>::from_data(TensorData::from([[[[1, 2], [3, 4]]]]), &device);
 
         let _result = loss.forward_no_reduction(predictions, targets);
     }

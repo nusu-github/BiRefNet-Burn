@@ -28,20 +28,20 @@ pub enum VGGLayer {
 /// This provides the 4 feature levels (conv1-4) needed for BiRefNet.
 /// Based on the torchvision VGG implementation.
 #[derive(Module, Debug)]
-pub struct VGGBackbone<B: Backend> {
+pub struct VGGBackbone {
     /// First feature level: layers 0-10 (no BN) or 0-14 (with BN)
-    pub conv1: VGGFeatureBlock<B>,
+    pub conv1: VGGFeatureBlock,
     /// Second feature level: layers 10-17 (no BN) or 14-24 (with BN)
-    pub conv2: VGGFeatureBlock<B>,
+    pub conv2: VGGFeatureBlock,
     /// Third feature level: layers 17-24 (no BN) or 24-34 (with BN)
-    pub conv3: VGGFeatureBlock<B>,
+    pub conv3: VGGFeatureBlock,
     /// Fourth feature level: layers 24-31 (no BN) or 34-44 (with BN)
-    pub conv4: VGGFeatureBlock<B>,
+    pub conv4: VGGFeatureBlock,
 }
 
-impl<B: Backend> VGGBackbone<B> {
+impl VGGBackbone {
     /// Forward pass that returns the 4 feature levels required by BiRefNet.
-    pub fn forward(&self, input: Tensor<B, 4>) -> [Tensor<B, 4>; 4] {
+    pub fn forward(&self, input: Tensor<4>) -> [Tensor<4>; 4] {
         let conv1 = self.conv1.forward(input);
         let conv2 = self.conv2.forward(conv1.clone());
         let conv3 = self.conv3.forward(conv2.clone());
@@ -51,17 +51,17 @@ impl<B: Backend> VGGBackbone<B> {
     }
 
     /// Create VGG16 backbone without batch normalization.
-    pub fn vgg16(device: &Device<B>) -> Self {
+    pub fn vgg16(device: &Device) -> Self {
         Self::new(false, device)
     }
 
     /// Create VGG16 backbone with batch normalization.
-    pub fn vgg16_bn(device: &Device<B>) -> Self {
+    pub fn vgg16_bn(device: &Device) -> Self {
         Self::new(true, device)
     }
 
     /// Create a new VGG backbone with the specified configuration.
-    fn new(batch_norm: bool, device: &Device<B>) -> Self {
+    fn new(batch_norm: bool, device: &Device) -> Self {
         // Based on PyTorch VGG16 feature extraction for BiRefNet
         // VGG16: conv1: [:10], conv2: [10:17], conv3: [17:24], conv4: [24:31]
         // VGG16_BN: conv1: [:14], conv2: [14:24], conv3: [24:34], conv4: [34:44]
@@ -186,13 +186,13 @@ impl<B: Backend> VGGBackbone<B> {
 
 /// A feature block in VGG architecture.
 #[derive(Module, Debug)]
-pub struct VGGFeatureBlock<B: Backend> {
-    layers: Vec<VGGBlockLayer<B>>,
+pub struct VGGFeatureBlock {
+    layers: Vec<VGGBlockLayer>,
 }
 
-impl<B: Backend> VGGFeatureBlock<B> {
+impl VGGFeatureBlock {
     /// Forward pass through the feature block.
-    pub fn forward(&self, mut input: Tensor<B, 4>) -> Tensor<B, 4> {
+    pub fn forward(&self, mut input: Tensor<4>) -> Tensor<4> {
         for layer in &self.layers {
             input = layer.forward(input);
         }
@@ -200,12 +200,7 @@ impl<B: Backend> VGGFeatureBlock<B> {
     }
 
     /// Create a new VGG feature block.
-    pub fn new(
-        config: &[VGGLayer],
-        in_channels: usize,
-        batch_norm: bool,
-        device: &Device<B>,
-    ) -> Self {
+    pub fn new(config: &[VGGLayer], in_channels: usize, batch_norm: bool, device: &Device) -> Self {
         let mut layers = Vec::new();
         let mut current_channels = in_channels;
 
@@ -230,16 +225,16 @@ impl<B: Backend> VGGFeatureBlock<B> {
 
 /// Individual layer types in VGG feature blocks.
 #[derive(Module, Debug)]
-pub enum VGGBlockLayer<B: Backend> {
+pub enum VGGBlockLayer {
     /// Convolution layer with optional batch normalization.
-    Conv(VGGConvLayer<B>),
+    Conv(VGGConvLayer),
     /// Max pooling layer.
     MaxPool(MaxPool2d),
 }
 
-impl<B: Backend> VGGBlockLayer<B> {
+impl VGGBlockLayer {
     /// Forward pass through the layer.
-    pub fn forward(&self, input: Tensor<B, 4>) -> Tensor<B, 4> {
+    pub fn forward(&self, input: Tensor<4>) -> Tensor<4> {
         match self {
             Self::Conv(conv) => conv.forward(input),
             Self::MaxPool(pool) => pool.forward(input),
@@ -249,15 +244,15 @@ impl<B: Backend> VGGBlockLayer<B> {
 
 /// VGG convolution layer with optional batch normalization.
 #[derive(Module, Debug)]
-pub struct VGGConvLayer<B: Backend> {
-    conv: Conv2d<B>,
-    batch_norm: Option<BatchNorm<B>>,
+pub struct VGGConvLayer {
+    conv: Conv2d,
+    batch_norm: Option<BatchNorm>,
     relu: Relu,
 }
 
-impl<B: Backend> VGGConvLayer<B> {
+impl VGGConvLayer {
     /// Forward pass through the convolution layer.
-    pub fn forward(&self, input: Tensor<B, 4>) -> Tensor<B, 4> {
+    pub fn forward(&self, input: Tensor<4>) -> Tensor<4> {
         let out = self.conv.forward(input);
         let out = if let Some(bn) = &self.batch_norm {
             bn.forward(out)
@@ -268,12 +263,7 @@ impl<B: Backend> VGGConvLayer<B> {
     }
 
     /// Create a new VGG convolution layer.
-    pub fn new(
-        in_channels: usize,
-        out_channels: usize,
-        batch_norm: bool,
-        device: &Device<B>,
-    ) -> Self {
+    pub fn new(in_channels: usize, out_channels: usize, batch_norm: bool, device: &Device) -> Self {
         let initializer = Initializer::KaimingNormal {
             gain: SQRT_2,
             fan_out_only: true,
@@ -339,20 +329,20 @@ impl VggConfig {
 
 /// VGG model output containing multi-scale features
 #[derive(Debug, Clone)]
-pub struct VggOutput<B: Backend> {
+pub struct VggOutput {
     /// Block1 output (1/2 scale)
-    pub block1: Tensor<B, 4>,
+    pub block1: Tensor<4>,
     /// Block2 output (1/4 scale)
-    pub block2: Tensor<B, 4>,
+    pub block2: Tensor<4>,
     /// Block3 output (1/8 scale)
-    pub block3: Tensor<B, 4>,
+    pub block3: Tensor<4>,
     /// Block4 output (1/16 scale)
-    pub block4: Tensor<B, 4>,
+    pub block4: Tensor<4>,
 }
 
 impl VggConfig {
     /// Initialize VGG model
-    pub fn init<B: Backend>(&self, device: &B::Device) -> VGGBackbone<B> {
+    pub fn init(&self, device: &Device) -> VGGBackbone {
         match self.variant {
             VggVariant::Vgg16 => {
                 if self.batch_norm {
@@ -378,7 +368,6 @@ mod tests {
     use burn::tensor::Distribution;
 
     use super::*;
-    use crate::tests::TestBackend;
 
     #[test]
     fn vgg16_config_disables_batch_norm_by_default() {
@@ -394,14 +383,10 @@ mod tests {
 
     #[test]
     fn vgg16_forward_returns_correct_feature_shapes() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let model = VGGBackbone::vgg16(&device);
 
-        let input = Tensor::<TestBackend, 4>::random(
-            [1, 3, 224, 224],
-            Distribution::Normal(0.0, 1.0),
-            &device,
-        );
+        let input = Tensor::<4>::random([1, 3, 224, 224], Distribution::Normal(0.0, 1.0), &device);
         let output = model.forward(input);
 
         // Check output shapes for VGG16
@@ -413,14 +398,10 @@ mod tests {
 
     #[test]
     fn vgg16_bn_forward_returns_correct_feature_shapes() {
-        let device = Default::default();
+        let device = burn::tensor::Device::cpu();
         let model = VGGBackbone::vgg16_bn(&device);
 
-        let input = Tensor::<TestBackend, 4>::random(
-            [1, 3, 224, 224],
-            Distribution::Normal(0.0, 1.0),
-            &device,
-        );
+        let input = Tensor::<4>::random([1, 3, 224, 224], Distribution::Normal(0.0, 1.0), &device);
         let output = model.forward(input);
 
         // Check output shapes for VGG16-BN

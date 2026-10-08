@@ -37,16 +37,7 @@ pub use config::{
 #[doc(inline)]
 pub use error::{BiRefNetError, BiRefNetResult};
 #[doc(inline)]
-pub use models::birefnet::{BiRefNet, BiRefNetConfig, BiRefNetRecord};
+pub use models::birefnet::{BiRefNet, BiRefNetConfig};
 #[cfg(feature = "train")]
 #[doc(inline)]
 pub use training::{BiRefNetBatch, BiRefNetOutput};
-
-#[cfg(test)]
-mod tests {
-    use burn::backend::{Autodiff, Cpu};
-
-    pub type TestBackend = Cpu;
-
-    pub type TestAutodiffBackend = Autodiff<TestBackend>;
-}

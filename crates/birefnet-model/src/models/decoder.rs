@@ -39,15 +39,15 @@ use crate::{
 
 /// An enum to wrap different types of decoder blocks.
 #[derive(Module, Debug)]
-pub enum DecoderBlockModule<B: Backend> {
-    BasicDecBlk(BasicDecBlk<B>),
-    ResBlk(ResBlk<B>),
+pub enum DecoderBlockModule {
+    BasicDecBlk(BasicDecBlk),
+    ResBlk(ResBlk),
 }
 
 /// An enum to wrap different types of lateral blocks.
 #[derive(Module, Debug)]
-pub enum LateralBlockModule<B: Backend> {
-    BasicLatBlk(BasicLatBlk<B>),
+pub enum LateralBlockModule {
+    BasicLatBlk(BasicLatBlk),
 }
 
 /// Configuration for the `Decoder` module.
@@ -63,17 +63,17 @@ pub struct DecoderConfig {
 
 /// A small convolutional module used for gradient guidance.
 #[derive(Module, Debug)]
-struct GdtConvs<B: Backend> {
-    conv: Conv2d<B>,
-    bn: BatchNorm<B>,
+struct GdtConvs {
+    conv: Conv2d,
+    bn: BatchNorm,
     relu: Relu,
 }
 
-impl<B: Backend> GdtConvs<B> {
+impl GdtConvs {
     fn init(
         conv2d_config: Conv2dConfig,
         batch_norm_config: BatchNormConfig,
-        device: &Device<B>,
+        device: &Device,
     ) -> Self {
         let conv = conv2d_config.init(device);
         let bn = batch_norm_config.init(device);
@@ -81,7 +81,7 @@ impl<B: Backend> GdtConvs<B> {
         Self { conv, bn, relu }
     }
 
-    fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
+    fn forward(&self, x: Tensor<4>) -> Tensor<4> {
         let x = self.conv.forward(x);
         let x = self.bn.forward(x);
         self.relu.forward(x)
@@ -95,11 +95,7 @@ impl DecoderConfig {
     const _N: usize = 16;
 
     /// Creates IPT blocks for the decoder with reduced duplication.
-    fn create_ipt_blocks<B: Backend>(
-        &self,
-        split: bool,
-        device: &B::Device,
-    ) -> [Option<SimpleConvs<B>>; 5] {
+    fn create_ipt_blocks(&self, split: bool, device: &Device) -> [Option<SimpleConvs>; 5] {
         if !self.config.decoder.dec_ipt {
             return [None, None, None, None, None];
         }
@@ -128,14 +124,14 @@ impl DecoderConfig {
     }
 
     /// Creates multi-scale supervision and GDT convolution layers.
-    fn create_supervision_layers<B: Backend>(
+    fn create_supervision_layers(
         &self,
-        device: &B::Device,
+        device: &Device,
     ) -> (
-        [Option<Conv2d<B>>; 3],   // conv_ms_spvn
-        [Option<GdtConvs<B>>; 3], // gdt_convs
-        [Option<Conv2d<B>>; 3],   // gdt_convs_pred
-        [Option<Conv2d<B>>; 3],   // gdt_convs_attn
+        [Option<Conv2d>; 3],   // conv_ms_spvn
+        [Option<GdtConvs>; 3], // gdt_convs
+        [Option<Conv2d>; 3],   // gdt_convs_pred
+        [Option<Conv2d>; 3],   // gdt_convs_attn
     ) {
         let mut conv_ms_spvn = [None, None, None];
         let mut gdt_convs = [None, None, None];
@@ -181,10 +177,7 @@ impl DecoderConfig {
     }
 
     /// Creates decoder blocks with reduced duplication.
-    fn create_decoder_blocks<B: Backend>(
-        &self,
-        device: &B::Device,
-    ) -> BiRefNetResult<[DecoderBlockModule<B>; 4]> {
+    fn create_decoder_blocks(&self, device: &Device) -> BiRefNetResult<[DecoderBlockModule; 4]> {
         let channel_configs = [
             (0, 0, self.channels[1]),     // decoder_block4
             (1, 0, self.channels[2]),     // decoder_block3
@@ -224,7 +217,7 @@ impl DecoderConfig {
     }
 
     /// Creates lateral blocks with reduced duplication.
-    fn create_lateral_blocks<B: Backend>(&self, device: &B::Device) -> [LateralBlockModule<B>; 3] {
+    fn create_lateral_blocks(&self, device: &Device) -> [LateralBlockModule; 3] {
         [
             self.create_lateral_block(self.channels[1], self.channels[1], device),
             self.create_lateral_block(self.channels[2], self.channels[2], device),
@@ -241,7 +234,7 @@ impl DecoderConfig {
     /// # Errors
     ///
     /// Returns an error if initialization fails.
-    pub fn init<B: Backend>(&self, device: &B::Device) -> BiRefNetResult<Decoder<B>> {
+    pub fn init(&self, device: &Device) -> BiRefNetResult<Decoder> {
         let split = self.config.decoder.dec_ipt && self.config.decoder.dec_ipt_split;
 
         // Create IPT blocks using helper function
@@ -316,13 +309,13 @@ impl DecoderConfig {
         })
     }
 
-    fn create_decoder_block<B: Backend>(
+    fn create_decoder_block(
         &self,
         in_channels: usize,
         out_channels: usize,
         interpolation_strategy: InterpolationStrategy,
-        device: &Device<B>,
-    ) -> BiRefNetResult<DecoderBlockModule<B>> {
+        device: &Device,
+    ) -> BiRefNetResult<DecoderBlockModule> {
         match self.config.decoder.dec_blk {
             DecBlk::BasicDecBlk => Ok(DecoderBlockModule::BasicDecBlk(
                 BasicDecBlkConfig::new(SqueezeBlock::ASPPDeformable(0), interpolation_strategy)
@@ -339,12 +332,12 @@ impl DecoderConfig {
         }
     }
 
-    fn create_lateral_block<B: Backend>(
+    fn create_lateral_block(
         &self,
         in_channels: usize,
         out_channels: usize,
-        device: &Device<B>,
-    ) -> LateralBlockModule<B> {
+        device: &Device,
+    ) -> LateralBlockModule {
         match self.config.decoder.lat_blk {
             LateralBlock::BasicLatBlk => LateralBlockModule::BasicLatBlk(
                 BasicLatBlkConfig::new()
@@ -358,46 +351,46 @@ impl DecoderConfig {
 
 /// The decoder module of BiRefNet.
 #[derive(Module, Debug)]
-pub struct Decoder<B: Backend> {
+pub struct Decoder {
     split: bool,
-    ipt_blk5: Option<SimpleConvs<B>>,
-    ipt_blk4: Option<SimpleConvs<B>>,
-    ipt_blk3: Option<SimpleConvs<B>>,
-    ipt_blk2: Option<SimpleConvs<B>>,
-    ipt_blk1: Option<SimpleConvs<B>>,
-    decoder_block4: DecoderBlockModule<B>,
-    decoder_block3: DecoderBlockModule<B>,
-    decoder_block2: DecoderBlockModule<B>,
-    decoder_block1: DecoderBlockModule<B>,
-    lateral_block4: LateralBlockModule<B>,
-    lateral_block3: LateralBlockModule<B>,
-    lateral_block2: LateralBlockModule<B>,
-    conv_out1: Conv2d<B>,
-    conv_ms_spvn_4: Option<Conv2d<B>>,
-    conv_ms_spvn_3: Option<Conv2d<B>>,
-    conv_ms_spvn_2: Option<Conv2d<B>>,
-    gdt_convs_4: Option<GdtConvs<B>>,
-    gdt_convs_3: Option<GdtConvs<B>>,
-    gdt_convs_2: Option<GdtConvs<B>>,
-    gdt_convs_pred_4: Option<Conv2d<B>>,
-    gdt_convs_pred_3: Option<Conv2d<B>>,
-    gdt_convs_pred_2: Option<Conv2d<B>>,
-    gdt_convs_attn_4: Option<Conv2d<B>>,
-    gdt_convs_attn_3: Option<Conv2d<B>>,
-    gdt_convs_attn_2: Option<Conv2d<B>>,
+    ipt_blk5: Option<SimpleConvs>,
+    ipt_blk4: Option<SimpleConvs>,
+    ipt_blk3: Option<SimpleConvs>,
+    ipt_blk2: Option<SimpleConvs>,
+    ipt_blk1: Option<SimpleConvs>,
+    decoder_block4: DecoderBlockModule,
+    decoder_block3: DecoderBlockModule,
+    decoder_block2: DecoderBlockModule,
+    decoder_block1: DecoderBlockModule,
+    lateral_block4: LateralBlockModule,
+    lateral_block3: LateralBlockModule,
+    lateral_block2: LateralBlockModule,
+    conv_out1: Conv2d,
+    conv_ms_spvn_4: Option<Conv2d>,
+    conv_ms_spvn_3: Option<Conv2d>,
+    conv_ms_spvn_2: Option<Conv2d>,
+    gdt_convs_4: Option<GdtConvs>,
+    gdt_convs_3: Option<GdtConvs>,
+    gdt_convs_2: Option<GdtConvs>,
+    gdt_convs_pred_4: Option<Conv2d>,
+    gdt_convs_pred_3: Option<Conv2d>,
+    gdt_convs_pred_2: Option<Conv2d>,
+    gdt_convs_attn_4: Option<Conv2d>,
+    gdt_convs_attn_3: Option<Conv2d>,
+    gdt_convs_attn_2: Option<Conv2d>,
     /// Interpolation strategy for tensor resizing operations.
     #[module(skip)]
     interpolation_strategy: InterpolationStrategy,
 }
 
-impl<B: Backend> Decoder<B> {
+impl Decoder {
     /// Processes IPT block if present, otherwise returns the input feature unchanged.
     fn process_ipt_block(
         &self,
-        ipt_blk: &Option<SimpleConvs<B>>,
-        x: &Tensor<B, 4>,
-        feature: Tensor<B, 4>,
-    ) -> Tensor<B, 4> {
+        ipt_blk: &Option<SimpleConvs>,
+        x: &Tensor<4>,
+        feature: Tensor<4>,
+    ) -> Tensor<4> {
         match ipt_blk {
             Some(blk) => {
                 let [_, _, h, w] = feature.dims();
@@ -424,11 +417,7 @@ impl<B: Backend> Decoder<B> {
     }
 
     /// Processes decoder block based on its type.
-    fn process_decoder_block(
-        &self,
-        block: &DecoderBlockModule<B>,
-        input: Tensor<B, 4>,
-    ) -> Tensor<B, 4> {
+    fn process_decoder_block(&self, block: &DecoderBlockModule, input: Tensor<4>) -> Tensor<4> {
         match block {
             DecoderBlockModule::BasicDecBlk(blk) => blk.forward(input),
             DecoderBlockModule::ResBlk(blk) => blk.forward(input),
@@ -438,10 +427,10 @@ impl<B: Backend> Decoder<B> {
     /// Applies GDT attention if both convolution and attention layers are present.
     fn apply_gdt_attention(
         &self,
-        input: Tensor<B, 4>,
-        gdt_conv: &Option<GdtConvs<B>>,
-        gdt_attn: &Option<Conv2d<B>>,
-    ) -> Tensor<B, 4> {
+        input: Tensor<4>,
+        gdt_conv: &Option<GdtConvs>,
+        gdt_attn: &Option<Conv2d>,
+    ) -> Tensor<4> {
         match (gdt_conv, gdt_attn) {
             (Some(conv), Some(attn)) => {
                 let gdt = conv.forward(input.clone());
@@ -453,11 +442,7 @@ impl<B: Backend> Decoder<B> {
     }
 
     /// Processes lateral block connection.
-    fn process_lateral_block(
-        &self,
-        block: &LateralBlockModule<B>,
-        input: Tensor<B, 4>,
-    ) -> Tensor<B, 4> {
+    fn process_lateral_block(&self, block: &LateralBlockModule, input: Tensor<4>) -> Tensor<4> {
         match block {
             LateralBlockModule::BasicLatBlk(blk) => blk.forward(input),
         }
@@ -473,7 +458,7 @@ impl<B: Backend> Decoder<B> {
     /// # Returns
     ///
     /// The final segmentation map.
-    pub fn forward(&self, features: [Tensor<B, 4>; 5]) -> Tensor<B, 4> {
+    pub fn forward(&self, features: [Tensor<4>; 5]) -> Tensor<4> {
         let [x, x1, x2, x3, x4] = features;
 
         // Level 4: Process with IPT block 5
@@ -529,7 +514,7 @@ impl<B: Backend> Decoder<B> {
         self.conv_out1.forward(p1_final)
     }
 
-    fn get_patches_batch(&self, x: Tensor<B, 4>, p: Tensor<B, 4>) -> Tensor<B, 4> {
+    fn get_patches_batch(&self, x: Tensor<4>, p: Tensor<4>) -> Tensor<4> {
         let [b, c, h, w] = p.dims();
         let [_, _, h_, w_] = x.dims();
         let patch_count = (h_ / h) * (w_ / w);
