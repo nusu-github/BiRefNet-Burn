@@ -3,8 +3,6 @@
 //! This module provides the MetricsAggregator struct which allows
 //! for efficient accumulation and averaging of metrics across batches.
 
-use core::marker::PhantomData;
-
 use burn::tensor::Tensor;
 
 use super::utils::calculate_all_metrics;
@@ -16,7 +14,6 @@ pub struct MetricsAggregator {
     f_measure_sum: f64,
     mae_sum: f64,
     count: usize,
-    _phantom: PhantomData,
 }
 
 impl MetricsAggregator {
@@ -27,7 +24,6 @@ impl MetricsAggregator {
             f_measure_sum: 0.0,
             mae_sum: 0.0,
             count: 0,
-            _phantom: PhantomData,
         }
     }
 

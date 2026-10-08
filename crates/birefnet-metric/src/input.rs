@@ -3,7 +3,7 @@
 //! This module contains the input structures used by various metrics
 //! to pass prediction and target tensors along with other required data.
 
-use burn::{prelude::*, tensor::backend::Backend};
+use burn::prelude::*;
 use derive_new::new;
 
 // --- Input Structs for Metrics ---

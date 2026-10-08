@@ -3,7 +3,6 @@
 //! S-measure evaluates the structural similarity between prediction and ground truth,
 //! considering both object-level and region-level information.
 
-use core::marker::PhantomData;
 use std::sync::Arc;
 
 use burn::{
@@ -52,7 +51,6 @@ pub struct SMeasureMetric {
     state: NumericMetricState,
     name: Arc<String>,
     alpha: f64,
-    _backend: PhantomData,
 }
 
 impl Default for SMeasureMetric {
@@ -61,7 +59,6 @@ impl Default for SMeasureMetric {
             state: NumericMetricState::default(),
             name: Arc::new("S_measure".to_owned()),
             alpha: 0.5,
-            _backend: PhantomData,
         }
     }
 }
@@ -78,7 +75,6 @@ impl SMeasureMetric {
             state: NumericMetricState::default(),
             name: Arc::new(config.name),
             alpha: config.alpha,
-            _backend: PhantomData,
         }
     }
 }
@@ -94,7 +90,7 @@ impl Metric for SMeasureMetric {
         &mut self,
         input: &Self::Input,
         _metadata: &MetricMetadata,
-    ) -> burn::train::metric::SerializedEntry {
+    ) -> Result<burn::train::metric::SerializedEntry, burn::tensor::TensorReadError> {
         let [batch_size, ..] = input.predictions.dims();
 
         let mut total_sm = 0.0;
@@ -108,11 +104,18 @@ impl Metric for SMeasureMetric {
         }
 
         let avg_sm = total_sm / batch_size as f64;
-        self.state.update(
-            avg_sm,
-            batch_size,
-            FormatOptions::new(self.name.clone()).precision(5),
-        )
+        self.state.update(avg_sm, batch_size);
+        Ok(self
+            .state
+            .compute_update(FormatOptions::new(self.name.clone()).precision(5)))
+    }
+
+    fn compute(
+        &mut self,
+    ) -> Result<burn::train::metric::SerializedEntry, burn::tensor::TensorReadError> {
+        Ok(self
+            .state
+            .compute_final(FormatOptions::new(self.name.clone()).precision(5)))
     }
 
     fn clear(&mut self) {
@@ -121,12 +124,16 @@ impl Metric for SMeasureMetric {
 }
 
 impl Numeric for SMeasureMetric {
-    fn value(&self) -> NumericEntry {
-        self.state.current_value()
+    fn value(&self) -> Option<NumericEntry> {
+        Some(self.state.current_value())
     }
 
-    fn running_value(&self) -> NumericEntry {
-        self.state.running_value()
+    fn running_value(&self) -> Option<NumericEntry> {
+        Some(self.state.running_value())
+    }
+
+    fn final_value(&self) -> NumericEntry {
+        self.state.final_value()
     }
 }
 

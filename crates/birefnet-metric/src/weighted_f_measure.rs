@@ -3,7 +3,6 @@
 //! WF-measure evaluates segmentation quality with pixel importance weighting
 //! based on distance from ground truth boundaries.
 
-use core::marker::PhantomData;
 use std::sync::Arc;
 
 use birefnet_util::{euclidean_distance_transform_simple, gaussian_filter_matlab};
@@ -35,7 +34,6 @@ pub struct WeightedFMeasureMetric {
     state: NumericMetricState,
     name: Arc<String>,
     beta: f64,
-    _backend: PhantomData,
 }
 
 impl Default for WeightedFMeasureMetric {
@@ -44,7 +42,6 @@ impl Default for WeightedFMeasureMetric {
             state: NumericMetricState::default(),
             name: Arc::new("WF_measure".to_owned()),
             beta: 1.0,
-            _backend: PhantomData,
         }
     }
 }
@@ -61,7 +58,6 @@ impl WeightedFMeasureMetric {
             state: NumericMetricState::default(),
             name: Arc::new(config.name),
             beta: config.beta,
-            _backend: PhantomData,
         }
     }
 }
@@ -77,7 +73,7 @@ impl Metric for WeightedFMeasureMetric {
         &mut self,
         input: &Self::Input,
         _metadata: &MetricMetadata,
-    ) -> burn::train::metric::SerializedEntry {
+    ) -> Result<burn::train::metric::SerializedEntry, burn::tensor::TensorReadError> {
         let [batch_size, ..] = input.predictions.dims();
 
         let mut total_wfm = 0.0;
@@ -96,11 +92,18 @@ impl Metric for WeightedFMeasureMetric {
         }
 
         let avg_wfm = total_wfm / batch_size as f64;
-        self.state.update(
-            avg_wfm,
-            batch_size,
-            FormatOptions::new(self.name.clone()).precision(5),
-        )
+        self.state.update(avg_wfm, batch_size);
+        Ok(self
+            .state
+            .compute_update(FormatOptions::new(self.name.clone()).precision(5)))
+    }
+
+    fn compute(
+        &mut self,
+    ) -> Result<burn::train::metric::SerializedEntry, burn::tensor::TensorReadError> {
+        Ok(self
+            .state
+            .compute_final(FormatOptions::new(self.name.clone()).precision(5)))
     }
 
     fn clear(&mut self) {
@@ -109,12 +112,16 @@ impl Metric for WeightedFMeasureMetric {
 }
 
 impl Numeric for WeightedFMeasureMetric {
-    fn value(&self) -> NumericEntry {
-        self.state.current_value()
+    fn value(&self) -> Option<NumericEntry> {
+        Some(self.state.current_value())
     }
 
-    fn running_value(&self) -> NumericEntry {
-        self.state.running_value()
+    fn running_value(&self) -> Option<NumericEntry> {
+        Some(self.state.running_value())
+    }
+
+    fn final_value(&self) -> NumericEntry {
+        self.state.final_value()
     }
 }
 

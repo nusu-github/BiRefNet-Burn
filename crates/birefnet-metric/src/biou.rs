@@ -3,7 +3,6 @@
 //! This module implements the Boundary Intersection over Union metric used in BiRefNet
 //! for evaluating boundary-focused segmentation performance.
 
-use core::marker::PhantomData;
 use std::sync::Arc;
 
 use birefnet_util::{StructuringElement, erosion};
@@ -34,7 +33,6 @@ pub struct BIoUMetric {
     state: NumericMetricState,
     dilation_ratio: f64,
     name: Arc<String>,
-    _b: PhantomData,
 }
 
 impl BIoUMetric {
@@ -44,7 +42,6 @@ impl BIoUMetric {
             state: NumericMetricState::default(),
             dilation_ratio: 0.02,
             name: Arc::new("BIoU".to_owned()),
-            _b: PhantomData,
         }
     }
 
@@ -54,7 +51,6 @@ impl BIoUMetric {
             state: NumericMetricState::default(),
             dilation_ratio: config.dilation_ratio,
             name: Arc::new("BIoU".to_owned()),
-            _b: PhantomData,
         }
     }
 }
@@ -70,7 +66,7 @@ impl Metric for BIoUMetric {
         &mut self,
         item: &Self::Input,
         _metadata: &MetricMetadata,
-    ) -> burn::train::metric::SerializedEntry {
+    ) -> Result<burn::train::metric::SerializedEntry, burn::tensor::TensorReadError> {
         let [batch_size, ..] = item.predictions.dims();
 
         let mut total_biou_curves = Vec::new();
@@ -91,11 +87,18 @@ impl Metric for BIoUMetric {
         // Average the curves across the batch
         let avg_biou = average_biou_curves(total_biou_curves);
 
-        self.state.update(
-            avg_biou,
-            batch_size,
-            FormatOptions::new(self.name()).precision(5),
-        )
+        self.state.update(avg_biou, batch_size);
+        Ok(self
+            .state
+            .compute_update(FormatOptions::new(self.name()).precision(5)))
+    }
+
+    fn compute(
+        &mut self,
+    ) -> Result<burn::train::metric::SerializedEntry, burn::tensor::TensorReadError> {
+        Ok(self
+            .state
+            .compute_final(FormatOptions::new(self.name()).precision(5)))
     }
 
     fn clear(&mut self) {
@@ -104,12 +107,16 @@ impl Metric for BIoUMetric {
 }
 
 impl Numeric for BIoUMetric {
-    fn value(&self) -> NumericEntry {
-        self.state.current_value()
+    fn value(&self) -> Option<NumericEntry> {
+        Some(self.state.current_value())
     }
 
-    fn running_value(&self) -> NumericEntry {
-        self.state.running_value()
+    fn running_value(&self) -> Option<NumericEntry> {
+        Some(self.state.running_value())
+    }
+
+    fn final_value(&self) -> NumericEntry {
+        self.state.final_value()
     }
 }
 

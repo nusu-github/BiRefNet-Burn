@@ -3,7 +3,6 @@
 //! This module implements the Mean Absolute Error metric used in BiRefNet
 //! for evaluating segmentation performance.
 
-use core::marker::PhantomData;
 use std::sync::Arc;
 
 use burn::{
@@ -30,7 +29,6 @@ pub struct MAEMetric {
     state: NumericMetricState,
     apply_sigmoid: bool,
     name: Arc<String>,
-    _b: PhantomData,
 }
 
 impl MAEMetricConfig {
@@ -39,7 +37,6 @@ impl MAEMetricConfig {
             state: NumericMetricState::default(),
             apply_sigmoid: self.apply_sigmoid,
             name: Arc::new("MAE".to_owned()),
-            _b: PhantomData,
         }
     }
 }
@@ -67,7 +64,7 @@ impl Metric for MAEMetric {
         &mut self,
         item: &Self::Input,
         _metadata: &MetricMetadata,
-    ) -> burn::train::metric::SerializedEntry {
+    ) -> Result<burn::train::metric::SerializedEntry, burn::tensor::TensorReadError> {
         let [batch_size, ..] = item.predictions.dims();
 
         let mut total_mae = 0.0;
@@ -86,11 +83,18 @@ impl Metric for MAEMetric {
         }
 
         let avg_mae = total_mae / batch_size as f64;
-        self.state.update(
-            avg_mae,
-            batch_size,
-            FormatOptions::new(self.name()).precision(5),
-        )
+        self.state.update(avg_mae, batch_size);
+        Ok(self
+            .state
+            .compute_update(FormatOptions::new(self.name()).precision(5)))
+    }
+
+    fn compute(
+        &mut self,
+    ) -> Result<burn::train::metric::SerializedEntry, burn::tensor::TensorReadError> {
+        Ok(self
+            .state
+            .compute_final(FormatOptions::new(self.name()).precision(5)))
     }
 
     fn clear(&mut self) {
@@ -99,12 +103,16 @@ impl Metric for MAEMetric {
 }
 
 impl Numeric for MAEMetric {
-    fn value(&self) -> NumericEntry {
-        self.state.current_value()
+    fn value(&self) -> Option<NumericEntry> {
+        Some(self.state.current_value())
     }
 
-    fn running_value(&self) -> NumericEntry {
-        self.state.running_value()
+    fn running_value(&self) -> Option<NumericEntry> {
+        Some(self.state.running_value())
+    }
+
+    fn final_value(&self) -> NumericEntry {
+        self.state.final_value()
     }
 }
 

@@ -4,7 +4,6 @@
 //! for evaluating segmentation performance, including both adaptive
 //! and changeable F-measure calculations as per the original Python implementation.
 
-use core::marker::PhantomData;
 use std::sync::Arc;
 
 use burn::{
@@ -38,7 +37,6 @@ pub struct FMeasureMetric {
     precision_curves: Vec<Vec<f64>>,
     recall_curves: Vec<Vec<f64>>,
     changeable_fms: Vec<Vec<f64>>,
-    _b: PhantomData,
 }
 
 impl FMeasureMetric {
@@ -52,7 +50,6 @@ impl FMeasureMetric {
             precision_curves: Vec::new(),
             recall_curves: Vec::new(),
             changeable_fms: Vec::new(),
-            _b: PhantomData,
         }
     }
 
@@ -66,7 +63,6 @@ impl FMeasureMetric {
             precision_curves: Vec::new(),
             recall_curves: Vec::new(),
             changeable_fms: Vec::new(),
-            _b: PhantomData,
         }
     }
 
@@ -90,7 +86,7 @@ impl Metric for FMeasureMetric {
         &mut self,
         item: &Self::Input,
         _metadata: &MetricMetadata,
-    ) -> burn::train::metric::SerializedEntry {
+    ) -> Result<burn::train::metric::SerializedEntry, burn::tensor::TensorReadError> {
         let [batch_size, ..] = item.predictions.dims();
 
         // Process each item in the batch
@@ -114,11 +110,18 @@ impl Metric for FMeasureMetric {
         }
 
         let adaptive_value = self.adaptive_fm_value();
-        self.state.update(
-            adaptive_value,
-            batch_size,
-            FormatOptions::new(self.name()).precision(5),
-        )
+        self.state.update(adaptive_value, batch_size);
+        Ok(self
+            .state
+            .compute_update(FormatOptions::new(self.name()).precision(5)))
+    }
+
+    fn compute(
+        &mut self,
+    ) -> Result<burn::train::metric::SerializedEntry, burn::tensor::TensorReadError> {
+        Ok(self
+            .state
+            .compute_final(FormatOptions::new(self.name()).precision(5)))
     }
 
     fn clear(&mut self) {
@@ -131,12 +134,16 @@ impl Metric for FMeasureMetric {
 }
 
 impl Numeric for FMeasureMetric {
-    fn value(&self) -> NumericEntry {
-        NumericEntry::Value(self.adaptive_fm_value())
+    fn value(&self) -> Option<NumericEntry> {
+        Some(NumericEntry::Value(self.adaptive_fm_value()))
     }
 
-    fn running_value(&self) -> NumericEntry {
-        self.state.running_value()
+    fn running_value(&self) -> Option<NumericEntry> {
+        Some(self.state.running_value())
+    }
+
+    fn final_value(&self) -> NumericEntry {
+        self.state.final_value()
     }
 }
 

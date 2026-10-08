@@ -1,6 +1,5 @@
 //! Mean Squared Error (MSE) metric for BiRefNet.
 
-use core::marker::PhantomData;
 use std::sync::Arc;
 
 use burn::{
@@ -27,7 +26,6 @@ pub struct MSEMetricConfig {
 pub struct MSEMetric {
     state: NumericMetricState,
     name: Arc<String>,
-    _backend: PhantomData,
 }
 
 impl MSEMetric {
@@ -36,7 +34,6 @@ impl MSEMetric {
         Self {
             state: NumericMetricState::default(),
             name: Arc::new("MSE".to_owned()),
-            _backend: PhantomData,
         }
     }
 
@@ -45,7 +42,6 @@ impl MSEMetric {
         Self {
             state: NumericMetricState::default(),
             name: Arc::new(name),
-            _backend: PhantomData,
         }
     }
 }
@@ -61,7 +57,7 @@ impl Metric for MSEMetric {
         &mut self,
         input: &Self::Input,
         _metadata: &MetricMetadata,
-    ) -> burn::train::metric::SerializedEntry {
+    ) -> Result<burn::train::metric::SerializedEntry, burn::tensor::TensorReadError> {
         let [batch_size, ..] = input.predictions.dims();
 
         let mut total_mse = 0.0;
@@ -80,11 +76,18 @@ impl Metric for MSEMetric {
         }
 
         let avg_mse = total_mse / batch_size as f64;
-        self.state.update(
-            avg_mse,
-            batch_size,
-            FormatOptions::new(self.name.clone()).precision(5),
-        )
+        self.state.update(avg_mse, batch_size);
+        Ok(self
+            .state
+            .compute_update(FormatOptions::new(self.name.clone()).precision(5)))
+    }
+
+    fn compute(
+        &mut self,
+    ) -> Result<burn::train::metric::SerializedEntry, burn::tensor::TensorReadError> {
+        Ok(self
+            .state
+            .compute_final(FormatOptions::new(self.name.clone()).precision(5)))
     }
 
     fn clear(&mut self) {
@@ -93,12 +96,16 @@ impl Metric for MSEMetric {
 }
 
 impl Numeric for MSEMetric {
-    fn value(&self) -> NumericEntry {
-        self.state.current_value()
+    fn value(&self) -> Option<NumericEntry> {
+        Some(self.state.current_value())
     }
 
-    fn running_value(&self) -> NumericEntry {
-        self.state.running_value()
+    fn running_value(&self) -> Option<NumericEntry> {
+        Some(self.state.running_value())
+    }
+
+    fn final_value(&self) -> NumericEntry {
+        self.state.final_value()
     }
 }
 

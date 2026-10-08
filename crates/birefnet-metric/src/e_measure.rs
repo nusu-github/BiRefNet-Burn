@@ -3,7 +3,6 @@
 //! E-measure evaluates the alignment between prediction and ground truth,
 //! considering both local and global similarities.
 
-use core::marker::PhantomData;
 use std::sync::Arc;
 
 use burn::{
@@ -56,7 +55,6 @@ pub struct EMeasureMetric {
     state: EMeasureState,
     numeric_state: NumericMetricState,
     name: Arc<String>,
-    _backend: PhantomData,
 }
 
 impl Default for EMeasureMetric {
@@ -65,7 +63,6 @@ impl Default for EMeasureMetric {
             state: EMeasureState::default(),
             numeric_state: NumericMetricState::default(),
             name: Arc::new("E_measure".to_owned()),
-            _backend: PhantomData,
         }
     }
 }
@@ -82,7 +79,6 @@ impl EMeasureMetric {
             state: EMeasureState::default(),
             numeric_state: NumericMetricState::default(),
             name: Arc::new(config.name),
-            _backend: PhantomData,
         }
     }
 }
@@ -98,7 +94,7 @@ impl Metric for EMeasureMetric {
         &mut self,
         input: &Self::Input,
         _metadata: &MetricMetadata,
-    ) -> burn::train::metric::SerializedEntry {
+    ) -> Result<burn::train::metric::SerializedEntry, burn::tensor::TensorReadError> {
         let [batch_size, ..] = input.predictions.dims();
 
         for b in 0..batch_size {
@@ -115,11 +111,18 @@ impl Metric for EMeasureMetric {
         // Update numeric state with adaptive E-measure
         let avg_adaptive_em =
             self.state.adaptive_ems.iter().sum::<f64>() / self.state.adaptive_ems.len() as f64;
-        self.numeric_state.update(
-            avg_adaptive_em,
-            batch_size,
-            FormatOptions::new(self.name.clone()).precision(5),
-        )
+        self.numeric_state.update(avg_adaptive_em, batch_size);
+        Ok(self
+            .numeric_state
+            .compute_update(FormatOptions::new(self.name.clone()).precision(5)))
+    }
+
+    fn compute(
+        &mut self,
+    ) -> Result<burn::train::metric::SerializedEntry, burn::tensor::TensorReadError> {
+        Ok(self
+            .numeric_state
+            .compute_final(FormatOptions::new(self.name.clone()).precision(5)))
     }
 
     fn clear(&mut self) {
@@ -129,14 +132,18 @@ impl Metric for EMeasureMetric {
 }
 
 impl Numeric for EMeasureMetric {
-    fn value(&self) -> NumericEntry {
+    fn value(&self) -> Option<NumericEntry> {
         // Use the dedicated function to get E-measure results
         let (adaptive_em, _changeable_ems) = get_e_measure_results(&self.state);
-        NumericEntry::Value(adaptive_em)
+        Some(NumericEntry::Value(adaptive_em))
     }
 
-    fn running_value(&self) -> NumericEntry {
-        self.numeric_state.running_value()
+    fn running_value(&self) -> Option<NumericEntry> {
+        Some(self.numeric_state.running_value())
+    }
+
+    fn final_value(&self) -> NumericEntry {
+        self.numeric_state.final_value()
     }
 }
 
@@ -207,9 +214,9 @@ fn get_adaptive_threshold(pred: Tensor<2>) -> f64 {
 fn calculate_em_with_threshold(
     pred: Tensor<2>,
     gt: Tensor<2, Bool>,
-    threshold: B::FloatElem,
-    gt_fg_numel: B::FloatElem,
-    gt_size: B::FloatElem,
+    threshold: f32,
+    gt_fg_numel: f32,
+    gt_size: f32,
 ) -> f64 {
     let binarized_pred = pred.greater_equal_elem(threshold);
 

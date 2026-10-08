@@ -3,7 +3,6 @@
 //! This module implements a simple loss tracking metric used during
 //! BiRefNet training and evaluation.
 
-use core::marker::PhantomData;
 use std::sync::Arc;
 
 use burn::{
@@ -22,7 +21,6 @@ use super::input::BiRefNetLossInput;
 pub struct LossMetric {
     state: NumericMetricState,
     name: Arc<String>,
-    _b: PhantomData,
 }
 
 impl LossMetric {
@@ -30,7 +28,6 @@ impl LossMetric {
         Self {
             state: NumericMetricState::default(),
             name: Arc::new("Loss".to_owned()),
-            _b: PhantomData,
         }
     }
 }
@@ -46,13 +43,20 @@ impl Metric for LossMetric {
         &mut self,
         item: &Self::Input,
         _metadata: &MetricMetadata,
-    ) -> burn::train::metric::SerializedEntry {
+    ) -> Result<burn::train::metric::SerializedEntry, burn::tensor::TensorReadError> {
         let loss = item.loss.clone().into_scalar::<f32>().to_f64();
-        self.state.update(
-            loss,
-            item.batch_size,
-            FormatOptions::new(self.name()).precision(5),
-        )
+        self.state.update(loss, item.batch_size);
+        Ok(self
+            .state
+            .compute_update(FormatOptions::new(self.name()).precision(5)))
+    }
+
+    fn compute(
+        &mut self,
+    ) -> Result<burn::train::metric::SerializedEntry, burn::tensor::TensorReadError> {
+        Ok(self
+            .state
+            .compute_final(FormatOptions::new(self.name()).precision(5)))
     }
 
     fn clear(&mut self) {
@@ -61,11 +65,15 @@ impl Metric for LossMetric {
 }
 
 impl Numeric for LossMetric {
-    fn value(&self) -> NumericEntry {
-        self.state.current_value()
+    fn value(&self) -> Option<NumericEntry> {
+        Some(self.state.current_value())
     }
 
-    fn running_value(&self) -> NumericEntry {
-        self.state.running_value()
+    fn running_value(&self) -> Option<NumericEntry> {
+        Some(self.state.running_value())
+    }
+
+    fn final_value(&self) -> NumericEntry {
+        self.state.final_value()
     }
 }
