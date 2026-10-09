@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    rc::Rc,
     sync::LazyLock,
 };
 
@@ -10,13 +9,12 @@ use birefnet_model::{
     Task, TaskConfig,
 };
 use burn::{
-    module::Module,
-    record::{BinFileRecorder, FullPrecisionSettings, NamedMpkFileRecorder},
-    tensor::{DType, backend::Backend},
-};
-use burn_store::{
-    ModuleAdapter, ModuleSnapshot, ModuleStore, PyTorchToBurnAdapter, PytorchStore,
-    SafetensorsStore, TensorSnapshot,
+    module::{Module, ModuleMapper, Param},
+    store::{
+        FloatCastAdapter, ModuleAdapter, ModuleRecord, ModuleSnapshot, PyTorchToBurnAdapter,
+        PytorchStore, SafetensorsStore,
+    },
+    tensor::{DType, Device, FloatDType, Tensor},
 };
 use hf_hub::{HFClientSync, split_id};
 use thiserror::Error;
@@ -63,33 +61,6 @@ pub struct ModelSpec {
     pub default_resolution: (u32, u32),
     pub supports_dynamic_resolution: bool,
     pub config_builder: fn() -> BiRefNetConfig,
-}
-
-#[derive(Debug, Clone, Default)]
-struct UpcastHalfAdapter;
-
-impl ModuleAdapter for UpcastHalfAdapter {
-    fn adapt(&self, snapshot: &TensorSnapshot) -> TensorSnapshot {
-        match snapshot.dtype {
-            DType::F16 | DType::BF16 | DType::F64 | DType::I64 | DType::I32 | DType::I16
-            | DType::I8 | DType::U64 | DType::U32 | DType::U16 | DType::U8 => {
-                let data_fn = snapshot.clone_data_fn();
-                TensorSnapshot::from_closure(
-                    Rc::new(move || Ok(data_fn()?.convert_dtype(DType::F32))),
-                    DType::F32,
-                    snapshot.shape.clone(),
-                    snapshot.path_stack.clone().unwrap_or_default(),
-                    snapshot.container_stack.clone().unwrap_or_default(),
-                    snapshot.tensor_id.unwrap_or_default(),
-                )
-            }
-            _ => snapshot.clone(),
-        }
-    }
-
-    fn clone_box(&self) -> Box<dyn ModuleAdapter> {
-        Box::new(self.clone())
-    }
 }
 
 /// Helper function to create a BiRefNetConfig
@@ -417,13 +388,11 @@ pub trait ModelRecord {
     fn weight_source(&self) -> &WeightSource;
 }
 
-pub trait ModelLoader<B: Backend> {
-    /// Load model weights into an existing model
-    fn load_model<M: Module<B> + ModuleSnapshot<B>>(
-        &self,
-        model: M,
-        device: &B::Device,
-    ) -> Result<M, WeightError>;
+pub trait ModelLoader {
+    /// Load model weights into an existing model.
+    ///
+    /// Loaded float tensors are converted to the default float dtype of `device`.
+    fn load_model<M: Module>(&self, model: M, device: &Device) -> Result<M, WeightError>;
 
     /// Check if the weight source is available
     fn is_available(&self) -> bool;
@@ -436,10 +405,8 @@ pub enum WeightFormat {
     PyTorch,
     /// PyTorch SafeTensors .safetensors files
     SafeTensors,
-    /// Burn MessagePack .mpk files
-    MessagePack,
-    /// Burn Binary .bin files
-    Binary,
+    /// Burn's native Burnpack .bpk files (written by `Module::save_file`)
+    Burnpack,
     /// Auto-detect from file extension
     Auto,
 }
@@ -448,10 +415,9 @@ impl WeightFormat {
     /// Detect format from file path
     pub fn from_path(path: &std::path::Path) -> Self {
         match path.extension().and_then(|s| s.to_str()) {
-            Some("pt") | Some("pth") => Self::PyTorch,
+            Some("pt" | "pth") => Self::PyTorch,
             Some("safetensors") => Self::SafeTensors,
-            Some("mpk") => Self::MessagePack,
-            Some("bin") => Self::Binary,
+            Some("bpk") => Self::Burnpack,
             _ => Self::Auto,
         }
     }
@@ -571,12 +537,8 @@ impl ManagedModel {
     }
 }
 
-impl<B: Backend> ModelLoader<B> for ManagedModel {
-    fn load_model<M: Module<B> + ModuleSnapshot<B>>(
-        &self,
-        model: M,
-        device: &B::Device,
-    ) -> Result<M, WeightError> {
+impl ModelLoader for ManagedModel {
+    fn load_model<M: Module>(&self, model: M, device: &Device) -> Result<M, WeightError> {
         let weights_path = self
             .get_weights_path()
             .ok_or_else(|| WeightError::FileSystemError {
@@ -592,25 +554,14 @@ impl<B: Backend> ModelLoader<B> for ManagedModel {
         let format = WeightFormat::from_path(&weights_path);
 
         match format {
-            WeightFormat::PyTorch => self.load_pytorch_model(model, &weights_path, device),
-            WeightFormat::SafeTensors => self.load_safetensors_model(model, &weights_path, device),
-            WeightFormat::MessagePack => self.load_messagepack_model(model, &weights_path, device),
-            WeightFormat::Binary => self.load_binary_model(model, &weights_path, device),
+            WeightFormat::PyTorch => load_pytorch_model(model, &weights_path, device),
+            WeightFormat::SafeTensors => load_safetensors_model(model, &weights_path, device),
+            WeightFormat::Burnpack => load_burnpack_model(model, &weights_path),
             WeightFormat::Auto => {
                 // Try different formats in order of preference
-                if let Ok(model) = self.load_pytorch_model(model.clone(), &weights_path, device) {
-                    Ok(model)
-                } else if let Ok(model) =
-                    self.load_safetensors_model(model.clone(), &weights_path, device)
-                {
-                    Ok(model)
-                } else if let Ok(model) =
-                    self.load_messagepack_model(model.clone(), &weights_path, device)
-                {
-                    Ok(model)
-                } else {
-                    self.load_binary_model(model, &weights_path, device)
-                }
+                load_burnpack_model(model.clone(), &weights_path)
+                    .or_else(|_| load_safetensors_model(model.clone(), &weights_path, device))
+                    .or_else(|_| load_pytorch_model(model, &weights_path, device))
             }
         }
     }
@@ -626,103 +577,104 @@ impl<B: Backend> ModelLoader<B> for ManagedModel {
     }
 }
 
-impl ManagedModel {
-    fn load_pytorch_model<B: Backend, M: Module<B> + ModuleSnapshot<B>>(
-        &self,
-        mut model: M,
-        weights_path: &Path,
-        _device: &B::Device,
-    ) -> Result<M, WeightError> {
-        let mut store = PytorchStore::from_file(weights_path);
-        store
-            .apply_to::<B, _>(&mut model)
-            .map_err(|e| WeightError::ModelLoadError {
-                reason: format!("PyTorch model loading failed: {}", e),
-            })?;
-        Ok(model)
-    }
+/// Casts every loaded float tensor to the default float dtype of `device`.
+///
+/// Pretrained checkpoints are published in half precision; without this adapter the
+/// parameters would adopt the file's dtype instead of the device's.
+fn device_float_adapter(device: &Device) -> FloatCastAdapter {
+    FloatCastAdapter::to(DType::from(device.settings().float_dtype))
+}
 
-    fn load_safetensors_model<B: Backend, M: Module<B> + ModuleSnapshot<B>>(
-        &self,
-        mut model: M,
-        weights_path: &Path,
-        _device: &B::Device,
-    ) -> Result<M, WeightError> {
-        let mut store = SafetensorsStore::from_file(weights_path)
-            .skip_enum_variants(true)
-            .with_from_adapter(PyTorchToBurnAdapter.chain(UpcastHalfAdapter))
-            .with_key_remapping("decoder\\.conv_out1\\.0\\.(.+)", "decoder.conv_out1.$1")
-            .with_key_remapping(
-                "decoder\\.gdt_convs_attn_([2-4])\\.0\\.(.+)",
-                "decoder.gdt_convs_attn_$1.$2",
-            )
-            .with_key_remapping(
-                "decoder\\.gdt_convs_pred_([2-4])\\.0\\.(.+)",
-                "decoder.gdt_convs_pred_$1.$2",
-            )
-            // Sequential
-            .with_key_remapping("bb\\.norm([0-3])\\.(.+)", "bb.norm_layers.$1.$2")
-            .with_key_remapping(
-                "(.+?)\\.gdt_convs_([2-4])\\.0\\.(.+)",
-                "$1.gdt_convs_$2.conv.$3",
-            )
-            .with_key_remapping(
-                "(.+?)\\.gdt_convs_([2-4])\\.1\\.(.+)",
-                "$1.gdt_convs_$2.bn.$3",
-            )
-            .with_key_remapping(
-                "(.+)\\.global_avg_pool\\.1\\.(.+)",
-                "$1.global_avg_pool.conv.$2",
-            )
-            .with_key_remapping(
-                "(.+)\\.global_avg_pool\\.2\\.(.+)",
-                "$1.global_avg_pool.bn.$2",
-            );
+/// Casts every float parameter of a module to one dtype.
+struct CastFloatParams(FloatDType);
 
-        store
-            .apply_to::<B, _>(&mut model)
-            .map_err(|e| WeightError::ModelLoadError {
-                reason: format!("Safetensors model loading failed: {}", e),
-            })?;
-        Ok(model)
+impl ModuleMapper for CastFloatParams {
+    fn map_float<const D: usize>(&mut self, param: Param<Tensor<D>>) -> Param<Tensor<D>> {
+        let dtype = self.0;
+        param.map(|tensor| tensor.cast(dtype))
     }
+}
 
-    /// Load MessagePack format weights
-    fn load_messagepack_model<B: Backend, M: Module<B>>(
-        &self,
-        model: M,
-        weights_path: &Path,
-        device: &B::Device,
-    ) -> Result<M, WeightError> {
-        let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
-        model
-            .load_file(weights_path, &recorder, device)
-            .map_err(|e| WeightError::ModelLoadError {
-                reason: format!("MessagePack model loading failed: {}", e),
-            })
-    }
+fn load_pytorch_model<M: Module>(
+    mut model: M,
+    weights_path: &Path,
+    device: &Device,
+) -> Result<M, WeightError> {
+    // `PytorchStore` always applies `PyTorchToBurnAdapter` and takes no extra adapter, so the
+    // loaded parameters keep the checkpoint's dtype until they are cast below.
+    let mut store = PytorchStore::from_file(weights_path);
+    model
+        .load_from(&mut store)
+        .map_err(|e| WeightError::ModelLoadError {
+            reason: format!("PyTorch model loading failed: {e}"),
+        })?;
+    Ok(model.map(&mut CastFloatParams(device.settings().float_dtype)))
+}
 
-    /// Load Binary format weights
-    fn load_binary_model<B: Backend, M: Module<B>>(
-        &self,
-        model: M,
-        weights_path: &Path,
-        device: &B::Device,
-    ) -> Result<M, WeightError> {
-        let recorder = BinFileRecorder::<FullPrecisionSettings>::new();
-        model
-            .load_file(weights_path, &recorder, device)
-            .map_err(|e| WeightError::ModelLoadError {
-                reason: format!("Binary model loading failed: {}", e),
-            })
-    }
+fn load_safetensors_model<M: Module>(
+    mut model: M,
+    weights_path: &Path,
+    device: &Device,
+) -> Result<M, WeightError> {
+    let mut store = SafetensorsStore::from_file(weights_path)
+        .skip_enum_variants(true)
+        .with_from_adapter(PyTorchToBurnAdapter.chain(device_float_adapter(device)))
+        .with_key_remapping("decoder\\.conv_out1\\.0\\.(.+)", "decoder.conv_out1.$1")
+        .with_key_remapping(
+            "decoder\\.gdt_convs_attn_([2-4])\\.0\\.(.+)",
+            "decoder.gdt_convs_attn_$1.$2",
+        )
+        .with_key_remapping(
+            "decoder\\.gdt_convs_pred_([2-4])\\.0\\.(.+)",
+            "decoder.gdt_convs_pred_$1.$2",
+        )
+        // Sequential
+        .with_key_remapping("bb\\.norm([0-3])\\.(.+)", "bb.norm_layers.$1.$2")
+        .with_key_remapping(
+            "(.+?)\\.gdt_convs_([2-4])\\.0\\.(.+)",
+            "$1.gdt_convs_$2.conv.$3",
+        )
+        .with_key_remapping(
+            "(.+?)\\.gdt_convs_([2-4])\\.1\\.(.+)",
+            "$1.gdt_convs_$2.bn.$3",
+        )
+        .with_key_remapping(
+            "(.+)\\.global_avg_pool\\.1\\.(.+)",
+            "$1.global_avg_pool.conv.$2",
+        )
+        .with_key_remapping(
+            "(.+)\\.global_avg_pool\\.2\\.(.+)",
+            "$1.global_avg_pool.bn.$2",
+        );
+
+    model
+        .load_from(&mut store)
+        .map_err(|e| WeightError::ModelLoadError {
+            reason: format!("Safetensors model loading failed: {e}"),
+        })?;
+    Ok(model)
+}
+
+/// Load Burnpack weights written by [`Module::save_file`] (e.g. a training run).
+fn load_burnpack_model<M: Module>(model: M, weights_path: &Path) -> Result<M, WeightError> {
+    let record = ModuleRecord::load(weights_path)
+        .map_err(|e| WeightError::RecordLoadError {
+            reason: format!("Burnpack record loading failed: {e}"),
+        })?
+        // Keep the dtypes the model was initialized with (the device defaults).
+        .cast_to_module_dtype();
+    model
+        .try_load_record(record)
+        .map_err(|e| WeightError::ModelLoadError {
+            reason: format!("Burnpack model loading failed: {e}"),
+        })
 }
 
 /// Extension trait for BiRefNet to provide convenient weight loading methods
 ///
 /// This trait adds weight loading capabilities to BiRefNet models without creating
 /// circular dependencies between crates.
-pub trait BiRefNetWeightLoading<B: Backend> {
+pub trait BiRefNetWeightLoading {
     /// Load weights from a managed model
     ///
     /// This convenience method allows loading pre-trained weights from various formats
@@ -740,11 +692,11 @@ pub trait BiRefNetWeightLoading<B: Backend> {
     fn load_weights_from_managed_model<M>(
         self,
         managed_model: &M,
-        device: &B::Device,
+        device: &Device,
     ) -> Result<Self, WeightError>
     where
-        Self: Sized + Module<B>,
-        M: ModelLoader<B>;
+        Self: Sized + Module,
+        M: ModelLoader;
 
     /// Create a new BiRefNet instance from a managed model
     ///
@@ -760,19 +712,61 @@ pub trait BiRefNetWeightLoading<B: Backend> {
     ///
     /// # Errors
     /// Returns an error if model creation or weight loading fails
-    fn from_managed_model<M>(managed_model: &M, device: &B::Device) -> Result<Self, WeightError>
+    fn from_managed_model<M>(managed_model: &M, device: &Device) -> Result<Self, WeightError>
     where
         Self: Sized,
-        M: ModelLoader<B> + ModelRecord;
+        M: ModelLoader + ModelRecord;
+}
+
+impl BiRefNetWeightLoading for birefnet_model::BiRefNet {
+    fn load_weights_from_managed_model<M>(
+        self,
+        managed_model: &M,
+        device: &Device,
+    ) -> Result<Self, WeightError>
+    where
+        M: ModelLoader,
+    {
+        managed_model.load_model(self, device)
+    }
+
+    fn from_managed_model<M>(managed_model: &M, device: &Device) -> Result<Self, WeightError>
+    where
+        M: ModelLoader + ModelRecord,
+    {
+        // Get the configuration from the managed model
+        let config = if let Some(config) = managed_model.config() {
+            config.clone()
+        } else {
+            // Default configuration if none provided
+            create_config(
+                Task::General,
+                Backbone::SwinV1L,
+                Some(InterpolationStrategy::Bilinear),
+            )
+        };
+
+        // Initialize a model with the configuration
+        let model = config
+            .init(device)
+            .map_err(|e| WeightError::ModelLoadError {
+                reason: format!("Failed to initialize model: {}", e),
+            })?;
+
+        // Load weights into the model
+        managed_model.load_model(model, device)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use burn::backend::Cpu;
+    use burn::nn::{Linear, LinearConfig};
 
     use super::*;
 
-    type TestBackend = Cpu;
+    fn local_model(path: PathBuf) -> ManagedModel {
+        ManagedModel::new(ModelName::new("local"), None, WeightSource::Local { path })
+    }
 
     #[test]
     fn test_managed_model_creation() {
@@ -784,9 +778,7 @@ mod tests {
 
         assert_eq!(managed_model.name().as_str(), "test-model");
         assert!(managed_model.config().is_none());
-        assert!(!<ManagedModel as ModelLoader<TestBackend>>::is_available(
-            &managed_model
-        ));
+        assert!(!<ManagedModel as ModelLoader>::is_available(&managed_model));
     }
 
     #[test]
@@ -841,14 +833,8 @@ mod tests {
             WeightFormat::SafeTensors
         );
 
-        let mpk_path = PathBuf::from("model.mpk");
-        assert_eq!(
-            WeightFormat::from_path(&mpk_path),
-            WeightFormat::MessagePack
-        );
-
-        let bin_path = PathBuf::from("model.bin");
-        assert_eq!(WeightFormat::from_path(&bin_path), WeightFormat::Binary);
+        let bpk_path = PathBuf::from("model.bpk");
+        assert_eq!(WeightFormat::from_path(&bpk_path), WeightFormat::Burnpack);
 
         let unknown_path = PathBuf::from("model.unknown");
         assert_eq!(WeightFormat::from_path(&unknown_path), WeightFormat::Auto);
@@ -876,44 +862,43 @@ mod tests {
         let spec = spec.unwrap();
         assert!(spec.supports_dynamic_resolution);
     }
-}
 
-impl<B: Backend> BiRefNetWeightLoading<B> for birefnet_model::BiRefNet<B> {
-    fn load_weights_from_managed_model<M>(
-        self,
-        managed_model: &M,
-        device: &B::Device,
-    ) -> Result<Self, WeightError>
-    where
-        M: ModelLoader<B>,
-    {
-        managed_model.load_model(self, device)
+    #[test]
+    fn burnpack_weights_round_trip() {
+        let device = Device::flex();
+        let dir = std::env::temp_dir().join(format!("birefnet-util-bpk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("linear.bpk");
+
+        let saved: Linear = LinearConfig::new(4, 3).init(&device);
+        saved.clone().save_file(&path).unwrap();
+
+        // Both the explicit extension and format auto-detection load the Burnpack file.
+        // Burnpack tensors are read lazily, so compare before the file is moved.
+        let expected = saved.weight.val().into_data();
+        let fresh = || LinearConfig::new(4, 3).init(&device);
+        let explicit = local_model(path.clone())
+            .load_model(fresh(), &device)
+            .unwrap();
+        explicit.weight.val().into_data().assert_eq(&expected, true);
+
+        let renamed = dir.join("linear.weights");
+        std::fs::rename(&path, &renamed).unwrap();
+        let detected = local_model(renamed).load_model(fresh(), &device).unwrap();
+        detected.weight.val().into_data().assert_eq(&expected, true);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
-    fn from_managed_model<M>(managed_model: &M, device: &B::Device) -> Result<Self, WeightError>
-    where
-        M: ModelLoader<B> + ModelRecord,
-    {
-        // Get the configuration from the managed model
-        let config = if let Some(config) = managed_model.config() {
-            config.clone()
-        } else {
-            // Default configuration if none provided
-            create_config(
-                Task::General,
-                Backbone::SwinV1L,
-                Some(InterpolationStrategy::Bilinear),
-            )
-        };
+    #[test]
+    fn missing_weight_file_is_an_error() {
+        let device = Device::flex();
+        let model = local_model(PathBuf::from("/nonexistent/model.bpk"));
 
-        // Initialize a model with the configuration
-        let model = config
-            .init(device)
-            .map_err(|e| WeightError::ModelLoadError {
-                reason: format!("Failed to initialize model: {}", e),
-            })?;
+        let err = model
+            .load_model(LinearConfig::new(4, 3).init(&device), &device)
+            .unwrap_err();
 
-        // Load weights into the model
-        managed_model.load_model(model, device)
+        assert!(matches!(err, WeightError::FileSystemError { .. }));
     }
 }

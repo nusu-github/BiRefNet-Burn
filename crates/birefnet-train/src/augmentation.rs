@@ -97,14 +97,15 @@ impl AugmentationConfig {
 
     /// Create configuration for when dynamic input size augmentation is enabled
     pub fn with_dynamic_size(min_size: u32, max_size: u32, target_size: (u32, u32)) -> Self {
-        let mut config = Self::default();
-        config.dynamic_size_config = Some(DynamicSizeConfig {
-            min_size,
-            max_size,
-            size_step: 32, // 32x multiple constraint
-        });
-        config.target_size = target_size;
-        config
+        Self {
+            dynamic_size_config: Some(DynamicSizeConfig {
+                min_size,
+                max_size,
+                size_step: 32, // 32x multiple constraint
+            }),
+            target_size,
+            ..Self::default()
+        }
     }
 }
 

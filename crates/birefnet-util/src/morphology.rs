@@ -3,32 +3,32 @@
 //! This module provides morphological image processing operations required for
 //! implementing computer vision evaluation metrics like HCE, MBA, and BIoU.
 
-use burn::tensor::{ElementConversion, Tensor, backend::Backend, s};
+use burn::tensor::{Device, Tensor, s};
 
 /// Structuring element for morphological operations
 #[derive(Debug, Clone)]
-pub struct StructuringElement<B: Backend> {
+pub struct StructuringElement {
     /// Binary kernel defining the shape of the structuring element
-    pub kernel: Tensor<B, 2>,
+    pub kernel: Tensor<2>,
     /// Anchor point (center) of the structuring element
     pub anchor: (usize, usize),
 }
 
-impl<B: Backend> StructuringElement<B> {
+impl StructuringElement {
     /// Create a new structuring element
-    pub const fn new(kernel: Tensor<B, 2>, anchor: (usize, usize)) -> Self {
+    pub const fn new(kernel: Tensor<2>, anchor: (usize, usize)) -> Self {
         Self { kernel, anchor }
     }
 
     /// Create a rectangular structuring element
-    pub fn rectangle(height: usize, width: usize, device: &B::Device) -> Self {
-        let kernel = Tensor::<B, 2>::ones([height, width], device);
+    pub fn rectangle(height: usize, width: usize, device: &Device) -> Self {
+        let kernel = Tensor::<2>::ones([height, width], device);
         let anchor = (height / 2, width / 2);
         Self::new(kernel, anchor)
     }
 
     /// Create a disk (circular) structuring element
-    pub fn disk(radius: usize, device: &B::Device) -> Self {
+    pub fn disk(radius: usize, device: &Device) -> Self {
         let size = 2 * radius + 1;
         let center = radius as f32;
 
@@ -49,8 +49,7 @@ impl<B: Backend> StructuringElement<B> {
             }
         }
 
-        let kernel =
-            Tensor::<B, 1>::from_floats(kernel_data.as_slice(), device).reshape([size, size]);
+        let kernel = Tensor::<1>::from_floats(kernel_data.as_slice(), device).reshape([size, size]);
         let anchor = (radius, radius);
         Self::new(kernel, anchor)
     }
@@ -69,16 +68,13 @@ impl<B: Backend> StructuringElement<B> {
 ///
 /// # Returns
 /// Eroded binary image tensor with same shape
-pub fn erosion<B: Backend>(
-    image: Tensor<B, 4>,
-    structuring_element: &StructuringElement<B>,
-) -> Tensor<B, 4> {
+pub fn erosion(image: Tensor<4>, structuring_element: &StructuringElement) -> Tensor<4> {
     let [batch_size, channels, height, width] = image.dims();
     let [kernel_h, kernel_w] = structuring_element.dims();
     let (anchor_y, anchor_x) = structuring_element.anchor;
 
     let device = image.device();
-    let mut result = Tensor::<B, 4>::zeros([batch_size, channels, height, width], &device);
+    let mut result = Tensor::<4>::zeros([batch_size, channels, height, width], &device);
 
     // Pad image to handle border effects
     let pad_y = anchor_y;
@@ -100,8 +96,7 @@ pub fn erosion<B: Backend>(
                                 .kernel
                                 .clone()
                                 .slice(s![ky..ky + 1, kx..kx + 1])
-                                .into_scalar()
-                                .elem::<f32>();
+                                .into_scalar::<f32>();
 
                             if kernel_val > 0.5 {
                                 // Only consider kernel elements that are "on"
@@ -118,8 +113,7 @@ pub fn erosion<B: Backend>(
                                         img_y..img_y + 1,
                                         img_x..img_x + 1
                                     ])
-                                    .into_scalar()
-                                    .elem::<f32>();
+                                    .into_scalar::<f32>();
 
                                 // For erosion: result is minimum of all structuring element positions
                                 if img_val < 0.5 {
@@ -136,7 +130,7 @@ pub fn erosion<B: Backend>(
 
                     // Set result pixel
                     let value_tensor =
-                        Tensor::<B, 1>::from_floats([eroded_value], &device).reshape([1, 1, 1, 1]);
+                        Tensor::<1>::from_floats([eroded_value], &device).reshape([1, 1, 1, 1]);
                     result = result
                         .slice_assign(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1], value_tensor);
                 }
@@ -155,16 +149,13 @@ pub fn erosion<B: Backend>(
 ///
 /// # Returns
 /// Dilated binary image tensor with same shape
-pub fn dilation<B: Backend>(
-    image: Tensor<B, 4>,
-    structuring_element: &StructuringElement<B>,
-) -> Tensor<B, 4> {
+pub fn dilation(image: Tensor<4>, structuring_element: &StructuringElement) -> Tensor<4> {
     let [batch_size, channels, height, width] = image.dims();
     let [kernel_h, kernel_w] = structuring_element.dims();
     let (anchor_y, anchor_x) = structuring_element.anchor;
 
     let device = image.device();
-    let mut result = Tensor::<B, 4>::zeros([batch_size, channels, height, width], &device);
+    let mut result = Tensor::<4>::zeros([batch_size, channels, height, width], &device);
 
     // Pad image to handle border effects
     let pad_y = anchor_y;
@@ -186,8 +177,7 @@ pub fn dilation<B: Backend>(
                                 .kernel
                                 .clone()
                                 .slice(s![ky..ky + 1, kx..kx + 1])
-                                .into_scalar()
-                                .elem::<f32>();
+                                .into_scalar::<f32>();
 
                             if kernel_val > 0.5 {
                                 // Only consider kernel elements that are "on"
@@ -204,8 +194,7 @@ pub fn dilation<B: Backend>(
                                         img_y..img_y + 1,
                                         img_x..img_x + 1
                                     ])
-                                    .into_scalar()
-                                    .elem::<f32>();
+                                    .into_scalar::<f32>();
 
                                 // For dilation: result is maximum of all structuring element positions
                                 if img_val > 0.5 {
@@ -222,7 +211,7 @@ pub fn dilation<B: Backend>(
 
                     // Set result pixel
                     let value_tensor =
-                        Tensor::<B, 1>::from_floats([dilated_value], &device).reshape([1, 1, 1, 1]);
+                        Tensor::<1>::from_floats([dilated_value], &device).reshape([1, 1, 1, 1]);
                     result = result
                         .slice_assign(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1], value_tensor);
                 }
@@ -241,10 +230,7 @@ pub fn dilation<B: Backend>(
 ///
 /// # Returns
 /// Opened binary image tensor with same shape
-pub fn opening<B: Backend>(
-    image: Tensor<B, 4>,
-    structuring_element: &StructuringElement<B>,
-) -> Tensor<B, 4> {
+pub fn opening(image: Tensor<4>, structuring_element: &StructuringElement) -> Tensor<4> {
     let eroded = erosion(image, structuring_element);
     dilation(eroded, structuring_element)
 }
@@ -257,10 +243,7 @@ pub fn opening<B: Backend>(
 ///
 /// # Returns
 /// Closed binary image tensor with same shape
-pub fn closing<B: Backend>(
-    image: Tensor<B, 4>,
-    structuring_element: &StructuringElement<B>,
-) -> Tensor<B, 4> {
+pub fn closing(image: Tensor<4>, structuring_element: &StructuringElement) -> Tensor<4> {
     let dilated = dilation(image, structuring_element);
     erosion(dilated, structuring_element)
 }
@@ -273,17 +256,14 @@ pub fn closing<B: Backend>(
 ///
 /// # Returns
 /// Gradient binary image tensor with same shape
-pub fn gradient<B: Backend>(
-    image: Tensor<B, 4>,
-    structuring_element: &StructuringElement<B>,
-) -> Tensor<B, 4> {
+pub fn gradient(image: Tensor<4>, structuring_element: &StructuringElement) -> Tensor<4> {
     let dilated = dilation(image.clone(), structuring_element);
     let eroded = erosion(image, structuring_element);
     dilated - eroded
 }
 
 /// Replicate padding for 4D tensors
-fn pad_replicate_4d<B: Backend>(tensor: Tensor<B, 4>, pad_h: usize, pad_w: usize) -> Tensor<B, 4> {
+fn pad_replicate_4d(tensor: Tensor<4>, pad_h: usize, pad_w: usize) -> Tensor<4> {
     let [batch_size, channels, height, width] = tensor.dims();
 
     if pad_h == 0 && pad_w == 0 {
@@ -294,7 +274,7 @@ fn pad_replicate_4d<B: Backend>(tensor: Tensor<B, 4>, pad_h: usize, pad_w: usize
     let new_width = width + 2 * pad_w;
 
     let device = tensor.device();
-    let mut result = Tensor::<B, 4>::zeros([batch_size, channels, new_height, new_width], &device);
+    let mut result = Tensor::<4>::zeros([batch_size, channels, new_height, new_width], &device);
 
     // Copy original tensor to center
     result = result.slice_assign(
@@ -345,19 +325,12 @@ fn pad_replicate_4d<B: Backend>(tensor: Tensor<B, 4>, pad_h: usize, pad_w: usize
 #[cfg(test)]
 mod tests {
     use approx::assert_relative_eq;
-    use burn::backend::Cpu;
     use rstest::*;
 
     use super::*;
 
-    type TestBackend = Cpu;
-
     // Helper function to create test image data
-    fn create_test_image_tensor<B: Backend>(
-        pattern: &str,
-        size: usize,
-        device: &B::Device,
-    ) -> Tensor<B, 4> {
+    fn create_test_image_tensor(pattern: &str, size: usize, device: &Device) -> Tensor<4> {
         let data = match pattern {
             "solid_white" => vec![vec![1.0; size]; size],
             "solid_black" => vec![vec![0.0; size]; size],
@@ -369,28 +342,26 @@ mod tests {
             "cross" => {
                 let mut data = vec![vec![0.0; size]; size];
                 let center = size / 2;
-                for i in 0..size {
-                    data[center][i] = 1.0; // horizontal line
-                    data[i][center] = 1.0; // vertical line
+                data[center].fill(1.0); // horizontal line
+                for row in &mut data {
+                    row[center] = 1.0; // vertical line
                 }
                 data
             }
             "square_3x3" => {
                 let mut data = vec![vec![0.0; size]; size];
                 if size >= 5 {
-                    for i in 1..4 {
-                        for j in 1..4 {
-                            data[i][j] = 1.0;
-                        }
+                    for row in &mut data[1..4] {
+                        row[1..4].fill(1.0);
                     }
                 }
                 data
             }
             "checkerboard" => {
                 let mut data = vec![vec![0.0; size]; size];
-                for i in 0..size {
-                    for j in 0..size {
-                        data[i][j] = if (i + j) % 2 == 0 { 1.0 } else { 0.0 };
+                for (i, row) in data.iter_mut().enumerate() {
+                    for (j, value) in row.iter_mut().enumerate() {
+                        *value = if (i + j) % 2 == 0 { 1.0 } else { 0.0 };
                     }
                 }
                 data
@@ -400,7 +371,7 @@ mod tests {
 
         // Convert Vec<Vec<f32>> to flat Vec<f32>
         let flat_data: Vec<f32> = data.into_iter().flatten().collect();
-        Tensor::<B, 1>::from_floats(flat_data.as_slice(), device).reshape([1, 1, size, size])
+        Tensor::<1>::from_floats(flat_data.as_slice(), device).reshape([1, 1, size, size])
     }
 
     // Helper function to check if a pixel value matches expected (binary classification)
@@ -418,8 +389,8 @@ mod tests {
         #[case] expected_w: usize,
         #[case] expected_anchor: (usize, usize),
     ) {
-        let device = Default::default();
-        let disk = StructuringElement::<TestBackend>::disk(radius, &device);
+        let device = Device::flex();
+        let disk = StructuringElement::disk(radius, &device);
 
         let [h, w] = disk.dims();
         assert_eq!(h, expected_h);
@@ -439,8 +410,8 @@ mod tests {
         #[case] expected_w: usize,
         #[case] expected_anchor: (usize, usize),
     ) {
-        let device = Default::default();
-        let rect = StructuringElement::<TestBackend>::rectangle(height, width, &device);
+        let device = Device::flex();
+        let rect = StructuringElement::rectangle(height, width, &device);
 
         let [h, w] = rect.dims();
         assert_eq!(h, expected_h);
@@ -457,8 +428,8 @@ mod tests {
         #[case] size: usize,
         #[case] se_radius: usize,
     ) {
-        let device = Default::default();
-        let image = create_test_image_tensor::<TestBackend>(pattern, size, &device);
+        let device = Device::flex();
+        let image = create_test_image_tensor(pattern, size, &device);
         let se = StructuringElement::disk(se_radius, &device);
 
         let eroded = erosion(image.clone(), &se);
@@ -473,8 +444,7 @@ mod tests {
                 let center_val = eroded
                     .clone()
                     .slice(s![0..1, 0..1, center..center + 1, center..center + 1])
-                    .into_scalar()
-                    .elem::<f32>();
+                    .into_scalar::<f32>();
                 assert!(
                     is_foreground(center_val),
                     "Center of square should survive erosion"
@@ -486,8 +456,7 @@ mod tests {
                 let center_val = eroded
                     .clone()
                     .slice(s![0..1, 0..1, center..center + 1, center..center + 1])
-                    .into_scalar()
-                    .elem::<f32>();
+                    .into_scalar::<f32>();
                 assert!(
                     !is_foreground(center_val),
                     "Single pixel should be eroded away"
@@ -495,8 +464,8 @@ mod tests {
             }
             _ => {
                 // General property: eroded image should have <= original foreground pixels
-                let original_sum = image.clone().sum().into_scalar().elem::<f32>();
-                let eroded_sum = eroded.clone().sum().into_scalar().elem::<f32>();
+                let original_sum = image.clone().sum().into_scalar::<f32>();
+                let eroded_sum = eroded.clone().sum().into_scalar::<f32>();
                 assert!(
                     eroded_sum <= original_sum,
                     "Erosion should not increase foreground pixels"
@@ -514,8 +483,8 @@ mod tests {
         #[case] size: usize,
         #[case] se_radius: usize,
     ) {
-        let device = Default::default();
-        let image = create_test_image_tensor::<TestBackend>(pattern, size, &device);
+        let device = Device::flex();
+        let image = create_test_image_tensor(pattern, size, &device);
         let se = StructuringElement::disk(se_radius, &device);
 
         let dilated = dilation(image.clone(), &se);
@@ -523,38 +492,33 @@ mod tests {
         assert_eq!([b, c, h, w], [1, 1, size, size]);
 
         // General property: dilation should have >= original foreground pixels
-        let original_sum = image.clone().sum().into_scalar().elem::<f32>();
-        let dilated_sum = dilated.clone().sum().into_scalar().elem::<f32>();
+        let original_sum = image.clone().sum().into_scalar::<f32>();
+        let dilated_sum = dilated.clone().sum().into_scalar::<f32>();
         assert!(
             dilated_sum >= original_sum,
             "Dilation should not decrease foreground pixels"
         );
 
-        match pattern {
-            "center_dot" => {
-                // Check that neighbors are also white after dilation
-                let center = size / 2;
-                let center_val = dilated
-                    .clone()
-                    .slice(s![0..1, 0..1, center..center + 1, center..center + 1])
-                    .into_scalar()
-                    .elem::<f32>();
-                assert!(is_foreground(center_val), "Center should remain foreground");
+        if pattern == "center_dot" {
+            // Check that neighbors are also white after dilation
+            let center = size / 2;
+            let center_val = dilated
+                .clone()
+                .slice(s![0..1, 0..1, center..center + 1, center..center + 1])
+                .into_scalar::<f32>();
+            assert!(is_foreground(center_val), "Center should remain foreground");
 
-                // Check at least one neighbor is also foreground (for radius >= 1)
-                if se_radius >= 1 && center > 0 {
-                    let neighbor_val = dilated
-                        .clone()
-                        .slice(s![0..1, 0..1, center - 1..center, center..center + 1])
-                        .into_scalar()
-                        .elem::<f32>();
-                    assert!(
-                        is_foreground(neighbor_val),
-                        "Dilation should expand to neighbors"
-                    );
-                }
+            // Check at least one neighbor is also foreground (for radius >= 1)
+            if se_radius >= 1 && center > 0 {
+                let neighbor_val = dilated
+                    .clone()
+                    .slice(s![0..1, 0..1, center - 1..center, center..center + 1])
+                    .into_scalar::<f32>();
+                assert!(
+                    is_foreground(neighbor_val),
+                    "Dilation should expand to neighbors"
+                );
             }
-            _ => {}
         }
     }
 
@@ -567,8 +531,8 @@ mod tests {
         #[case] se_height: usize,
         #[case] se_width: usize,
     ) {
-        let device = Default::default();
-        let image = create_test_image_tensor::<TestBackend>(pattern, size, &device);
+        let device = Device::flex();
+        let image = create_test_image_tensor(pattern, size, &device);
         let se = StructuringElement::rectangle(se_height, se_width, &device);
 
         let opened = opening(image.clone(), &se);
@@ -576,8 +540,8 @@ mod tests {
         assert_eq!([b, c, h, w], [1, 1, size, size]);
 
         // Opening should be <= original image (removing small features)
-        let original_sum = image.clone().sum().into_scalar().elem::<f32>();
-        let opened_sum = opened.clone().sum().into_scalar().elem::<f32>();
+        let original_sum = image.clone().sum().into_scalar::<f32>();
+        let opened_sum = opened.clone().sum().into_scalar::<f32>();
         assert!(
             opened_sum <= original_sum,
             "Opening should not increase foreground pixels"
@@ -591,8 +555,7 @@ mod tests {
                     let center_val = opened
                         .clone()
                         .slice(s![0..1, 0..1, center..center + 1, center..center + 1])
-                        .into_scalar()
-                        .elem::<f32>();
+                        .into_scalar::<f32>();
                     assert!(
                         !is_foreground(center_val),
                         "Small noise should be removed by opening"
@@ -618,13 +581,12 @@ mod tests {
         #[case] se_height: usize,
         #[case] se_width: usize,
     ) {
-        let device = Default::default();
+        let device = Device::flex();
         // Create square with a hole in it
-        let mut image = create_test_image_tensor::<TestBackend>(pattern, size, &device);
+        let mut image = create_test_image_tensor(pattern, size, &device);
         if pattern == "square_3x3" && size >= 7 {
             // Create hole in center by setting pixel to 0
-            let zero_tensor =
-                Tensor::<TestBackend, 1>::from_floats([0.0], &device).reshape([1, 1, 1, 1]);
+            let zero_tensor = Tensor::<1>::from_floats([0.0], &device).reshape([1, 1, 1, 1]);
             image = image.slice_assign(s![0..1, 0..1, 3..4, 3..4], zero_tensor);
         }
         let se = StructuringElement::rectangle(se_height, se_width, &device);
@@ -634,8 +596,8 @@ mod tests {
         assert_eq!([b, c, h, w], [1, 1, size, size]);
 
         // Closing should be >= original image (filling gaps)
-        let original_sum = image.clone().sum().into_scalar().elem::<f32>();
-        let closed_sum = closed.clone().sum().into_scalar().elem::<f32>();
+        let original_sum = image.clone().sum().into_scalar::<f32>();
+        let closed_sum = closed.clone().sum().into_scalar::<f32>();
         assert!(
             closed_sum >= original_sum,
             "Closing should not decrease foreground pixels"
@@ -650,8 +612,8 @@ mod tests {
         #[case] size: usize,
         #[case] se_radius: usize,
     ) {
-        let device = Default::default();
-        let image = create_test_image_tensor::<TestBackend>(pattern, size, &device);
+        let device = Device::flex();
+        let image = create_test_image_tensor(pattern, size, &device);
         let se = StructuringElement::disk(se_radius, &device);
 
         let grad = gradient(image.clone(), &se);
@@ -662,7 +624,7 @@ mod tests {
             "center_dot" => {
                 // Single pixel gradient: for a single pixel, dilation expands it but erosion removes it
                 // So gradient = dilation - erosion should be positive (the expanded region)
-                let grad_sum = grad.clone().sum().into_scalar().elem::<f32>();
+                let grad_sum = grad.clone().sum().into_scalar::<f32>();
                 assert!(
                     grad_sum >= 0.0,
                     "Gradient should be non-negative for center dot"
@@ -670,7 +632,7 @@ mod tests {
             }
             "square_3x3" => {
                 // Gradient should highlight edges - should be positive at boundaries
-                let grad_sum = grad.clone().sum().into_scalar().elem::<f32>();
+                let grad_sum = grad.clone().sum().into_scalar::<f32>();
                 assert!(grad_sum > 0.0, "Gradient should detect edges in square");
             }
             _ => {}
@@ -682,10 +644,10 @@ mod tests {
     #[case(3, 3)] // small image
     #[case(10, 15)] // rectangular image
     fn edge_cases_minimal_images(#[case] height: usize, #[case] width: usize) {
-        let device = Default::default();
+        let device = Device::flex();
         let flat_data: Vec<f32> = vec![1.0; height * width];
-        let image = Tensor::<TestBackend, 1>::from_floats(flat_data.as_slice(), &device)
-            .reshape([1, 1, height, width]);
+        let image =
+            Tensor::<1>::from_floats(flat_data.as_slice(), &device).reshape([1, 1, height, width]);
         let se = StructuringElement::disk(1, &device);
 
         // All operations should work without panicking
@@ -712,7 +674,7 @@ mod tests {
         #[case] channels: usize,
         #[case] spatial_size: usize,
     ) {
-        let device = Default::default();
+        let device = Device::flex();
 
         // Create test data for multiple batches/channels
         let flat_data: Vec<f32> = (0..batch_size * channels * spatial_size * spatial_size)
@@ -721,14 +683,14 @@ mod tests {
                 let y = spatial_idx / spatial_size;
                 let x = spatial_idx % spatial_size;
                 // Create square pattern for each channel
-                if y >= 1 && y < 4 && x >= 1 && x < 4 && spatial_size >= 5 {
+                if (1..4).contains(&y) && (1..4).contains(&x) && spatial_size >= 5 {
                     1.0
                 } else {
                     0.0
                 }
             })
             .collect();
-        let image = Tensor::<TestBackend, 1>::from_floats(flat_data.as_slice(), &device).reshape([
+        let image = Tensor::<1>::from_floats(flat_data.as_slice(), &device).reshape([
             batch_size,
             channels,
             spatial_size,
@@ -752,8 +714,8 @@ mod tests {
 
     #[test]
     fn morphological_properties_duality() {
-        let device = Default::default();
-        let image = create_test_image_tensor::<TestBackend>("square_3x3", 5, &device);
+        let device = Device::flex();
+        let image = create_test_image_tensor("square_3x3", 5, &device);
         let se = StructuringElement::disk(1, &device);
 
         // Test opening-closing duality property
@@ -764,16 +726,13 @@ mod tests {
         let closed_opened = opening(closed.clone(), &se);
 
         // These should be different but within expected ranges
-        let oc_sum = opened_closed.sum().into_scalar().elem::<f32>();
-        let co_sum = closed_opened.sum().into_scalar().elem::<f32>();
+        let oc_sum = opened_closed.sum().into_scalar::<f32>();
+        let co_sum = closed_opened.sum().into_scalar::<f32>();
 
         // Test mathematical properties of opening and closing
-        let original_sum = image.clone().sum().into_scalar().elem::<f32>();
-        let opened_sum = opened.sum().into_scalar().elem::<f32>();
-        let closed_sum = closing(image.clone(), &se)
-            .sum()
-            .into_scalar()
-            .elem::<f32>();
+        let original_sum = image.clone().sum().into_scalar::<f32>();
+        let opened_sum = opened.sum().into_scalar::<f32>();
+        let closed_sum = closing(image.clone(), &se).sum().into_scalar::<f32>();
 
         // Opening should be <= original
         assert!(
@@ -796,24 +755,24 @@ mod tests {
 
     #[test]
     fn idempotence_properties() {
-        let device = Default::default();
-        let image = create_test_image_tensor::<TestBackend>("square_3x3", 7, &device);
+        let device = Device::flex();
+        let image = create_test_image_tensor("square_3x3", 7, &device);
         let se = StructuringElement::disk(1, &device);
 
         // Opening is idempotent: opening(opening(X)) = opening(X)
         let opened_once = opening(image.clone(), &se);
         let opened_twice = opening(opened_once.clone(), &se);
 
-        let sum1 = opened_once.sum().into_scalar().elem::<f32>();
-        let sum2 = opened_twice.sum().into_scalar().elem::<f32>();
+        let sum1 = opened_once.sum().into_scalar::<f32>();
+        let sum2 = opened_twice.sum().into_scalar::<f32>();
         assert_relative_eq!(sum1, sum2, epsilon = 1e-5);
 
         // Closing is idempotent: closing(closing(X)) = closing(X)
         let closed_once = closing(image.clone(), &se);
         let closed_twice = closing(closed_once.clone(), &se);
 
-        let sum3 = closed_once.sum().into_scalar().elem::<f32>();
-        let sum4 = closed_twice.sum().into_scalar().elem::<f32>();
+        let sum3 = closed_once.sum().into_scalar::<f32>();
+        let sum4 = closed_twice.sum().into_scalar::<f32>();
         assert_relative_eq!(sum3, sum4, epsilon = 1e-5);
     }
 
@@ -823,7 +782,7 @@ mod tests {
 
         // Helper function to compare Rust result with Python reference
         fn compare_with_python_reference(
-            rust_result: Tensor<TestBackend, 4>,
+            rust_result: Tensor<4>,
             python_reference: Vec<Vec<f32>>,
             tolerance: f32,
         ) -> bool {
@@ -834,14 +793,12 @@ mod tests {
             let mut max_diff = 0.0f32;
             let mut mismatch_count = 0;
 
-            for i in 0..height {
-                for j in 0..width {
+            for (i, reference_row) in python_reference.iter().enumerate() {
+                for (j, &python_val) in reference_row.iter().enumerate() {
                     let rust_val = rust_result
                         .clone()
                         .slice(s![0..1, 0..1, i..i + 1, j..j + 1])
-                        .into_scalar()
-                        .elem::<f32>();
-                    let python_val = python_reference[i][j];
+                        .into_scalar::<f32>();
 
                     let diff = (rust_val - python_val).abs();
                     max_diff = max_diff.max(diff);
@@ -863,7 +820,7 @@ mod tests {
 
         #[test]
         fn center_dot_erosion_disk_radius1_matches_python() {
-            let device = Default::default();
+            let device = Device::flex();
 
             // Input from Python reference
             let input_data = vec![
@@ -884,8 +841,8 @@ mod tests {
             ];
 
             let flat_data: Vec<f32> = input_data.into_iter().flatten().collect();
-            let image = Tensor::<TestBackend, 1>::from_floats(flat_data.as_slice(), &device)
-                .reshape([1, 1, 5, 5]);
+            let image =
+                Tensor::<1>::from_floats(flat_data.as_slice(), &device).reshape([1, 1, 5, 5]);
             let se = StructuringElement::disk(1, &device);
 
             let result = erosion(image, &se);
@@ -894,7 +851,7 @@ mod tests {
 
         #[test]
         fn center_dot_dilation_disk_radius1_matches_python() {
-            let device = Default::default();
+            let device = Device::flex();
 
             // Input from Python reference
             let input_data = vec![
@@ -915,8 +872,8 @@ mod tests {
             ];
 
             let flat_data: Vec<f32> = input_data.into_iter().flatten().collect();
-            let image = Tensor::<TestBackend, 1>::from_floats(flat_data.as_slice(), &device)
-                .reshape([1, 1, 5, 5]);
+            let image =
+                Tensor::<1>::from_floats(flat_data.as_slice(), &device).reshape([1, 1, 5, 5]);
             let se = StructuringElement::disk(1, &device);
 
             let result = dilation(image, &se);
@@ -925,7 +882,7 @@ mod tests {
 
         #[test]
         fn square_3x3_erosion_disk_radius1_matches_python() {
-            let device = Default::default();
+            let device = Device::flex();
 
             // Input: 3x3 square in 5x5 image
             let input_data = vec![
@@ -946,8 +903,8 @@ mod tests {
             ];
 
             let flat_data: Vec<f32> = input_data.into_iter().flatten().collect();
-            let image = Tensor::<TestBackend, 1>::from_floats(flat_data.as_slice(), &device)
-                .reshape([1, 1, 5, 5]);
+            let image =
+                Tensor::<1>::from_floats(flat_data.as_slice(), &device).reshape([1, 1, 5, 5]);
             let se = StructuringElement::disk(1, &device);
 
             let result = erosion(image, &se);
@@ -956,7 +913,7 @@ mod tests {
 
         #[test]
         fn opening_noise_removal_matches_python() {
-            let device = Default::default();
+            let device = Device::flex();
 
             // Single pixel noise that should be removed by opening
             let input_data = vec![
@@ -977,8 +934,8 @@ mod tests {
             ];
 
             let flat_data: Vec<f32> = input_data.into_iter().flatten().collect();
-            let image = Tensor::<TestBackend, 1>::from_floats(flat_data.as_slice(), &device)
-                .reshape([1, 1, 5, 5]);
+            let image =
+                Tensor::<1>::from_floats(flat_data.as_slice(), &device).reshape([1, 1, 5, 5]);
             let se = StructuringElement::rectangle(3, 3, &device);
 
             let result = opening(image, &se);

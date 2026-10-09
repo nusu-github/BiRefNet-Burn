@@ -3,15 +3,16 @@
 //! S-measure evaluates the structural similarity between prediction and ground truth,
 //! considering both object-level and region-level information.
 
-use core::marker::PhantomData;
 use std::sync::Arc;
 
+use burn::tensor::TensorReadError;
 use burn::{
     config::Config,
     prelude::*,
-    tensor::{Int, Tensor, backend::Backend, cast::ToElement},
+    tensor::{Int, Tensor},
     train::metric::{
-        Metric, MetricMetadata, Numeric, NumericEntry,
+        Metric, MetricAttributes, MetricMetadata, Numeric, NumericAttributes, NumericEntry,
+        SerializedEntry,
         state::{FormatOptions, NumericMetricState},
     },
 };
@@ -29,16 +30,16 @@ pub struct SMeasureMetricConfig {
 
 /// S-measure metric input.
 #[derive(Debug, Clone)]
-pub struct SMeasureInput<B: Backend> {
+pub struct SMeasureInput {
     /// Predictions with shape `[batch_size, height, width]`.
-    pub predictions: Tensor<B, 3>,
+    pub predictions: Tensor<3>,
     /// Ground truth with shape `[batch_size, height, width]`.
-    pub targets: Tensor<B, 3>,
+    pub targets: Tensor<3>,
 }
 
-impl<B: Backend> SMeasureInput<B> {
+impl SMeasureInput {
     /// Creates a new S-measure input.
-    pub const fn new(predictions: Tensor<B, 3>, targets: Tensor<B, 3>) -> Self {
+    pub const fn new(predictions: Tensor<3>, targets: Tensor<3>) -> Self {
         Self {
             predictions,
             targets,
@@ -48,25 +49,23 @@ impl<B: Backend> SMeasureInput<B> {
 
 /// S-measure metric.
 #[derive(Clone)]
-pub struct SMeasureMetric<B: Backend> {
+pub struct SMeasureMetric {
     state: NumericMetricState,
     name: Arc<String>,
     alpha: f64,
-    _backend: PhantomData<B>,
 }
 
-impl<B: Backend> Default for SMeasureMetric<B> {
+impl Default for SMeasureMetric {
     fn default() -> Self {
         Self {
             state: NumericMetricState::default(),
             name: Arc::new("S_measure".to_owned()),
             alpha: 0.5,
-            _backend: PhantomData,
         }
     }
 }
 
-impl<B: Backend> SMeasureMetric<B> {
+impl SMeasureMetric {
     /// Creates a new S-measure metric.
     pub fn new() -> Self {
         Self::default()
@@ -78,13 +77,12 @@ impl<B: Backend> SMeasureMetric<B> {
             state: NumericMetricState::default(),
             name: Arc::new(config.name),
             alpha: config.alpha,
-            _backend: PhantomData,
         }
     }
 }
 
-impl<B: Backend> Metric for SMeasureMetric<B> {
-    type Input = SMeasureInput<B>;
+impl Metric for SMeasureMetric {
+    type Input = SMeasureInput;
 
     fn name(&self) -> Arc<String> {
         self.name.clone()
@@ -94,25 +92,46 @@ impl<B: Backend> Metric for SMeasureMetric<B> {
         &mut self,
         input: &Self::Input,
         _metadata: &MetricMetadata,
-    ) -> burn::train::metric::SerializedEntry {
+    ) -> Result<SerializedEntry, TensorReadError> {
         let [batch_size, ..] = input.predictions.dims();
 
         let mut total_sm = 0.0;
 
         for b in 0..batch_size {
-            let pred = input.predictions.clone().slice(s![b..=b, .., ..]).squeeze();
-            let gt = input.targets.clone().slice(s![b..=b, .., ..]).squeeze();
+            let pred = input
+                .predictions
+                .clone()
+                .slice(s![b..=b, .., ..])
+                .squeeze_dims::<2>(&[0, 1]);
+            let gt = input
+                .targets
+                .clone()
+                .slice(s![b..=b, .., ..])
+                .squeeze_dims::<2>(&[0, 1]);
 
             let sm = calculate_s_measure(pred, gt, self.alpha);
             total_sm += sm;
         }
 
         let avg_sm = total_sm / batch_size as f64;
-        self.state.update(
-            avg_sm,
-            batch_size,
-            FormatOptions::new(self.name.clone()).precision(5),
-        )
+        self.state.update(avg_sm, batch_size);
+        Ok(self
+            .state
+            .compute_update(FormatOptions::new(self.name.clone()).precision(5)))
+    }
+
+    fn compute(&mut self) -> Result<SerializedEntry, TensorReadError> {
+        Ok(self
+            .state
+            .compute_final(FormatOptions::new(self.name.clone()).precision(5)))
+    }
+
+    fn attributes(&self) -> MetricAttributes {
+        NumericAttributes {
+            unit: None,
+            higher_is_better: true,
+        }
+        .into()
     }
 
     fn clear(&mut self) {
@@ -120,13 +139,17 @@ impl<B: Backend> Metric for SMeasureMetric<B> {
     }
 }
 
-impl<B: Backend> Numeric for SMeasureMetric<B> {
-    fn value(&self) -> NumericEntry {
-        self.state.current_value()
+impl Numeric for SMeasureMetric {
+    fn value(&self) -> Option<NumericEntry> {
+        Some(self.state.current_value())
     }
 
-    fn running_value(&self) -> NumericEntry {
-        self.state.running_value()
+    fn running_value(&self) -> Option<NumericEntry> {
+        Some(self.state.running_value())
+    }
+
+    fn final_value(&self) -> NumericEntry {
+        self.state.final_value()
     }
 }
 
@@ -139,11 +162,7 @@ impl<B: Backend> Numeric for SMeasureMetric<B> {
 ///
 /// # Returns
 /// The S-measure value.
-pub fn calculate_s_measure<B: Backend>(
-    predictions: Tensor<B, 2>,
-    targets: Tensor<B, 2>,
-    alpha: f64,
-) -> f64 {
+pub fn calculate_s_measure(predictions: Tensor<2>, targets: Tensor<2>, alpha: f64) -> f64 {
     // Prepare data
     let gt = targets.div_scalar(255.0).greater_equal_elem(0.5).float();
 
@@ -153,23 +172,23 @@ pub fn calculate_s_measure<B: Backend>(
     let range = max_val - min_val.clone();
     let epsilon = 1e-8;
 
-    let pred = if range.clone().greater_elem(epsilon).into_scalar().to_bool() {
-        let min_scalar = min_val.into_scalar().to_f64();
-        let range_scalar = range.into_scalar().to_f64();
+    let pred = if range.clone().greater_elem(epsilon).into_scalar::<bool>() {
+        let min_scalar = min_val.into_scalar::<f64>();
+        let range_scalar = range.into_scalar::<f64>();
         predictions.sub_scalar(min_scalar).div_scalar(range_scalar)
     } else {
         predictions
     };
 
     // Calculate mean of ground truth
-    let y = gt.clone().mean().into_scalar().to_f64();
+    let y = gt.clone().mean().into_scalar::<f64>();
 
     if y == 0.0 {
         // All background
-        1.0 - pred.mean().into_scalar().to_f64()
+        1.0 - pred.mean().into_scalar::<f64>()
     } else if y == 1.0 {
         // All foreground
-        pred.mean().into_scalar().to_f64()
+        pred.mean().into_scalar::<f64>()
     } else {
         // Mixed case
         let object_score = calculate_object_score(pred.clone(), gt.clone());
@@ -179,11 +198,11 @@ pub fn calculate_s_measure<B: Backend>(
     }
 }
 
-fn calculate_object_score<B: Backend>(pred: Tensor<B, 2>, gt: Tensor<B, 2>) -> f64 {
+fn calculate_object_score(pred: Tensor<2>, gt: Tensor<2>) -> f64 {
     let fg = pred.clone() * gt.clone();
     let bg = (pred.sub_scalar(1.0).neg()) * (gt.clone().sub_scalar(1.0).neg());
 
-    let u = gt.clone().mean().into_scalar().to_f64();
+    let u = gt.clone().mean().into_scalar::<f64>();
 
     let fg_score = calculate_s_object(fg, gt.clone());
     let bg_score = calculate_s_object(bg, gt.sub_scalar(1.0).neg());
@@ -191,18 +210,18 @@ fn calculate_object_score<B: Backend>(pred: Tensor<B, 2>, gt: Tensor<B, 2>) -> f
     u.mul_add(fg_score, (1.0 - u) * bg_score)
 }
 
-fn calculate_s_object<B: Backend>(pred: Tensor<B, 2>, gt: Tensor<B, 2>) -> f64 {
+fn calculate_s_object(pred: Tensor<2>, gt: Tensor<2>) -> f64 {
     let mask = gt.equal_elem(1.0);
     let masked_pred = pred
         .clone()
         .mask_where(mask.clone().bool_not(), pred.zeros_like());
 
-    let count = mask.clone().float().sum().into_scalar().to_f64();
+    let count = mask.clone().float().sum().into_scalar::<f64>();
     if count == 0.0 {
         return 0.0;
     }
 
-    let x = masked_pred.sum().into_scalar().to_f64() / count;
+    let x = masked_pred.sum().into_scalar::<f64>() / count;
 
     // Calculate standard deviation
     let mean_tensor = pred.clone().mask_where(
@@ -214,8 +233,7 @@ fn calculate_s_object<B: Backend>(pred: Tensor<B, 2>, gt: Tensor<B, 2>) -> f64 {
         .powf_scalar(2.0)
         .mask_where(mask.bool_not(), pred.zeros_like())
         .sum()
-        .into_scalar()
-        .to_f64()
+        .into_scalar::<f64>()
         / (count - 1.0).max(1.0);
     let sigma_x = variance.sqrt();
 
@@ -223,7 +241,7 @@ fn calculate_s_object<B: Backend>(pred: Tensor<B, 2>, gt: Tensor<B, 2>) -> f64 {
     2.0 * x / (x.mul_add(x, 1.0) + sigma_x + 1e-8)
 }
 
-fn calculate_region_score<B: Backend>(pred: Tensor<B, 2>, gt: Tensor<B, 2>) -> f64 {
+fn calculate_region_score(pred: Tensor<2>, gt: Tensor<2>) -> f64 {
     let [height, width] = gt.dims();
 
     // Calculate centroid
@@ -270,22 +288,22 @@ fn calculate_region_score<B: Backend>(pred: Tensor<B, 2>, gt: Tensor<B, 2>) -> f
     total_score
 }
 
-fn calculate_centroid<B: Backend>(gt: Tensor<B, 2>) -> (usize, usize) {
+fn calculate_centroid(gt: Tensor<2>) -> (usize, usize) {
     let [height, width] = gt.dims();
     let device = gt.device();
 
     let mask = gt.equal_elem(1.0);
-    let count = mask.clone().float().sum().into_scalar();
+    let count = mask.clone().float().sum().into_scalar::<f64>();
 
-    if count.to_f64() == 0.0 {
+    if count == 0.0 {
         // Return center if no foreground
         (width / 2, height / 2)
     } else {
         // Create coordinate grids
-        let y_coords: Tensor<B, 2> = Tensor::<B, 1, Int>::arange(0..height as i64, &device)
+        let y_coords: Tensor<2> = Tensor::<1, Int>::arange(0..height as i64, &device)
             .float()
             .unsqueeze_dim(1);
-        let x_coords: Tensor<B, 2> = Tensor::<B, 1, Int>::arange(0..width as i64, &device)
+        let x_coords: Tensor<2> = Tensor::<1, Int>::arange(0..width as i64, &device)
             .float()
             .unsqueeze_dim(0);
 
@@ -293,8 +311,8 @@ fn calculate_centroid<B: Backend>(gt: Tensor<B, 2>) -> (usize, usize) {
         let x_grid = x_coords.expand([height, width]);
 
         // Calculate weighted average
-        let cy = (y_grid * mask.clone().float()).sum().into_scalar().to_f64() / count.to_f64();
-        let cx = (x_grid * mask.float()).sum().into_scalar().to_f64() / count.to_f64();
+        let cy = (y_grid * mask.clone().float()).sum().into_scalar::<f64>() / count;
+        let cx = (x_grid * mask.float()).sum().into_scalar::<f64>() / count;
 
         ((cx + 0.5) as usize, (cy + 0.5) as usize)
     }
@@ -316,7 +334,7 @@ fn calculate_region_weights(
     (w1, w2, w3, w4)
 }
 
-fn calculate_ssim<B: Backend>(pred: Tensor<B, 2>, gt: Tensor<B, 2>) -> f64 {
+fn calculate_ssim(pred: Tensor<2>, gt: Tensor<2>) -> f64 {
     let [h, w] = pred.dims();
     let n = (h * w) as f64;
 
@@ -324,29 +342,25 @@ fn calculate_ssim<B: Backend>(pred: Tensor<B, 2>, gt: Tensor<B, 2>) -> f64 {
         return 1.0;
     }
 
-    let x = pred.clone().mean().into_scalar().to_f64();
-    let y = gt.clone().mean().into_scalar().to_f64();
+    let x = pred.clone().mean().into_scalar::<f64>();
+    let y = gt.clone().mean().into_scalar::<f64>();
 
     let pred_centered = pred - x;
     let gt_centered = gt - y;
 
-    let sigma_x_sq = (pred_centered
+    let sigma_x_sq = pred_centered
         .clone()
         .powf_scalar(2.0)
         .sum()
-        .into_scalar()
-        .to_f64()
-        / (n - 1.0).max(1.0))
-    .to_f64();
-    let sigma_y_sq = (gt_centered
+        .into_scalar::<f64>()
+        / (n - 1.0).max(1.0);
+    let sigma_y_sq = gt_centered
         .clone()
         .powf_scalar(2.0)
         .sum()
-        .into_scalar()
-        .to_f64()
-        / (n - 1.0).max(1.0))
-    .to_f64();
-    let sigma_xy = (pred_centered * gt_centered).sum().into_scalar().to_f64() / (n - 1.0).max(1.0);
+        .into_scalar::<f64>()
+        / (n - 1.0).max(1.0);
+    let sigma_xy = (pred_centered * gt_centered).sum().into_scalar::<f64>() / (n - 1.0).max(1.0);
 
     let alpha = 4.0 * x * y * sigma_xy;
     let beta = x.mul_add(x, y * y) * (sigma_x_sq + sigma_y_sq);

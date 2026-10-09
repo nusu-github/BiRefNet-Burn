@@ -2,13 +2,11 @@
 name = "birefnet-train"
 description = "Training infrastructure for BiRefNet models"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 readme.workspace = true
 repository.workspace = true
 version.workspace = true
-
-[features]
-default = []
 
 [dependencies]
 burn = { workspace = true, features = ["train"] }
@@ -22,4 +20,7 @@ rand = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-burn = { workspace = true, features = ["cpu", "train"] }
+burn = { workspace = true, features = ["flex", "train"] }
+
+[lints]
+workspace = true

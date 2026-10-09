@@ -24,14 +24,14 @@ pub trait Erfinv {
     fn erfinv(self) -> Self;
 }
 
-impl<B: Backend, const D: usize> Erfinv for Tensor<B, D> {
+impl<const D: usize> Erfinv for Tensor<D> {
     fn erfinv(self) -> Self {
         erfinv_(self)
     }
 }
 
 /// The core implementation of the inverse error function.
-fn erfinv_<B: Backend, const D: usize>(y: Tensor<B, D>) -> Tensor<B, D> {
+fn erfinv_<const D: usize>(y: Tensor<D>) -> Tensor<D> {
     let y_abs = y.clone().abs();
     let mut result = y.zeros_like();
 
@@ -70,7 +70,7 @@ fn erfinv_<B: Backend, const D: usize>(y: Tensor<B, D>) -> Tensor<B, D> {
 }
 
 /// Computes the inverse error function for the central range `|y| <= 0.7`.
-fn compute_central_range<B: Backend, const D: usize>(y: Tensor<B, D>) -> Tensor<B, D> {
+fn compute_central_range<const D: usize>(y: Tensor<D>) -> Tensor<D> {
     let z = y.clone().powf_scalar(2.0);
 
     // Horner's method with minimized clones: calculate both numerator and denominator
@@ -88,7 +88,7 @@ fn compute_central_range<B: Backend, const D: usize>(y: Tensor<B, D>) -> Tensor<
 }
 
 /// Computes the inverse error function for the outer range `0.7 < |y| < 1`.
-fn compute_outer_range<B: Backend, const D: usize>(y: Tensor<B, D>) -> Tensor<B, D> {
+fn compute_outer_range<const D: usize>(y: Tensor<D>) -> Tensor<D> {
     let y_abs = y.clone().abs();
     // Correct formula: sqrt(-log((1 - |y|) / 2))
     let z = ((1.0f64 - y_abs) / 2.0f64).log().neg().sqrt();
@@ -101,10 +101,7 @@ fn compute_outer_range<B: Backend, const D: usize>(y: Tensor<B, D>) -> Tensor<B,
 }
 
 /// Refines the result using two steps of Newton-Raphson iteration.
-fn apply_newton_raphson<B: Backend, const D: usize>(
-    mut result: Tensor<B, D>,
-    y: Tensor<B, D>,
-) -> Tensor<B, D> {
+fn apply_newton_raphson<const D: usize>(mut result: Tensor<D>, y: Tensor<D>) -> Tensor<D> {
     let two_over_sqrt_pi = 2.0 / PI.sqrt();
     for _ in 0..2 {
         let correction = (result.clone().erf() - y.clone())
@@ -115,7 +112,7 @@ fn apply_newton_raphson<B: Backend, const D: usize>(
 }
 
 /// Convenience function for inverse error function
-pub fn erfinv<B: Backend, const D: usize>(x: Tensor<B, D>) -> Tensor<B, D> {
+pub fn erfinv<const D: usize>(x: Tensor<D>) -> Tensor<D> {
     x.erfinv()
 }
 
@@ -124,25 +121,24 @@ mod tests {
     use burn::tensor::Tensor;
 
     use super::*;
-    use crate::tests::TestBackend;
 
     #[test]
     fn erfinv_valid_input_returns_correct_dimensions() {
-        let device = Default::default();
-        let x = Tensor::<TestBackend, 1>::from_floats([0.0, 0.5, 0.9], &device);
+        let device = Device::flex();
+        let x = Tensor::<1>::from_floats([0.0, 0.5, 0.9], &device);
         let result = erfinv(x);
         assert_eq!(result.dims(), [3]);
     }
 
     #[test]
     fn erfinv_matches_pytorch_reference_values() {
-        let device = Default::default();
+        let device = Device::flex();
 
         // Test values that match PyTorch's expected outputs
         // torch.special.erfinv(torch.tensor([0.0, 0.5, -1.0, 0.9]))
         // Expected: tensor([ 0.0000,  0.4769,    -inf,  1.1631])
 
-        let x = Tensor::<TestBackend, 1>::from_floats([0.0, 0.5, 0.9], &device);
+        let x = Tensor::<1>::from_floats([0.0, 0.5, 0.9], &device);
         let result = erfinv(x);
         let data = result.to_data();
 

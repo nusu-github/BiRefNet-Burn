@@ -19,6 +19,8 @@ pub enum InterpolationStrategy {
     Nearest,
 }
 
+// `#[default]` does not compile together with `#[derive(Config)]`, so keep the manual impl.
+#[allow(clippy::derivable_impls)]
 impl Default for InterpolationStrategy {
     fn default() -> Self {
         Self::Bilinear

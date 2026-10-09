@@ -3,15 +3,16 @@
 //! WF-measure evaluates segmentation quality with pixel importance weighting
 //! based on distance from ground truth boundaries.
 
-use core::marker::PhantomData;
 use std::sync::Arc;
 
 use birefnet_util::{euclidean_distance_transform_simple, gaussian_filter_matlab};
+use burn::tensor::TensorReadError;
 use burn::{
     config::Config,
-    tensor::{Bool, Tensor, backend::Backend, cast::ToElement, s},
+    tensor::{Bool, Tensor, s},
     train::metric::{
-        Metric, MetricMetadata, Numeric, NumericEntry,
+        Metric, MetricAttributes, MetricMetadata, Numeric, NumericAttributes, NumericEntry,
+        SerializedEntry,
         state::{FormatOptions, NumericMetricState},
     },
 };
@@ -31,25 +32,23 @@ use crate::input::WeightedFMeasureInput;
 
 /// Weighted F-measure metric.
 #[derive(Clone)]
-pub struct WeightedFMeasureMetric<B: Backend> {
+pub struct WeightedFMeasureMetric {
     state: NumericMetricState,
     name: Arc<String>,
     beta: f64,
-    _backend: PhantomData<B>,
 }
 
-impl<B: Backend> Default for WeightedFMeasureMetric<B> {
+impl Default for WeightedFMeasureMetric {
     fn default() -> Self {
         Self {
             state: NumericMetricState::default(),
             name: Arc::new("WF_measure".to_owned()),
             beta: 1.0,
-            _backend: PhantomData,
         }
     }
 }
 
-impl<B: Backend> WeightedFMeasureMetric<B> {
+impl WeightedFMeasureMetric {
     /// Creates a new Weighted F-measure metric.
     pub fn new() -> Self {
         Self::default()
@@ -61,13 +60,12 @@ impl<B: Backend> WeightedFMeasureMetric<B> {
             state: NumericMetricState::default(),
             name: Arc::new(config.name),
             beta: config.beta,
-            _backend: PhantomData,
         }
     }
 }
 
-impl<B: Backend> Metric for WeightedFMeasureMetric<B> {
-    type Input = WeightedFMeasureInput<B>;
+impl Metric for WeightedFMeasureMetric {
+    type Input = WeightedFMeasureInput;
 
     fn name(&self) -> Arc<String> {
         self.name.clone()
@@ -77,30 +75,47 @@ impl<B: Backend> Metric for WeightedFMeasureMetric<B> {
         &mut self,
         input: &Self::Input,
         _metadata: &MetricMetadata,
-    ) -> burn::train::metric::SerializedEntry {
+    ) -> Result<SerializedEntry, TensorReadError> {
         let [batch_size, ..] = input.predictions.dims();
 
         let mut total_wfm = 0.0;
 
         // Process each item in the batch
         for b in 0..batch_size {
-            let pred: Tensor<B, 3> = input
+            let pred: Tensor<3> = input
                 .predictions
                 .clone()
                 .slice(s![b..=b, .., .., ..])
-                .squeeze();
-            let gt: Tensor<B, 3> = input.targets.clone().slice(s![b..=b, .., .., ..]).squeeze();
+                .squeeze_dim::<3>(0);
+            let gt: Tensor<3> = input
+                .targets
+                .clone()
+                .slice(s![b..=b, .., .., ..])
+                .squeeze_dim::<3>(0);
 
             let wfm = calculate_weighted_f_measure(pred, gt, self.beta);
             total_wfm += wfm;
         }
 
         let avg_wfm = total_wfm / batch_size as f64;
-        self.state.update(
-            avg_wfm,
-            batch_size,
-            FormatOptions::new(self.name.clone()).precision(5),
-        )
+        self.state.update(avg_wfm, batch_size);
+        Ok(self
+            .state
+            .compute_update(FormatOptions::new(self.name.clone()).precision(5)))
+    }
+
+    fn compute(&mut self) -> Result<SerializedEntry, TensorReadError> {
+        Ok(self
+            .state
+            .compute_final(FormatOptions::new(self.name.clone()).precision(5)))
+    }
+
+    fn attributes(&self) -> MetricAttributes {
+        NumericAttributes {
+            unit: None,
+            higher_is_better: true,
+        }
+        .into()
     }
 
     fn clear(&mut self) {
@@ -108,13 +123,17 @@ impl<B: Backend> Metric for WeightedFMeasureMetric<B> {
     }
 }
 
-impl<B: Backend> Numeric for WeightedFMeasureMetric<B> {
-    fn value(&self) -> NumericEntry {
-        self.state.current_value()
+impl Numeric for WeightedFMeasureMetric {
+    fn value(&self) -> Option<NumericEntry> {
+        Some(self.state.current_value())
     }
 
-    fn running_value(&self) -> NumericEntry {
-        self.state.running_value()
+    fn running_value(&self) -> Option<NumericEntry> {
+        Some(self.state.running_value())
+    }
+
+    fn final_value(&self) -> NumericEntry {
+        self.state.final_value()
     }
 }
 
@@ -135,11 +154,7 @@ impl<B: Backend> Numeric for WeightedFMeasureMetric<B> {
 ///
 /// # Returns
 /// The Weighted F-measure value.
-pub fn calculate_weighted_f_measure<B: Backend>(
-    predictions: Tensor<B, 3>,
-    targets: Tensor<B, 3>,
-    beta: f64,
-) -> f64 {
+pub fn calculate_weighted_f_measure(predictions: Tensor<3>, targets: Tensor<3>, beta: f64) -> f64 {
     // Prepare data following Python _prepare_data function
     let (pred, gt) = prepare_data(predictions, targets);
 
@@ -149,8 +164,7 @@ pub fn calculate_weighted_f_measure<B: Backend>(
         .greater_elem(0.5)
         .int()
         .sum()
-        .into_scalar()
-        .to_f64()
+        .into_scalar::<f64>()
         == 0.0
     {
         return 0.0;
@@ -179,30 +193,26 @@ pub fn calculate_weighted_f_measure<B: Backend>(
     let ew = min_e_ea * b;
 
     // Calculate weighted metrics
-    let gt_sum = gt.sum().into_scalar().to_f64();
+    let gt_sum = gt.sum().into_scalar::<f64>();
     let zero_mask = ew.zeros_like();
     let tpw = gt_sum
         - ew.clone()
             .mask_where(gt_bool.clone().bool_not(), zero_mask.clone())
             .sum()
-            .into_scalar()
-            .to_f64();
+            .into_scalar::<f64>();
     let fpw = ew
         .clone()
         .mask_where(gt_bool.clone(), zero_mask.clone())
         .sum()
-        .into_scalar()
-        .to_f64();
+        .into_scalar::<f64>();
 
     // Calculate weighted recall and precision
     const EPSILON: f64 = 1e-8;
 
     let r = 1.0
-        - (ew
-            .mask_where(gt_bool.bool_not(), zero_mask)
+        - ew.mask_where(gt_bool.bool_not(), zero_mask)
             .mean()
-            .into_scalar())
-        .to_f64();
+            .into_scalar::<f64>();
     let p = tpw / (tpw + fpw + EPSILON);
 
     // Calculate Q score (weighted F-measure)
@@ -210,10 +220,10 @@ pub fn calculate_weighted_f_measure<B: Backend>(
 }
 
 /// Prepares prediction and ground truth data following Python _prepare_data logic.
-fn prepare_data<B: Backend>(pred: Tensor<B, 3>, gt: Tensor<B, 3>) -> (Tensor<B, 2>, Tensor<B, 2>) {
+fn prepare_data(pred: Tensor<3>, gt: Tensor<3>) -> (Tensor<2>, Tensor<2>) {
     // Squeeze to 2D (remove channel dimension)
-    let pred_2d = pred.squeeze();
-    let gt_2d = gt.squeeze();
+    let pred_2d = pred.squeeze_dim::<2>(0);
+    let gt_2d = gt.squeeze_dim::<2>(0);
 
     // gt = gt > 128 (binary ground truth)
     let gt_binary = gt_2d.greater_elem(128).float();
@@ -226,10 +236,10 @@ fn prepare_data<B: Backend>(pred: Tensor<B, 3>, gt: Tensor<B, 3>) -> (Tensor<B, 
     let pred_max = pred_norm.clone().max();
     let range = pred_max - pred_min.clone();
 
-    let pred_final = if range.clone().greater_elem(1e-8).into_scalar().to_bool() {
+    let pred_final = if range.clone().greater_elem(1e-8).into_scalar::<bool>() {
         // Normalize to [0, 1] if there's variation
-        let pred_min_scalar = pred_min.into_scalar().to_f64();
-        let range_scalar = range.into_scalar().to_f64();
+        let pred_min_scalar = pred_min.into_scalar::<f64>();
+        let range_scalar = range.into_scalar::<f64>();
         (pred_norm - pred_min_scalar) / range_scalar
     } else {
         // Use as-is if all values are the same
@@ -240,7 +250,7 @@ fn prepare_data<B: Backend>(pred: Tensor<B, 3>, gt: Tensor<B, 3>) -> (Tensor<B, 
 }
 
 /// Proper Euclidean distance transform using birefnet-util implementation.
-fn distance_transform<B: Backend>(gt: Tensor<B, 2, Bool>) -> Tensor<B, 2> {
+fn distance_transform(gt: Tensor<2, Bool>) -> Tensor<2> {
     // Convert bool tensor to float and reshape to 4D for distance transform
     let binary_image = gt.bool_not().float().unsqueeze::<4>(); // Add batch and channel dims
 
@@ -248,15 +258,11 @@ fn distance_transform<B: Backend>(gt: Tensor<B, 2, Bool>) -> Tensor<B, 2> {
     let distance = euclidean_distance_transform_simple(binary_image);
 
     // Squeeze back to 2D
-    distance.squeeze::<2>().squeeze::<2>()
+    distance.squeeze_dims::<2>(&[0, 1])
 }
 
 /// Apply error dependency transformation.
-fn apply_error_dependency<B: Backend>(
-    e: Tensor<B, 2>,
-    gt: Tensor<B, 2, Bool>,
-    _dst: Tensor<B, 2>,
-) -> Tensor<B, 2> {
+fn apply_error_dependency(e: Tensor<2>, gt: Tensor<2, Bool>, _dst: Tensor<2>) -> Tensor<2> {
     let mut et = e.clone();
 
     // For background pixels, use error from nearest foreground pixel
@@ -272,11 +278,7 @@ fn apply_error_dependency<B: Backend>(
 }
 
 /// Apply MATLAB-style Gaussian filter for smoothing.
-fn gaussian_filter<B: Backend>(
-    tensor: Tensor<B, 2>,
-    kernel_size: usize,
-    sigma: f64,
-) -> Tensor<B, 2> {
+fn gaussian_filter(tensor: Tensor<2>, kernel_size: usize, sigma: f64) -> Tensor<2> {
     // Convert to 4D for filtering
     let input_4d = tensor.unsqueeze::<4>();
 
@@ -284,24 +286,17 @@ fn gaussian_filter<B: Backend>(
     let filtered_4d = gaussian_filter_matlab(input_4d, (kernel_size, kernel_size), sigma);
 
     // Convert back to 2D
-    filtered_4d.squeeze::<2>().squeeze::<2>()
+    filtered_4d.squeeze_dims::<2>(&[0, 1])
 }
 
 /// Calculate minimum error between original and smoothed versions.
-fn calculate_min_error<B: Backend>(
-    e: Tensor<B, 2>,
-    ea: Tensor<B, 2>,
-    gt: Tensor<B, 2, Bool>,
-) -> Tensor<B, 2> {
+fn calculate_min_error(e: Tensor<2>, ea: Tensor<2>, gt: Tensor<2, Bool>) -> Tensor<2> {
     let condition = gt.bool_and(ea.clone().lower(e.clone()));
     e.mask_where(condition, ea)
 }
 
 /// Calculate pixel importance weights based on distance from boundaries.
-fn calculate_importance_weights<B: Backend>(
-    gt: Tensor<B, 2, Bool>,
-    dst: Tensor<B, 2>,
-) -> Tensor<B, 2> {
+fn calculate_importance_weights(gt: Tensor<2, Bool>, dst: Tensor<2>) -> Tensor<2> {
     let bg_mask = gt.bool_not();
     let importance = dst
         .mul_scalar(-0.5 / 5.0)

@@ -8,8 +8,7 @@
 ## Implemented Features
 
 - ✅ **DropPath**: Stochastic depth for regularization in transformer models
-- ✅ **TruncatedNormal**: Proper weight initialization with truncated normal distribution
-- ✅ **Identity**: Pass-through operation for skip connections and debugging
+- ✅ **`trunc_normal`**: Proper weight initialization with truncated normal distribution
 - ✅ **ErfInv**: Inverse error function for statistical computations
 
 ## Core Operations
@@ -24,18 +23,11 @@
 
 ### Weight Initialization
 
-- **`TruncatedNormal`**: Advanced weight initialization
+- **`trunc_normal`**: Advanced weight initialization
   - Truncated normal distribution sampling
   - Configurable bounds and standard deviation
   - Better convergence properties than standard normal
   - PyTorch-compatible initialization
-
-### Utility Operations
-
-- **`Identity`**: Pass-through operation
-  - Zero-cost abstraction for skip connections
-  - Useful for conditional computation paths
-  - Debugging and model architecture exploration
 
 ### Mathematical Functions
 
@@ -49,49 +41,37 @@
 ### DropPath for Regularization
 
 ```rust
-use birefnet_extra_ops::DropPath;
+use birefnet_extra_ops::DropPathConfig;
+use burn::tensor::{Device, Tensor};
 
 // Create DropPath with 10% drop probability
-let drop_path = DropPathConfig::new(0.1).init();
+let drop_path = DropPathConfig::new().with_drop_prob(0.1).init();
 
-// Apply during forward pass (automatically disabled during inference)
-let output = drop_path.forward(input);
+// Active only on an autodiff (training) device and until `valid()` clears its flag
+let device = Device::flex().autodiff();
+let output = drop_path.forward(Tensor::<3>::ones([4, 49, 96], &device));
 ```
 
 ### Weight Initialization
 
 ```rust
-use birefnet_extra_ops::TruncatedNormal;
+use birefnet_extra_ops::trunc_normal;
+use burn::tensor::{Device, Tensor};
 
-// Initialize weights with truncated normal distribution
-let init = TruncatedNormalConfig::new()
-.with_mean(0.0)
-.with_std(0.02)
-.with_bounds(- 0.04, 0.04);
+let device = Device::flex();
 
-// Apply to tensor
-let initialized_weights = init.init_tensor(shape, & device);
-```
-
-### Identity Operation
-
-```rust
-use birefnet_extra_ops::Identity;
-
-// Create identity operation
-let identity = Identity::new();
-
-// Pass-through operation
-let output = identity.forward(input); // output == input
+// Fill a tensor with N(0, 0.02^2) samples truncated to [-0.04, 0.04]
+let weights = trunc_normal(Tensor::<2>::zeros([768, 768], &device), 0.0, 0.02, -0.04, 0.04);
 ```
 
 ### Statistical Functions
 
 ```rust
-use birefnet_extra_ops::erfinv::erfinv;
+use birefnet_extra_ops::erfinv;
+use burn::tensor::{Device, Tensor};
 
-// Compute inverse error function
-let result = erfinv(0.5); // Returns ~0.477
+// Compute the inverse error function element-wise
+let result = erfinv(Tensor::<1>::from_floats([0.5], &Device::flex())); // ~0.477
 ```
 
 ## Integration with Burn Framework
@@ -107,13 +87,14 @@ All operations are implemented as native Burn modules:
 
 ### Training/Inference Modes
 
-- Operations automatically adapt to training vs inference mode
-- DropPath disables during inference
+- DropPath follows Burn's `Dropout` contract: it is active only while its `Param<Flag>`
+  training flag is set (cleared by `Module::valid()` and `Module::freeze()`) and its input
+  lives on an autodiff device
 - Proper gradient handling during training
 
 ### Backend Compatibility
 
-- Works with all Burn backends (ndarray, WebGPU, CUDA)
+- Works with every Burn backend; the device is chosen at run time
 - Tensor operations using Burn framework
 - Memory-aware implementations
 
@@ -130,11 +111,10 @@ These operations are used throughout the BiRefNet architecture:
 ### Transformer Blocks
 
 - **DropPath**: Regularization in Swin Transformer layers
-- **TruncatedNormal**: Weight initialization for attention layers
+- **`trunc_normal`**: Weight initialization for attention layers
 
 ### Model Architecture
 
-- **Identity**: Skip connections and conditional paths
 - **ErfInv**: Advanced initialization schemes
 
 ## Mathematical Accuracy
@@ -142,9 +122,8 @@ These operations are used throughout the BiRefNet architecture:
 All operations are carefully implemented:
 
 - DropPath: Configurable probability scaling
-- TruncatedNormal: Truncated sampling implementation
+- `trunc_normal`: Truncated sampling implementation
 - ErfInv: Inverse error function implementation
-- Identity: Zero computational overhead
 
 ## License
 

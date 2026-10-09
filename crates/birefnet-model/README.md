@@ -40,20 +40,28 @@
 ## Usage
 
 ```rust
-use birefnet_model::{BiRefNet, BiRefNetConfig};
-use birefnet_backbones::BackboneType;
+use birefnet_model::{
+    Backbone, BackboneConfig, BiRefNetConfig, InterpolationStrategy, ModelConfig,
+};
+use burn::tensor::{Device, Tensor};
+
+let device = Device::flex();
 
 // Create model configuration
-let config = BiRefNetConfig::new()
-.with_backbone(BackboneType::SwinV1Tiny)
-.with_task("General");
+let config = BiRefNetConfig::new(
+    ModelConfig::new(InterpolationStrategy::Bilinear)
+        .with_backbone(BackboneConfig::new().with_backbone(Backbone::SwinV1T)),
+);
 
-// Initialize model
-let model: BiRefNet<Backend> = config.init( & device) ?;
+// Initialize model (parameters are allocated lazily on first use)
+let model = config.init(&device)?;
 
-// Forward pass
-let output = model.forward(input_tensor) ?;
+// Forward pass: `[batch, 3, height, width]` -> `[batch, 1, height, width]`
+let output = model.forward(Tensor::zeros([1, 3, 1024, 1024], &device))?;
 ```
+
+For training, build the model on an autodiff device (`device.autodiff()`) and enable the
+`train` feature, which implements Burn's `TrainStep` and `InferenceStep` for `BiRefNet`.
 
 ## Supported Configurations
 

@@ -3,23 +3,20 @@
 //! This module provides the MetricsAggregator struct which allows
 //! for efficient accumulation and averaging of metrics across batches.
 
-use core::marker::PhantomData;
-
-use burn::tensor::{Tensor, backend::Backend};
+use burn::tensor::Tensor;
 
 use super::utils::calculate_all_metrics;
 
 /// Metrics aggregator for batch processing.
 #[derive(Debug, Clone)]
-pub struct MetricsAggregator<B: Backend> {
+pub struct MetricsAggregator {
     iou_sum: f64,
     f_measure_sum: f64,
     mae_sum: f64,
     count: usize,
-    _phantom: PhantomData<B>,
 }
 
-impl<B: Backend> MetricsAggregator<B> {
+impl MetricsAggregator {
     /// Create a new metrics aggregator.
     pub const fn new() -> Self {
         Self {
@@ -27,12 +24,11 @@ impl<B: Backend> MetricsAggregator<B> {
             f_measure_sum: 0.0,
             mae_sum: 0.0,
             count: 0,
-            _phantom: PhantomData,
         }
     }
 
     /// Add a batch of metrics.
-    pub fn update(&mut self, predictions: Tensor<B, 4>, targets: Tensor<B, 4>, threshold: f64) {
+    pub fn update(&mut self, predictions: Tensor<4>, targets: Tensor<4>, threshold: f64) {
         let all_metrics = calculate_all_metrics(predictions, targets, threshold);
 
         self.iou_sum += all_metrics.iou;
@@ -64,7 +60,7 @@ impl<B: Backend> MetricsAggregator<B> {
     }
 }
 
-impl<B: Backend> Default for MetricsAggregator<B> {
+impl Default for MetricsAggregator {
     fn default() -> Self {
         Self::new()
     }

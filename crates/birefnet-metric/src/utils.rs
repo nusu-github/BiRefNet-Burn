@@ -3,10 +3,7 @@
 //! This module provides convenience functions for calculating multiple metrics
 //! at once and other metric-related utilities.
 
-use burn::{
-    prelude::*,
-    tensor::{Tensor, backend::Backend},
-};
+use burn::{prelude::*, tensor::Tensor};
 
 use super::{
     mse::calculate_mse,
@@ -28,9 +25,9 @@ pub struct AllMetricsResult {
 }
 
 /// Calculate all metrics at once.
-pub fn calculate_all_metrics<B: Backend>(
-    predictions: Tensor<B, 4>,
-    targets: Tensor<B, 4>,
+pub fn calculate_all_metrics(
+    predictions: Tensor<4>,
+    targets: Tensor<4>,
     _threshold: f64,
 ) -> AllMetricsResult {
     // Ensure predictions and targets have correct shape
@@ -52,16 +49,14 @@ pub fn calculate_all_metrics<B: Backend>(
     let _e_measure_curves: Vec<Vec<f64>> = Vec::new();
 
     for b in 0..batch_size {
-        let pred_2d: Tensor<B, 2> = predictions
+        let pred_2d: Tensor<2> = predictions
             .clone()
             .slice(s![b..=b, 0..1, .., ..])
-            .squeeze::<3>()
-            .squeeze::<2>();
-        let target_2d: Tensor<B, 2> = targets
+            .squeeze_dims::<2>(&[0, 1]);
+        let target_2d: Tensor<2> = targets
             .clone()
             .slice(s![b..=b, 0..1, .., ..])
-            .squeeze::<3>()
-            .squeeze::<2>();
+            .squeeze_dims::<2>(&[0, 1]);
 
         mse_sum += calculate_mse(pred_2d.clone(), target_2d.clone());
         // TODO: Implement s_measure and e_measure

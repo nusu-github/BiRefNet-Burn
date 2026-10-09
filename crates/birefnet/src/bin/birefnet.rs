@@ -1,5 +1,5 @@
 use anyhow::Result;
-use birefnet::burn_backend_types::{InferenceDevice, NAME};
+use birefnet::device::{AVAILABLE_DEVICES, Precision, configure_precision, select_device};
 use birefnet_util::ManagedModel;
 use clap::{Parser, Subcommand};
 
@@ -9,6 +9,15 @@ use clap::{Parser, Subcommand};
     about = "BiRefNet: Bilateral Reference Network for high-resolution dichotomous image segmentation"
 )]
 struct Cli {
+    /// Device to run on (see `birefnet info` for the devices compiled into this build).
+    /// `default` picks the first compiled-in backend, or the one named by `BURN_DEVICE`.
+    #[arg(long, global = true, default_value = "default")]
+    device: String,
+
+    /// Float precision for every tensor on the device (defaults to the backend's, f32).
+    #[arg(long, global = true, value_enum)]
+    precision: Option<Precision>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -42,9 +51,13 @@ enum Commands {
         #[arg(short, long)]
         config: String,
 
-        /// Resume from checkpoint
+        /// Directory for checkpoints, metric logs and the final model
+        #[arg(long, default_value = "./artifacts")]
+        artifact_dir: String,
+
+        /// Resume after this epoch from the checkpoints in the artifact directory
         #[arg(short, long)]
-        resume: Option<String>,
+        resume: Option<usize>,
     },
 
     /// Show backend information
@@ -56,8 +69,12 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let device = InferenceDevice::default();
-    tracing::info!(backend = NAME, "device initialized");
+    let mut device = select_device(&cli.device)?;
+    // Device settings lock on the first tensor, so configure before anything else runs.
+    if let Some(precision) = cli.precision {
+        configure_precision(&mut device, precision)?;
+    }
+    tracing::info!(?device, "device selected");
 
     match cli.command {
         #[cfg(feature = "inference")]
@@ -86,17 +103,22 @@ fn main() -> Result<()> {
         }
 
         #[cfg(feature = "train")]
-        Commands::Train { config, resume } => {
+        Commands::Train {
+            config,
+            artifact_dir,
+            resume,
+        } => {
             use birefnet::training::{TrainingCliArgs, run_training};
 
-            let args = TrainingCliArgs::new(config, resume.map(std::path::PathBuf::from));
-            run_training(args)
+            let args = TrainingCliArgs::new(config, artifact_dir, resume);
+            run_training(&args, &device)
         }
 
         Commands::Info => {
             println!("BiRefNet Information:");
-            println!("  Backend: {NAME}");
-            println!("  Device: {device:?}");
+            println!("  Available devices: {}", AVAILABLE_DEVICES.join(", "));
+            println!("  Selected device: {device:?}");
+            println!("  Float dtype: {:?}", device.settings().float_dtype);
             Ok(())
         }
     }

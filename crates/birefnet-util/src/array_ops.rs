@@ -3,7 +3,7 @@
 //! This module provides essential array operations that are missing from Burn's core
 //! but required for implementing computer vision evaluation metrics.
 
-use burn::tensor::{ElementConversion, Tensor, backend::Backend, s};
+use burn::tensor::Tensor;
 
 /// Compute histogram of tensor values
 ///
@@ -14,11 +14,11 @@ use burn::tensor::{ElementConversion, Tensor, backend::Backend, s};
 ///
 /// # Returns
 /// Histogram counts as 1D tensor of length `bins`
-pub fn histogram<B: Backend, const D: usize>(
-    tensor: Tensor<B, D>,
+pub fn histogram<const D: usize>(
+    tensor: Tensor<D>,
     bins: usize,
     range: Option<(f64, f64)>,
-) -> Tensor<B, 1> {
+) -> Tensor<1> {
     let device = tensor.device();
 
     // Get value range
@@ -26,8 +26,8 @@ pub fn histogram<B: Backend, const D: usize>(
         (min, max)
     } else {
         let flat = tensor.clone().flatten::<1>(0, D - 1);
-        let min_val = flat.clone().min().into_scalar().elem::<f64>();
-        let max_val = flat.max().into_scalar().elem::<f64>();
+        let min_val = flat.clone().min().into_scalar::<f64>();
+        let max_val = flat.max().into_scalar::<f64>();
         (min_val, max_val)
     };
 
@@ -35,20 +35,11 @@ pub fn histogram<B: Backend, const D: usize>(
     let bin_width = (max_val - min_val) / bins as f64;
     let mut hist_counts = vec![0_i64; bins];
 
-    // Flatten tensor and convert to data
-    let flat_tensor = tensor.flatten::<1>(0, D - 1);
-    let data = flat_tensor.into_data();
-
-    // Empty tensors cannot pass `as_slice`/`convert`'s alignment check on the cubecl
-    // backend, so return zeroed bins early instead.
-    if data.num_elements() == 0 {
-        return Tensor::from_floats(vec![0.0; bins].as_slice(), &device);
-    }
-    let data = data.convert::<f64>();
-    let values = data.as_slice::<f64>().unwrap();
+    // Flatten tensor and read the values back (converted to f64 whatever the dtype)
+    let data = tensor.flatten::<1>(0, D - 1).into_data();
 
     // Count values in each bin
-    for &value in values {
+    for value in data.iter::<f64>() {
         if value.is_finite() {
             let bin_idx = ((value - min_val) / bin_width).floor() as usize;
             let bin_idx = bin_idx.min(bins - 1); // Clamp to valid range
@@ -61,36 +52,36 @@ pub fn histogram<B: Backend, const D: usize>(
     Tensor::from_floats(hist_data.as_slice(), &device)
 }
 
-/// Compute cumulative sum along dimension 0 (Burn 0.21 公式 cumsum による1D累積和)
+/// Compute cumulative sum along dimension 0 (Burn 公式 cumsum による1D累積和)
 ///
 /// # Arguments
 /// * `tensor` - Input 1D tensor
 ///
 /// # Returns  
 /// 1D tensor with cumulative sums
-pub fn cumsum_1d<B: Backend>(tensor: Tensor<B, 1>) -> Tensor<B, 1> {
+pub fn cumsum_1d(tensor: Tensor<1>) -> Tensor<1> {
     tensor.cumsum(0)
 }
 
-/// Compute cumulative sum along axis 0 (Burn 0.21 公式 cumsum による2D累積和)
+/// Compute cumulative sum along axis 0 (Burn 公式 cumsum による2D累積和)
 ///
 /// # Arguments
 /// * `tensor` - Input 2D tensor
 ///
 /// # Returns  
 /// 2D tensor with cumulative sums along axis 0
-pub fn cumsum_2d_axis0<B: Backend>(tensor: Tensor<B, 2>) -> Tensor<B, 2> {
+pub fn cumsum_2d_axis0(tensor: Tensor<2>) -> Tensor<2> {
     tensor.cumsum(0)
 }
 
-/// Flip 1D tensor (reverse order) using the Burn 0.21 official `flip`
+/// Flip 1D tensor (reverse order) using Burn's official `flip`
 ///
 /// # Arguments
 /// * `tensor` - Input 1D tensor
 ///
 /// # Returns
 /// Flipped tensor with same shape
-pub fn flip_1d<B: Backend>(tensor: Tensor<B, 1>) -> Tensor<B, 1> {
+pub fn flip_1d(tensor: Tensor<1>) -> Tensor<1> {
     tensor.flip([0])
 }
 
@@ -101,14 +92,9 @@ pub fn flip_1d<B: Backend>(tensor: Tensor<B, 1>) -> Tensor<B, 1> {
 ///
 /// # Returns
 /// Number of non-zero elements as f64
-pub fn count_nonzero<B: Backend, const D: usize>(tensor: Tensor<B, D>) -> f64 {
-    // Burn 0.21 official not_equal_elem (no zeros_like allocation needed)
-    tensor
-        .not_equal_elem(0)
-        .float()
-        .sum()
-        .into_scalar()
-        .elem::<f64>()
+pub fn count_nonzero<const D: usize>(tensor: Tensor<D>) -> f64 {
+    // `not_equal_elem` avoids a `zeros_like` allocation
+    tensor.not_equal_elem(0).float().sum().into_scalar::<f64>()
 }
 
 /// Find indices where tensor is non-zero (equivalent to numpy.argwhere)
@@ -118,21 +104,24 @@ pub fn count_nonzero<B: Backend, const D: usize>(tensor: Tensor<B, D>) -> f64 {
 ///
 /// # Returns
 /// Vector of indices where tensor is non-zero
-pub fn argwhere<B: Backend, const D: usize>(tensor: Tensor<B, D>) -> Vec<[usize; D]> {
-    // Burn 0.21 公式 argwhere: [num_nonzero, D] の行は row-major（フラット順）
-    let data = tensor.not_equal_elem(0).argwhere().into_data();
-
-    // Empty results cannot pass `as_slice`'s alignment check on the cubecl backend.
-    if data.num_elements() == 0 {
-        return Vec::new();
-    }
-    let values = data.as_slice::<B::IntElem>().unwrap();
+pub fn argwhere<const D: usize>(tensor: Tensor<D>) -> Vec<[usize; D]> {
+    // Rows of the `[num_nonzero, D]` result are in row-major (flat) order.
+    // The int dtype depends on the device (I32 on Flex and CubeCL), so read with the
+    // converting `iter` accessor.
+    let values: Vec<i64> = tensor
+        .not_equal_elem(0)
+        .argwhere()
+        .into_data()
+        .iter::<i64>()
+        .collect();
     values
-        .chunks_exact(D)
+        .as_chunks::<D>()
+        .0
+        .iter()
         .map(|chunk| {
             let mut coords = [0; D];
-            for (i, &v) in chunk.iter().enumerate() {
-                coords[i] = v.elem::<i64>() as usize;
+            for (coord, &v) in coords.iter_mut().zip(chunk) {
+                *coord = v as usize;
             }
             coords
         })
@@ -147,11 +136,11 @@ pub fn argwhere<B: Backend, const D: usize>(tensor: Tensor<B, D>) -> Vec<[usize;
 ///
 /// # Returns
 /// Standard deviation as scalar
-pub fn std_with_ddof<B: Backend, const D: usize>(tensor: Tensor<B, D>, ddof: usize) -> f64 {
-    let mean = tensor.clone().mean().into_scalar().elem::<f64>();
+pub fn std_with_ddof<const D: usize>(tensor: Tensor<D>, ddof: usize) -> f64 {
+    let mean = tensor.clone().mean().into_scalar::<f64>();
     let variance = tensor.clone() - mean;
     let variance = variance.clone() * variance;
-    let sum_var = variance.sum().into_scalar().elem::<f64>();
+    let sum_var = variance.sum().into_scalar::<f64>();
 
     let total_elements = tensor.shape().num_elements();
     let n = total_elements.saturating_sub(ddof);
@@ -166,12 +155,10 @@ pub fn std_with_ddof<B: Backend, const D: usize>(tensor: Tensor<B, D>, ddof: usi
 #[cfg(test)]
 mod tests {
     use approx::assert_relative_eq;
-    use burn::backend::Cpu;
+    use burn::tensor::Device;
     use rstest::*;
 
     use super::*;
-
-    type TestBackend = Cpu;
 
     // Helper function to create test data vectors
     fn create_test_data_1d(pattern: &str, size: usize) -> Vec<f32> {
@@ -241,9 +228,9 @@ mod tests {
         #[case] range: Option<(f64, f64)>,
         #[case] bins: usize,
     ) {
-        let device = Default::default();
+        let device = Device::flex();
         let data = create_test_data_1d(pattern, size);
-        let tensor = Tensor::<TestBackend, 1>::from_floats(data.as_slice(), &device);
+        let tensor = Tensor::<1>::from_floats(data.as_slice(), &device);
 
         let hist = histogram(tensor, bins, range);
 
@@ -268,13 +255,13 @@ mod tests {
     #[case(1)] // single element
     #[case(2)] // minimal
     fn histogram_edge_cases(#[case] size: usize) {
-        let device = Default::default();
+        let device = Device::flex();
         let data = if size == 0 {
             vec![]
         } else {
             create_test_data_1d("ones", size)
         };
-        let tensor = Tensor::<TestBackend, 1>::from_floats(data.as_slice(), &device);
+        let tensor = Tensor::<1>::from_floats(data.as_slice(), &device);
 
         let hist = histogram(tensor, 5, Some((0.0, 2.0)));
         assert_eq!(hist.dims(), [5]);
@@ -282,9 +269,9 @@ mod tests {
 
     #[test]
     fn histogram_with_nan_and_infinity() {
-        let device = Default::default();
+        let device = Device::flex();
         let data = vec![1.0, 2.0, f32::NAN, f32::INFINITY, -f32::INFINITY];
-        let tensor = Tensor::<TestBackend, 1>::from_floats(data.as_slice(), &device);
+        let tensor = Tensor::<1>::from_floats(data.as_slice(), &device);
 
         let hist = histogram(tensor, 3, Some((0.0, 3.0)));
 
@@ -307,9 +294,9 @@ mod tests {
         #[case] size: usize,
         #[case] expected: &[f32],
     ) {
-        let device = Default::default();
+        let device = Device::flex();
         let data = create_test_data_1d(pattern, size);
-        let tensor = Tensor::<TestBackend, 1>::from_floats(data.as_slice(), &device);
+        let tensor = Tensor::<1>::from_floats(data.as_slice(), &device);
 
         let result = cumsum_1d(tensor);
         assert_eq!(result.dims(), [size]);
@@ -323,25 +310,18 @@ mod tests {
     #[case(0)] // empty
     #[case(1)] // single element
     fn cumsum_1d_edge_cases(#[case] size: usize) {
-        let device = Default::default();
+        let device = Device::flex();
         let data = create_test_data_1d("ones", size);
-        let tensor = Tensor::<TestBackend, 1>::from_floats(data.as_slice(), &device);
+        let tensor = Tensor::<1>::from_floats(data.as_slice(), &device);
 
         let result = cumsum_1d(tensor.clone());
         assert_eq!(result.dims(), tensor.dims());
 
         if size <= 1 {
             // Should return original tensor for size <= 1
-            let orig_data = tensor.into_data();
-            let result_data = result.into_data();
-            if orig_data.num_elements() == 0 {
-                // Empty tensors cannot pass `as_slice`'s alignment check on the cubecl backend.
-                assert_eq!(result_data.num_elements(), 0);
-            } else {
-                let orig_values = orig_data.as_slice::<f32>().unwrap();
-                let result_values = result_data.as_slice::<f32>().unwrap();
-                assert_vec_approx_eq(result_values, orig_values, 1e-6);
-            }
+            let orig_values = tensor.into_data().try_to_vec_as::<f32>().unwrap();
+            let result_values = result.into_data().try_to_vec_as::<f32>().unwrap();
+            assert_vec_approx_eq(&result_values, &orig_values, 1e-6);
         }
     }
 
@@ -350,18 +330,15 @@ mod tests {
     #[case(4, 2)] // 4x2 matrix
     #[case(1, 5)] // 1x5 matrix (edge case)
     fn cumsum_2d_axis0_accumulates_rows(#[case] rows: usize, #[case] cols: usize) {
-        let device = Default::default();
+        let device = Device::flex();
 
         // Create test tensor using specific cases instead of dynamic arrays
         let tensor = match (rows, cols) {
-            (2, 3) => {
-                Tensor::<TestBackend, 2>::from_data([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], &device)
+            (2, 3) => Tensor::<2>::from_data([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], &device),
+            (4, 2) => {
+                Tensor::<2>::from_data([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]], &device)
             }
-            (4, 2) => Tensor::<TestBackend, 2>::from_data(
-                [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]],
-                &device,
-            ),
-            (1, 5) => Tensor::<TestBackend, 2>::from_data([[1.0, 2.0, 3.0, 4.0, 5.0]], &device),
+            (1, 5) => Tensor::<2>::from_data([[1.0, 2.0, 3.0, 4.0, 5.0]], &device),
             _ => panic!("Unsupported matrix size for test"),
         };
 
@@ -373,9 +350,8 @@ mod tests {
         let result_slice = result_data.as_slice::<f32>().unwrap();
 
         // For first row, should equal original
-        for j in 0..cols {
+        for (j, &actual) in result_slice.iter().take(cols).enumerate() {
             let expected = (j + 1) as f32;
-            let actual = result_slice[j];
             assert_relative_eq!(actual, expected, epsilon = 1e-6);
         }
     }
@@ -388,9 +364,9 @@ mod tests {
     #[case("ones", 3)] // 1,1,1 -> 1,1,1
     #[case("mixed_signs", 4)] // 0,-1,2,-3 -> -3,2,-1,0
     fn flip_1d_reverses_correctly(#[case] pattern: &str, #[case] size: usize) {
-        let device = Default::default();
+        let device = Device::flex();
         let data = create_test_data_1d(pattern, size);
-        let tensor = Tensor::<TestBackend, 1>::from_floats(data.as_slice(), &device);
+        let tensor = Tensor::<1>::from_floats(data.as_slice(), &device);
 
         let flipped = flip_1d(tensor);
         assert_eq!(flipped.dims(), [size]);
@@ -408,25 +384,18 @@ mod tests {
     #[case(0)] // empty
     #[case(1)] // single element
     fn flip_1d_edge_cases(#[case] size: usize) {
-        let device = Default::default();
+        let device = Device::flex();
         let data = create_test_data_1d("range", size);
-        let tensor = Tensor::<TestBackend, 1>::from_floats(data.as_slice(), &device);
+        let tensor = Tensor::<1>::from_floats(data.as_slice(), &device);
 
         let flipped = flip_1d(tensor.clone());
         assert_eq!(flipped.dims(), tensor.dims());
 
         if size <= 1 {
             // Should return original tensor for size <= 1
-            let orig_data = tensor.into_data();
-            let flipped_data = flipped.into_data();
-            if orig_data.num_elements() == 0 {
-                // Empty tensors cannot pass `as_slice`'s alignment check on the cubecl backend.
-                assert_eq!(flipped_data.num_elements(), 0);
-            } else {
-                let orig_values = orig_data.as_slice::<f32>().unwrap();
-                let flipped_values = flipped_data.as_slice::<f32>().unwrap();
-                assert_vec_approx_eq(flipped_values, orig_values, 1e-6);
-            }
+            let orig_values = tensor.into_data().try_to_vec_as::<f32>().unwrap();
+            let flipped_values = flipped.into_data().try_to_vec_as::<f32>().unwrap();
+            assert_vec_approx_eq(&flipped_values, &orig_values, 1e-6);
         }
     }
 
@@ -443,9 +412,9 @@ mod tests {
         #[case] size: usize,
         #[case] expected_count: f64,
     ) {
-        let device = Default::default();
+        let device = Device::flex();
         let data = create_test_data_1d(pattern, size);
-        let tensor = Tensor::<TestBackend, 1>::from_floats(data.as_slice(), &device);
+        let tensor = Tensor::<1>::from_floats(data.as_slice(), &device);
 
         let count = count_nonzero(tensor);
         assert_relative_eq!(count, expected_count, epsilon = 1e-6);
@@ -453,8 +422,8 @@ mod tests {
 
     #[test]
     fn count_nonzero_2d_tensor() {
-        let device = Default::default();
-        let tensor = Tensor::<TestBackend, 2>::from_data(
+        let device = Device::flex();
+        let tensor = Tensor::<2>::from_data(
             [
                 [0.0, 1.0, 0.0, 2.0],
                 [3.0, 0.0, 0.0, 4.0],
@@ -469,8 +438,8 @@ mod tests {
 
     #[test]
     fn count_nonzero_3d_tensor() {
-        let device = Default::default();
-        let tensor = Tensor::<TestBackend, 3>::from_data(
+        let device = Device::flex();
+        let tensor = Tensor::<3>::from_data(
             [[[1.0, 0.0], [0.0, 2.0]], [[0.0, 3.0], [4.0, 0.0]]],
             &device,
         );
@@ -483,11 +452,11 @@ mod tests {
 
     #[test]
     fn argwhere_finds_nonzero_indices_1d() {
-        let device = Default::default();
-        let tensor = Tensor::<TestBackend, 1>::from_floats([0.0, 1.0, 0.0, 3.0, 0.0], &device);
+        let device = Device::flex();
+        let tensor = Tensor::<1>::from_floats([0.0, 1.0, 0.0, 3.0, 0.0], &device);
 
         let indices = argwhere(tensor);
-        let expected_indices = vec![[1], [3]];
+        let expected_indices = [[1], [3]];
 
         assert_eq!(indices.len(), expected_indices.len());
         for (actual, expected) in indices.iter().zip(expected_indices.iter()) {
@@ -497,12 +466,11 @@ mod tests {
 
     #[test]
     fn argwhere_finds_nonzero_indices_2d() {
-        let device = Default::default();
-        let tensor =
-            Tensor::<TestBackend, 2>::from_data([[0.0, 1.0, 0.0], [2.0, 0.0, 3.0]], &device);
+        let device = Device::flex();
+        let tensor = Tensor::<2>::from_data([[0.0, 1.0, 0.0], [2.0, 0.0, 3.0]], &device);
 
         let indices = argwhere(tensor);
-        let expected_indices = vec![[0, 1], [1, 0], [1, 2]];
+        let expected_indices = [[0, 1], [1, 0], [1, 2]];
 
         assert_eq!(indices.len(), expected_indices.len());
         for (actual, expected) in indices.iter().zip(expected_indices.iter()) {
@@ -512,8 +480,8 @@ mod tests {
 
     #[test]
     fn argwhere_empty_result_for_all_zeros() {
-        let device = Default::default();
-        let tensor = Tensor::<TestBackend, 2>::from_data([[0.0, 0.0], [0.0, 0.0]], &device);
+        let device = Device::flex();
+        let tensor = Tensor::<2>::from_data([[0.0, 0.0], [0.0, 0.0]], &device);
 
         let indices = argwhere(tensor);
         assert!(indices.is_empty());
@@ -521,11 +489,11 @@ mod tests {
 
     #[test]
     fn argwhere_finds_all_indices_for_all_nonzeros() {
-        let device = Default::default();
-        let tensor = Tensor::<TestBackend, 2>::from_data([[1.0, 2.0], [3.0, 4.0]], &device);
+        let device = Device::flex();
+        let tensor = Tensor::<2>::from_data([[1.0, 2.0], [3.0, 4.0]], &device);
 
         let indices = argwhere(tensor);
-        let expected_indices = vec![[0, 0], [0, 1], [1, 0], [1, 1]];
+        let expected_indices = [[0, 0], [0, 1], [1, 0], [1, 1]];
 
         assert_eq!(indices.len(), expected_indices.len());
         for (actual, expected) in indices.iter().zip(expected_indices.iter()) {
@@ -538,7 +506,7 @@ mod tests {
     #[rstest]
     #[case("ones", 5, 0, 0.0)] // constant values, any ddof
     #[case("ones", 5, 1, 0.0)] // constant values, any ddof
-    #[case("range", 5, 0, 1.4142135623730951)] // population std of [0,1,2,3,4]
+    #[case("range", 5, 0, core::f64::consts::SQRT_2)] // population std of [0,1,2,3,4]
     #[case("range", 5, 1, 1.5811388300841898)] // sample std of [0,1,2,3,4] (adjusted)
     fn std_with_ddof_computes_correctly(
         #[case] pattern: &str,
@@ -546,9 +514,9 @@ mod tests {
         #[case] ddof: usize,
         #[case] expected_std: f64,
     ) {
-        let device = Default::default();
+        let device = Device::flex();
         let data = create_test_data_1d(pattern, size);
-        let tensor = Tensor::<TestBackend, 1>::from_floats(data.as_slice(), &device);
+        let tensor = Tensor::<1>::from_floats(data.as_slice(), &device);
 
         let std_dev = std_with_ddof(tensor, ddof);
 
@@ -562,27 +530,27 @@ mod tests {
 
     #[test]
     fn std_with_ddof_edge_cases() {
-        let device = Default::default();
+        let device = Device::flex();
 
         // Single element
-        let tensor = Tensor::<TestBackend, 1>::from_floats([5.0], &device);
+        let tensor = Tensor::<1>::from_floats([5.0], &device);
         let std_dev = std_with_ddof(tensor, 1);
         assert_relative_eq!(std_dev, 0.0, epsilon = 1e-10);
 
         // ddof >= n should return 0.0
-        let tensor = Tensor::<TestBackend, 1>::from_floats([1.0, 2.0], &device);
+        let tensor = Tensor::<1>::from_floats([1.0, 2.0], &device);
         let std_dev = std_with_ddof(tensor, 2);
         assert_relative_eq!(std_dev, 0.0, epsilon = 1e-10);
     }
 
     #[test]
     fn std_with_ddof_known_values() {
-        let device = Default::default();
+        let device = Device::flex();
 
         // Known case: [1, 2, 3, 4, 5] with ddof=1
         // Mean = 3, variance = [(1-3)², (2-3)², (3-3)², (4-3)², (5-3)²] / 4 = [4+1+0+1+4]/4 = 10/4 = 2.5
         // Std = sqrt(2.5) = 1.5811388300841898
-        let tensor = Tensor::<TestBackend, 1>::from_floats([1.0, 2.0, 3.0, 4.0, 5.0], &device);
+        let tensor = Tensor::<1>::from_floats([1.0, 2.0, 3.0, 4.0, 5.0], &device);
         let std_dev = std_with_ddof(tensor, 1);
         let expected = (2.5f64).sqrt();
         assert_relative_eq!(std_dev, expected, epsilon = 1e-6);
@@ -592,9 +560,9 @@ mod tests {
 
     #[test]
     fn cumsum_1d_then_flip_1d_property() {
-        let device = Default::default();
+        let device = Device::flex();
         let data = create_test_data_1d("range", 5);
-        let tensor = Tensor::<TestBackend, 1>::from_floats(data.as_slice(), &device);
+        let tensor = Tensor::<1>::from_floats(data.as_slice(), &device);
 
         // Apply cumsum then flip
         let cumsum_result = cumsum_1d(tensor.clone());
@@ -625,11 +593,9 @@ mod tests {
 
     #[test]
     fn count_nonzero_equals_argwhere_length() {
-        let device = Default::default();
-        let tensor = Tensor::<TestBackend, 2>::from_data(
-            [[0.0, 1.0, 0.0], [2.0, 0.0, 3.0], [0.0, 4.0, 0.0]],
-            &device,
-        );
+        let device = Device::flex();
+        let tensor =
+            Tensor::<2>::from_data([[0.0, 1.0, 0.0], [2.0, 0.0, 3.0], [0.0, 4.0, 0.0]], &device);
 
         let count = count_nonzero(tensor.clone());
         let indices = argwhere(tensor);
@@ -639,9 +605,9 @@ mod tests {
 
     #[test]
     fn histogram_total_equals_input_size_for_finite_values() {
-        let device = Default::default();
+        let device = Device::flex();
         let data = vec![1.0, 2.0, 3.0, f32::NAN, 4.0, 5.0, f32::INFINITY];
-        let tensor = Tensor::<TestBackend, 1>::from_floats(data.as_slice(), &device);
+        let tensor = Tensor::<1>::from_floats(data.as_slice(), &device);
 
         let hist = histogram(tensor, 10, Some((0.0, 10.0)));
         let hist_data = hist.into_data();

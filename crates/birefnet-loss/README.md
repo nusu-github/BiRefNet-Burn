@@ -42,28 +42,24 @@
 ## Usage
 
 ```rust
-use birefnet_loss::{BiRefNetLoss, BiRefNetLossConfig, BiRefNetLossOutput};
+use birefnet_loss::BiRefNetLossConfig;
+use burn::tensor::{Device, Tensor};
+
+let device = Device::flex();
 
 // Create loss configuration
-let loss_config = BiRefNetLossConfig::new()
-    .with_pixel_weight(1.0)
+let loss_fn = BiRefNetLossConfig::new()
     .with_iou_weight(1.0)
-    .with_ssim_weight(1.0);
+    .with_ssim_weight(1.0)
+    .init(&device);
 
-// Initialize loss function
-let loss_fn: BiRefNetLoss<Backend> = loss_config.init(&device);
+// Multi-scale predictions (logits) and ground-truth masks, `[batch, 1, height, width]`
+let predictions = vec![Tensor::<4>::zeros([1, 1, 64, 64], &device)];
+let targets = Tensor::<4>::ones([1, 1, 64, 64], &device);
 
-// Compute loss
-let loss_output: BiRefNetLossOutput<Backend> = loss_fn.forward(
-    predictions,  // Model predictions
-    targets,      // Ground truth masks
-    auxiliary_preds, // Optional auxiliary predictions
-);
-
-// Access individual loss components
-let total_loss = loss_output.total_loss();
-let pixel_loss = loss_output.pixel_loss();
-let iou_loss = loss_output.iou_loss();
+// Total loss, plus a per-component breakdown
+let total_loss = loss_fn.forward(predictions.clone(), targets.clone())?;
+let (_, components) = loss_fn.forward_detailed(predictions, targets)?;
 ```
 
 ## Loss Components Details

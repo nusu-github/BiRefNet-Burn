@@ -2,17 +2,15 @@
 name = "birefnet-model"
 description = "Rust implementation of BiRefNet for high-resolution dichotomous image segmentation using Burn"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 readme.workspace = true
 repository.workspace = true
 version.workspace = true
 
 [features]
-default = []
-
-# Training features
-train = ["burn/train", "birefnet-loss"]
-cpu = ["burn/cpu"]
+# Training integration (`TrainStep`/`InferenceStep`, loss metric adaptor).
+train = ["burn/train", "dep:birefnet-loss"]
 
 [dependencies]
 burn = { workspace = true }
@@ -23,5 +21,8 @@ birefnet-loss = { path = "../birefnet-loss", optional = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-burn = { workspace = true, features = ["cpu", "train"] }
+burn = { workspace = true, features = ["flex", "train"] }
 birefnet-loss = { path = "../birefnet-loss" }
+
+[lints]
+workspace = true
