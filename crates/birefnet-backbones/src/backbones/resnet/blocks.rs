@@ -13,15 +13,15 @@ use burn::{
 };
 
 #[derive(Module, Debug)]
-pub enum ResidualBlock<B: Backend> {
+pub enum ResidualBlock {
     /// A bottleneck residual block.
-    Bottleneck(Bottleneck<B>),
+    Bottleneck(Bottleneck),
     /// A basic residual block.
-    Basic(BasicBlock<B>),
+    Basic(BasicBlock),
 }
 
-impl<B: Backend> ResidualBlock<B> {
-    pub fn forward(&self, input: Tensor<B, 4>) -> Tensor<B, 4> {
+impl ResidualBlock {
+    pub fn forward(&self, input: Tensor<4>) -> Tensor<4> {
         match self {
             Self::Basic(block) => block.forward(input),
             Self::Bottleneck(block) => block.forward(input),
@@ -32,17 +32,17 @@ impl<B: Backend> ResidualBlock<B> {
 /// ResNet basic residual block implementation.
 /// Derived from torchvision.models.resnet.BasicBlock
 #[derive(Module, Debug)]
-pub struct BasicBlock<B: Backend> {
-    conv1: Conv2d<B>,
-    bn1: BatchNorm<B>,
+pub struct BasicBlock {
+    conv1: Conv2d,
+    bn1: BatchNorm,
     relu: Relu,
-    conv2: Conv2d<B>,
-    bn2: BatchNorm<B>,
-    downsample: Option<Downsample<B>>,
+    conv2: Conv2d,
+    bn2: BatchNorm,
+    downsample: Option<Downsample>,
 }
 
-impl<B: Backend> BasicBlock<B> {
-    pub fn forward(&self, input: Tensor<B, 4>) -> Tensor<B, 4> {
+impl BasicBlock {
+    pub fn forward(&self, input: Tensor<4>) -> Tensor<4> {
         let identity = input.clone();
 
         // Conv block
@@ -63,7 +63,7 @@ impl<B: Backend> BasicBlock<B> {
     }
 
     /// Create a new BasicBlock.
-    pub fn new(in_channels: usize, out_channels: usize, stride: usize, device: &Device<B>) -> Self {
+    pub fn new(in_channels: usize, out_channels: usize, stride: usize, device: &Device) -> Self {
         let initializer = Initializer::KaimingNormal {
             gain: SQRT_2,
             fan_out_only: true,
@@ -108,19 +108,19 @@ impl<B: Backend> BasicBlock<B> {
 /// to the second 3x3 convolution while the original paper places it to the first 1x1 convolution.
 /// This variant improves the accuracy and is known as ResNet V1.5.
 #[derive(Module, Debug)]
-pub struct Bottleneck<B: Backend> {
-    conv1: Conv2d<B>,
-    bn1: BatchNorm<B>,
+pub struct Bottleneck {
+    conv1: Conv2d,
+    bn1: BatchNorm,
     relu: Relu,
-    conv2: Conv2d<B>,
-    bn2: BatchNorm<B>,
-    conv3: Conv2d<B>,
-    bn3: BatchNorm<B>,
-    downsample: Option<Downsample<B>>,
+    conv2: Conv2d,
+    bn2: BatchNorm,
+    conv3: Conv2d,
+    bn3: BatchNorm,
+    downsample: Option<Downsample>,
 }
 
-impl<B: Backend> Bottleneck<B> {
-    pub fn forward(&self, input: Tensor<B, 4>) -> Tensor<B, 4> {
+impl Bottleneck {
+    pub fn forward(&self, input: Tensor<4>) -> Tensor<4> {
         let identity = input.clone();
 
         // Conv block
@@ -144,7 +144,7 @@ impl<B: Backend> Bottleneck<B> {
     }
 
     /// Create a new Bottleneck.
-    pub fn new(in_channels: usize, out_channels: usize, stride: usize, device: &Device<B>) -> Self {
+    pub fn new(in_channels: usize, out_channels: usize, stride: usize, device: &Device) -> Self {
         // Intermediate output channels w/ expansion = 4
         let int_out_channels = out_channels / 4;
 
@@ -198,19 +198,19 @@ impl<B: Backend> Bottleneck<B> {
 
 /// Downsample layer applies a 1x1 conv to reduce the resolution (H, W) and adjust the number of channels.
 #[derive(Module, Debug)]
-pub struct Downsample<B: Backend> {
-    conv: Conv2d<B>,
-    bn: BatchNorm<B>,
+pub struct Downsample {
+    conv: Conv2d,
+    bn: BatchNorm,
 }
 
-impl<B: Backend> Downsample<B> {
-    pub fn forward(&self, input: Tensor<B, 4>) -> Tensor<B, 4> {
+impl Downsample {
+    pub fn forward(&self, input: Tensor<4>) -> Tensor<4> {
         let out = self.conv.forward(input);
         self.bn.forward(out)
     }
 
     /// Create a new Downsample.
-    pub fn new(in_channels: usize, out_channels: usize, stride: usize, device: &Device<B>) -> Self {
+    pub fn new(in_channels: usize, out_channels: usize, stride: usize, device: &Device) -> Self {
         let initializer = Initializer::KaimingNormal {
             gain: SQRT_2,
             fan_out_only: true,
@@ -231,12 +231,12 @@ impl<B: Backend> Downsample<B> {
 
 /// Collection of sequential residual blocks.
 #[derive(Module, Debug)]
-pub struct LayerBlock<B: Backend> {
-    blocks: Vec<ResidualBlock<B>>,
+pub struct LayerBlock {
+    blocks: Vec<ResidualBlock>,
 }
 
-impl<B: Backend> LayerBlock<B> {
-    pub fn forward(&self, input: Tensor<B, 4>) -> Tensor<B, 4> {
+impl LayerBlock {
+    pub fn forward(&self, input: Tensor<4>) -> Tensor<4> {
         let mut out = input;
         for block in &self.blocks {
             out = block.forward(out);
@@ -251,7 +251,7 @@ impl<B: Backend> LayerBlock<B> {
         out_channels: usize,
         stride: usize,
         bottleneck: bool,
-        device: &Device<B>,
+        device: &Device,
     ) -> Self {
         let blocks = (0..num_blocks)
             .map(|b| {

@@ -46,28 +46,26 @@
 ## Usage
 
 ```rust
-use birefnet_train::{BiRefNetDataset, AugmentationConfig, ImageAugmentor};
+use birefnet_model::{InterpolationStrategy, ModelConfig};
+use birefnet_train::{AugmentationConfig, BiRefNetBatcher, BiRefNetDataset};
+use burn::{data::dataloader::DataLoaderBuilder, tensor::Device};
 
-// Create dataset with augmentation
-let augmentation_config = AugmentationConfig::new()
-.with_flip_probability(0.5)
-.with_rotation_probability(0.2)
-.with_enhancement_enabled(true);
+// Dataset paths come from the model configuration (`path.data_root_dir`, `task.training_set`)
+let model_config = ModelConfig::new(InterpolationStrategy::Bilinear);
+let dataset = BiRefNetDataset::new_with_augmentation(
+    &model_config,
+    "train",
+    AugmentationConfig::default(),
+)?;
 
-let augmentor = ImageAugmentor::new(augmentation_config, seed);
-
-let dataset = BiRefNetDataset::new(
-"path/to/DIS5K",
-true,  // training mode
-(1024, 1024),  // target size
-augmentor,
-) ?;
-
-// Use with Burn's DataLoader
-let dataloader = DataLoaderBuilder::new(batcher)
-.batch_size(8)
-.shuffle(seed)
-.build(dataset);
+// `Dataset::get` returns `Result` in Burn 0.22: unreadable files surface as errors
+// instead of being skipped silently.
+let device = Device::flex().autodiff();
+let dataloader = DataLoaderBuilder::new(BiRefNetBatcher::new())
+    .batch_size(8)
+    .shuffle(42)
+    .set_device(device) // batches must live on the training device
+    .build(dataset);
 ```
 
 ## Dataset Format

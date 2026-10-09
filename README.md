@@ -1,8 +1,8 @@
 # BiRefNet-Burn
 
 ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)
-![Rust](https://img.shields.io/badge/rust-1.85.1%2B-orange.svg)
-![Burn](https://img.shields.io/badge/burn-0.20.0-red.svg)
+![Rust](https://img.shields.io/badge/rust-1.95%2B-orange.svg)
+![Burn](https://img.shields.io/badge/burn-0.22.0-red.svg)
 [![CI](https://github.com/nusu-github/BiRefNet-Burn/actions/workflows/rust.yml/badge.svg)](https://github.com/nusu-github/BiRefNet-Burn/actions/workflows/rust.yml)
 
 A Rust implementation of the BiRefNet (Bilateral Reference Network) for high-resolution dichotomous image segmentation, built using the Burn deep learning framework. This project provides core model implementation with inference capabilities and foundational training infrastructure.
@@ -36,16 +36,16 @@ framework to provide enhanced performance, memory safety, and cross-platform dep
 
 - **Complete Model Architecture**: Full BiRefNet implementation with bilateral reference mechanism
 - **Multiple Backbone Support**: Swin Transformer v1 (Tiny, Small, Base, Large), PVT v2, ResNet, and VGG architectures
-- **Cross-Platform Inference**: WebGPU, ndarray, and other Burn backends
+- **Cross-Platform Inference**: Flex (CPU), WebGPU, Vulkan, Metal, CUDA, ROCm and the CubeCL CPU backend, selected at run time
 - **Basic Inference Pipeline**: Single and batch image processing capabilities
-- **Runtime Model Conversion**: PyTorch weight loading and on-the-fly conversion to Burn format
+- **Runtime Model Conversion**: PyTorch / SafeTensors weight loading via `burn::store`, Burnpack (`.bpk`) checkpoints
 - **Dataset Support**: DIS5K dataset loading with comprehensive data augmentation
 - **Data Augmentation**: Full implementation with geometric transforms (flip, rotate, crop) and photometric transforms (color enhancement, pepper noise)
 - **Configuration System**: Type-safe, hierarchical configuration with validation
-- **Multiple Backends**: CPU (ndarray), GPU (WebGPU), and extensible backend system
+- **Multiple Backends**: Several backends compiled into one binary; `--device` picks one, `--precision` sets the float dtype
 - **Comprehensive Loss System**: BCE, IoU, SSIM, MAE, Structure Loss, Contour Loss, Threshold Regularization, Patch IoU, and auxiliary classification losses with PyTorch-optimized weights
 - **Core Evaluation Metrics**: MSE, BIoU, Weighted F-measure, F-measure, and MAE implemented with PyTorch-compatible calculations
-- **Complete Training System**: Full BiRefNet training pipeline with Burn Learner integration, configuration-based setup, and comprehensive optimizer support
+- **Complete Training System**: Full BiRefNet training pipeline with Burn's `SupervisedTraining`, configuration-based setup, checkpoint resume, and AdamW/Adam/SGD optimizers
 
 ### 🚧 Partially Implemented
 
@@ -74,7 +74,7 @@ framework to provide enhanced performance, memory safety, and cross-platform dep
 
 ### Prerequisites
 
-- **Rust**: 1.85.1 or later (MSRV declared in Cargo; CI enforces)
+- **Rust**: 1.95 or later (required by Burn 0.22; declared as `rust-version` in Cargo)
 - **System Dependencies**: Based on your chosen backend (e.g., GPU drivers for WebGPU)
 
 ### Steps
@@ -89,11 +89,12 @@ framework to provide enhanced performance, memory safety, and cross-platform dep
 2. **Build the project**:
 
    ```bash
-   # Build with all features
-   cargo build --all-features --release
+   # Default build: Flex CPU backend + inference
+   cargo build --release -p birefnet
 
-   # Build with specific backend
-   cargo build --release --features wgpu --no-default-features
+   # Add GPU backends (the CPU backend stays available)
+   cargo build --release -p birefnet --features wgpu
+   cargo build --release -p birefnet --features cuda,train
    ```
 
 ## Usage
@@ -112,53 +113,63 @@ cargo run --release --bin birefnet -- infer --input path/to/images/ --output res
 # List available pretrained models (names resolved to HF Hub)
 cargo run --release --bin birefnet -- infer --list-models
 
-# Using specific backend
-cargo run --release --bin birefnet --features wgpu --no-default-features -- infer --input image.jpg --output results/ --model General
+# Using a specific backend (compile it in, then select it at run time)
+cargo run --release --bin birefnet --features wgpu -- --device wgpu infer --input image.jpg --output results/ --model General
+
+# Half precision on a GPU
+cargo run --release --bin birefnet --features cuda -- --device cuda --precision f16 infer --input image.jpg --output results/ --model General
 ```
+
+`--model` also accepts a local weight file: PyTorch (`.pt`/`.pth`), SafeTensors (`.safetensors`) or Burnpack (`.bpk`, e.g. the `model.bpk` written by training). Burn 0.22 can no longer read the old recorder formats (`.mpk`, `.bin`).
 
 ### Training
 
-BiRefNet-Burn provides complete training functionality with Burn's Learner system integration:
+BiRefNet-Burn provides complete training functionality built on Burn's `SupervisedTraining`:
 
 ```bash
-# Train with configuration file
-cargo run --release --bin birefnet --features train -- train --config path/to/config.json
+# Train with configuration file (artifacts go to ./artifacts by default)
+cargo run --release --bin birefnet --features train,cuda -- --device cuda train --config path/to/config.json
 
-# Resume training from checkpoint
-cargo run --release --bin birefnet --features train -- train --config path/to/config.json --resume path/to/checkpoint.json
+# Resume after epoch 10 from ./artifacts/checkpoint/{model,optim,scheduler}-10.bpk
+cargo run --release --bin birefnet --features train,cuda -- --device cuda train --config path/to/config.json --resume 10
 ```
 
 Implemented training features:
 
-- **Complete Training Pipeline**: Full Burn Learner integration with metrics and checkpointing
-- **Configuration-Based Setup**: JSON configuration files for reproducible training
-- **Optimizer Support**: AdamW, Adam, and SGD optimizers with customizable parameters
+- **Complete Training Pipeline**: `SupervisedTraining` with loss metrics, a TUI/CLI dashboard and a summary table
+- **Configuration-Based Setup**: JSON configuration files for reproducible training (copied to `<artifact-dir>/config.json`)
+- **Optimizer Support**: AdamW, Adam, and SGD optimizers selected by `optimizer.optimizer_type`
 - **Dataset Integration**: DIS5K dataset loading with comprehensive augmentation
 - **Loss Function Integration**: All implemented loss functions available for training
-- **Metrics Logging**: Real-time training and validation metrics
-- **Model Persistence**: Automatic model checkpointing and final model saving
-
-Note: Checkpoint resume is WIP (CLI flag exists; loading under development).
+- **Checkpointing and Resume**: Model, optimizer and scheduler state saved as Burnpack (`.bpk`) every epoch (last 2 plus the best validation loss are kept); `--resume <EPOCH>` continues a run
+- **Model Persistence**: Final weights saved to `<artifact-dir>/model.bpk`, loadable with `infer --model`
 
 ### Backends
 
-- **Default**: CPU backend (`ndarray`).
-- **GPU options**: Enable one of `wgpu` (cross‑platform), `vulkan`, `metal` (macOS), `cuda`, or `rocm` via `--features` at the top‑level `birefnet` crate. Some GPU features require vendor toolchains/drivers.
-  - Examples:
-    - WebGPU (cross‑platform): `cargo run --release --bin birefnet --features wgpu --no-default-features -- …`
-    - CUDA (Linux/Windows): `cargo run --release --bin birefnet --features cuda --no-default-features -- …`
-    - Metal (macOS): `cargo run --release --bin birefnet --features metal --no-default-features -- …`
-  - Notes:
-    - Ensure appropriate drivers/toolkits are installed for your platform.
-    - Some backends perform ahead‑of‑time compilation on first run; expect a warm‑up cost.
+Burn 0.22 selects the backend at run time from a `Device` value. Cargo features of the top-level `birefnet` crate only decide which backends are compiled in, so several can live in one binary:
+
+| Feature  | `--device`             | Notes                                                                |
+| -------- | ---------------------- | -------------------------------------------------------------------- |
+| `flex`   | `flex`                 | Default. Pure-Rust CPU backend with SIMD and threads                 |
+| `cpu`    | `cpu`                  | CubeCL CPU backend (LLVM JIT); downloads an LLVM bundle at build time |
+| `wgpu`   | `wgpu`, `wgpu-cpu`     | WebGPU; the graphics API (Vulkan/Metal/DX12) is picked at run time   |
+| `vulkan` | `vulkan`               | wgpu pinned to Vulkan                                                |
+| `metal`  | `metal`                | wgpu pinned to Metal (macOS)                                         |
+| `cuda`   | `cuda`, `cuda:N`       | NVIDIA GPUs; needs the CUDA toolkit                                  |
+| `rocm`   | `rocm`, `rocm:N`       | AMD GPUs; needs ROCm/HIP                                             |
+
+- `--device default` (the default) uses Burn's `Device::default()`: the first compiled-in backend in the order CUDA, Metal, ROCm, Vulkan, wgpu, CPU, Flex, unless the `BURN_DEVICE` environment variable names one.
+- The `fusion` feature (on by default) enables kernel fusion and autotuning for the CubeCL backends. Build with `--no-default-features --features inference,<backend>` to turn it off.
+- `--precision f16|bf16` configures the device's default float dtype; support depends on the backend and hardware.
+- Some backends compile kernels on first use; expect a warm-up cost.
 
 ### Backend Information
 
-Get information about the current backend configuration:
+Show the devices compiled into the binary and the selected one:
 
 ```bash
-# Show backend information
 cargo run --release --bin birefnet -- info
+cargo run --release --bin birefnet --features wgpu -- --device wgpu info
 ```
 
 ### Development Commands
@@ -167,14 +178,14 @@ cargo run --release --bin birefnet -- info
 # Format code
 cargo fmt --all
 
-# Run linting
-cargo clippy --all-targets --all-features -- -D warnings
+# Run linting (GPU features need vendor toolchains; lint them only where available)
+cargo clippy --workspace --all-targets --features birefnet/train,birefnet-model/train -- -D warnings
 
-# Run tests
-cargo test --all-features
+# Run tests (library tests run on the Flex CPU backend)
+cargo test --workspace --features birefnet/train,birefnet-model/train
 
 # Generate documentation
-cargo doc --all-features --no-deps --open
+cargo doc --workspace --no-deps --open
 ```
 
 ## Architecture
@@ -254,7 +265,7 @@ project.
 | --------------- | ---------------- | --------------------------------------------- |
 | Core Model      | ✅ Complete      | Full BiRefNet architecture implemented        |
 | Inference       | ✅ Complete      | Single/batch image processing                 |
-| Training        | ✅ Complete      | Full pipeline with Learner integration        |
+| Training        | ✅ Complete      | `SupervisedTraining`, checkpoints and resume  |
 | Conversion      | ✅ Complete      | Runtime PyTorch weight loading implemented    |
 | Datasets        | ✅ Complete      | DIS5K with full augmentation pipeline         |
 | Backbones       | ✅ Complete      | Swin v1, PVT v2, ResNet, VGG implemented      |
@@ -284,8 +295,8 @@ cargo install cargo-expand # For macro expansion debugging
 
 # Run development checks
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features
-cargo test --all-features
+cargo clippy --workspace --all-targets --features birefnet/train,birefnet-model/train -- -D warnings
+cargo test --workspace --features birefnet/train,birefnet-model/train
 ```
 
 ## Performance Benchmarks
@@ -346,4 +357,4 @@ Many components and design patterns in BiRefNet-Burn are inspired by or directly
 
 - **Issues**: [GitHub Issues](https://github.com/nusu-github/BiRefNet-Burn/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/nusu-github/BiRefNet-Burn/discussions)
-- **Documentation**: Generate locally with `cargo doc --all-features --no-deps --open`
+- **Documentation**: Generate locally with `cargo doc --workspace --no-deps --open`

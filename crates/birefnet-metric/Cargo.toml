@@ -2,6 +2,7 @@
 name = "birefnet-metric"
 description = "Custom evaluation metrics for BiRefNet implemented in Rust using Burn framework"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 readme = "README.md"
 repository.workspace = true
@@ -9,13 +10,12 @@ version.workspace = true
 keywords = ["birefnet", "metrics", "evaluation", "segmentation", "burn"]
 categories = ["computer-vision"]
 
-[features]
-default = []
-
 [dependencies]
 burn = { workspace = true, features = ["train"] }
-derive-new = "0.7.0"
 birefnet-util = { path = "../birefnet-util" }
 
 [dev-dependencies]
-burn = { workspace = true, features = ["cpu", "train"] }
+burn = { workspace = true, features = ["flex", "train"] }
+
+[lints]
+workspace = true

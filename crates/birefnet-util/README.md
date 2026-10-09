@@ -17,8 +17,10 @@
 
 ### ✅ Weight Management
 
-- **PyTorch compatibility**: Direct loading of PyTorch checkpoint files
+- **PyTorch compatibility**: Direct loading of PyTorch (`.pt`/`.pth`) and SafeTensors checkpoints through `burn::store`
+- **Burnpack**: Loading of Burn's native `.bpk` files (written by `Module::save_file`, e.g. training runs)
 - **Model mapping**: Intelligent weight mapping between PyTorch and Burn formats
+- **Precision-aware**: Loaded float weights are converted to the device's default float dtype
 - **Managed models**: Automatic model downloading and caching
 - **Weight source handling**: Local files and remote model management
 
@@ -70,22 +72,29 @@
 ### Image Processing
 
 ```rust
-use birefnet_util::image::ImageUtils;
+use birefnet_util::{apply_imagenet_normalization, load_image, tensor_to_dynamic_image};
+use burn::tensor::Device;
 
-// Load and preprocess image
-let image = ImageUtils::load_image("path/to/image.jpg", & device) ?;
-let normalized = ImageUtils::apply_imagenet_normalization(image) ?;
+let device = Device::flex();
+
+// Load and preprocess image: `[1, 3, height, width]` with values in [0, 1]
+let image = load_image("path/to/image.jpg", &device)?;
+let normalized = apply_imagenet_normalization(image.clone())?;
 
 // Convert back to image
-let output_image = ImageUtils::tensor_to_dynamic_image(tensor, false) ?;
+let output_image = tensor_to_dynamic_image(image, false)?;
 ```
 
 ### Weight Loading
 
 ```rust
-use birefnet_util::weights::{ManagedModel, ModelLoader};
+use birefnet_model::BiRefNet;
+use birefnet_util::{BiRefNetWeightLoading, ManagedModel};
+use burn::tensor::Device;
 
-// Load pretrained model
+let device = Device::flex();
+
+// Load pretrained model (downloads the SafeTensors weights from the Hugging Face Hub)
 let managed_model = ManagedModel::from_pretrained("General")?;
 let model = BiRefNet::from_managed_model(&managed_model, &device)?;
 ```
@@ -108,8 +117,9 @@ use birefnet_util::{distance, morphology, filters};
 let distance_map = distance::euclidean_distance_transform(binary_mask);
 
 // Morphological operations
-let eroded = morphology::erosion(mask, kernel_size);
-let dilated = morphology::dilation(mask, kernel_size);
+let kernel = morphology::StructuringElement::disk(3, &device);
+let eroded = morphology::erosion(mask.clone(), &kernel);
+let dilated = morphology::dilation(mask, &kernel);
 ```
 
 ## Key Features

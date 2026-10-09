@@ -35,7 +35,7 @@
 //! use birefnet_loss::{IoULoss, IoULossConfig, SSIMLoss, SSIMLossConfig};
 //! use burn::prelude::*;
 //!
-//! fn create_combined_loss<B: Backend>() -> (IoULoss, SSIMLoss) {
+//! fn create_combined_loss() -> (IoULoss, SSIMLoss) {
 //!     let iou_loss = IoULossConfig::new().with_eps(1e-5).init();
 //!
 //!     let ssim_loss = SSIMLossConfig::new()
@@ -79,10 +79,7 @@ mod birefnet_loss;
 
 use burn::{nn::loss::Reduction, prelude::*};
 
-pub(crate) fn reduce_loss<B: Backend, const D: usize>(
-    loss: Tensor<B, D>,
-    reduction: Reduction,
-) -> Tensor<B, 1> {
+pub(crate) fn reduce_loss<const D: usize>(loss: Tensor<D>, reduction: Reduction) -> Tensor<1> {
     match reduction {
         Reduction::Mean | Reduction::Auto => loss.mean(),
         Reduction::Sum => loss.sum(),
@@ -116,10 +113,3 @@ pub use structure::{StructureLoss, StructureLossConfig};
 pub use threshold_regularization::{
     ThresholdRegularizationLoss, ThresholdRegularizationLossConfig,
 };
-
-#[cfg(test)]
-mod tests {
-    use burn::backend::Cpu;
-
-    pub type TestBackend = Cpu;
-}

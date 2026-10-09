@@ -1,39 +1,41 @@
-use std::{fs, path::Path, sync::Arc};
-
-use anyhow::Result;
-use birefnet_model::{BiRefNetConfig, InterpolationStrategy, ModelConfig, training::BiRefNetBatch};
-use birefnet_train::{BiRefNetDataset, dataset::BiRefNetBatcher};
-use burn::{
-    backend::Autodiff,
-    config::Config,
-    data::dataloader::{DataLoader, DataLoaderBuilder},
-    optim::AdamConfig,
-    prelude::*,
-    record::CompactRecorder,
-    tensor::backend::AutodiffBackend,
-    train::{LearnerBuilder, metric::LossMetric},
+use std::{
+    fs,
+    path::{Path, PathBuf},
 };
 
-use crate::backend::burn_backend_types::{InferenceBackend, InferenceDevice, NAME};
+use anyhow::Result;
+use birefnet_model::{BiRefNetConfig, ModelConfig};
+use birefnet_train::{BiRefNetDataset, dataset::BiRefNetBatcher};
+use burn::{
+    config::Config,
+    data::dataloader::DataLoaderBuilder,
+    optim::{AdamConfig, AdamWConfig, ModuleOptimizer, SgdConfig},
+    prelude::*,
+    train::{Learner, SupervisedTraining, metric::LossMetric},
+};
 
 /// CLI arguments for the training subcommand.
 #[derive(Debug)]
 pub struct TrainingCliArgs {
     /// Path to the training configuration file.
-    pub config_path: std::path::PathBuf,
-    /// Optional checkpoint file to resume training from.
-    pub resume_checkpoint: Option<std::path::PathBuf>,
+    pub config_path: PathBuf,
+    /// Directory for checkpoints, metric logs and the final model.
+    pub artifact_dir: PathBuf,
+    /// Resume after this epoch from `<artifact_dir>/checkpoint/*-<epoch>.bpk`.
+    pub resume_epoch: Option<usize>,
 }
 
 impl TrainingCliArgs {
     /// Creates a new set of training CLI arguments.
     pub fn new(
-        config_path: impl Into<std::path::PathBuf>,
-        resume_checkpoint: Option<std::path::PathBuf>,
+        config_path: impl Into<PathBuf>,
+        artifact_dir: impl Into<PathBuf>,
+        resume_epoch: Option<usize>,
     ) -> Self {
         Self {
             config_path: config_path.into(),
-            resume_checkpoint,
+            artifact_dir: artifact_dir.into(),
+            resume_epoch,
         }
     }
 }
@@ -42,7 +44,7 @@ impl TrainingCliArgs {
 ///
 /// Corresponds to the PyTorch implementation's training configuration,
 /// covering model, optimizer, dataset, and checkpointing settings.
-/// Loaded from a JSON file via [`TrainingConfig::load`].
+/// Loaded from a JSON file with [`Config::load`].
 #[derive(Config, Debug)]
 pub struct TrainingConfig {
     /// Model configuration.
@@ -123,160 +125,119 @@ pub struct OptimizerConfig {
     pub lr_decay_rate: f64,
 }
 
-impl TrainingConfig {
-    /// Loads a training configuration from a JSON file.
+impl OptimizerConfig {
+    /// Builds the optimizer named by `optimizer_type`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be read or parsed.
-    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
-        let config_str = fs::read_to_string(path)?;
-        let config: Self = serde_json::from_str(&config_str)?;
-        Ok(config)
+    /// Returns an error for an unsupported optimizer type.
+    pub fn init(&self, weight_decay: f64) -> Result<ModuleOptimizer> {
+        let optimizer = match self.optimizer_type.to_ascii_lowercase().as_str() {
+            "adamw" => AdamWConfig::new()
+                .with_weight_decay(weight_decay as f32)
+                .init(),
+            "adam" => AdamConfig::new().init(),
+            "sgd" => SgdConfig::new().init(),
+            other => {
+                anyhow::bail!("unsupported optimizer type: {other} (expected AdamW, Adam or SGD)")
+            }
+        };
+        Ok(optimizer)
     }
-
-    /// Saves this configuration to a JSON file.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the file cannot be written.
-    pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
-        let config_str = serde_json::to_string_pretty(self)?;
-        fs::write(path, config_str)?;
-        Ok(())
-    }
-}
-
-/// Simple training batch wrapper for Burn's learner.
-#[derive(Debug)]
-pub struct TrainingBatch<B: Backend> {
-    pub images: Tensor<B, 4>,
-    pub targets: Tensor<B, 4>,
 }
 
 /// Runs the training loop on a specific device.
 ///
+/// The model is built on the autodiff version of `device`; validation runs on the plain
+/// device. Checkpoints (`model`, `optim` and `scheduler` records in Burnpack format) go to
+/// `<artifact_dir>/checkpoint/` and the final weights to `<artifact_dir>/model.bpk`.
+///
 /// # Errors
 ///
-/// Returns an error if model initialization, data loading, or
-/// checkpoint saving fails.
-pub fn run_training_on_device<B: AutodiffBackend>(
-    device: B::Device,
-    config: TrainingConfig,
-    resume_checkpoint: Option<std::path::PathBuf>,
-) -> Result<()>
-where
-    B::InnerBackend: Backend,
-{
+/// Returns an error if model initialization, data loading, training, or
+/// saving the final model fails.
+pub fn run_training_on_device(
+    device: &Device,
+    config: &TrainingConfig,
+    artifact_dir: &Path,
+    resume_epoch: Option<usize>,
+) -> Result<()> {
     tracing::info!(?device, "initializing BiRefNet training");
 
-    B::seed(config.seed);
+    fs::create_dir_all(artifact_dir)?;
+    config.save(artifact_dir.join("config.json"))?;
 
+    device.seed(config.seed);
+    let autodiff_device = device.clone().autodiff();
+
+    // Build the model on the autodiff device: moving a model there later does not make its
+    // parameters trainable.
     let model_config = BiRefNetConfig::new(config.model.clone())
         .with_loss_config(Some(birefnet_loss::BiRefNetLossConfig::new()));
-    let model = model_config.init::<B>(&device)?;
+    let model = model_config.init(&autodiff_device)?;
 
-    let optimizer = AdamConfig::new().init();
+    let optimizer = config.optimizer.init(config.weight_decay)?;
     tracing::info!(optimizer = %config.optimizer.optimizer_type, "optimizer created");
 
-    let learning_rate = config.learning_rate;
+    let train_loader = DataLoaderBuilder::new(BiRefNetBatcher::new())
+        .batch_size(config.batch_size)
+        .shuffle(config.seed)
+        .num_workers(config.num_workers)
+        .set_device(autodiff_device)
+        .build(BiRefNetDataset::new(&config.model, "train")?);
+    let valid_loader = DataLoaderBuilder::new(BiRefNetBatcher::new())
+        .batch_size(config.batch_size)
+        .num_workers(config.num_workers)
+        .set_device(device.clone())
+        .build(BiRefNetDataset::new(&config.model, "val")?);
 
-    let train_loader = create_train_dataloader::<B>(&config)?;
-    let valid_loader = create_valid_dataloader::<B>(&config)?;
-
-    let learner_builder = LearnerBuilder::new("./artifacts")
-        .metric_train_numeric(LossMetric::new())
-        .metric_valid_numeric(LossMetric::new())
-        .with_file_checkpointer(CompactRecorder::new())
-        .devices(vec![device])
+    let mut training = SupervisedTraining::new(artifact_dir, train_loader, valid_loader)
+        .metrics((LossMetric::new(),))
+        .with_default_checkpointers()
         .num_epochs(config.num_epochs)
         .summary();
-
-    if let Some(_checkpoint_path) = resume_checkpoint {
-        // TODO: Implement checkpoint loading
-        tracing::warn!("checkpoint resume not yet implemented");
+    if let Some(epoch) = resume_epoch {
+        tracing::info!(epoch, "resuming from checkpoint");
+        training = training.checkpoint(epoch);
     }
 
-    let learner = learner_builder.build(model, optimizer, learning_rate);
-
     tracing::info!(epochs = config.num_epochs, "starting training");
-    let trained_model = learner.fit(train_loader, valid_loader);
+    let result = training.launch(Learner::new(model, optimizer, config.learning_rate));
 
-    trained_model
-        .save_file("./artifacts/final_model", &CompactRecorder::new())
+    if let Some(error) = result.error {
+        anyhow::bail!("training failed: {error}");
+    }
+    if let Some(interruption) = result.interrupted {
+        tracing::warn!(?interruption, "training was interrupted");
+    }
+
+    // `result.model` is already a validation snapshot (`Module::valid`).
+    result
+        .model
+        .save_file(artifact_dir.join("model"))
         .map_err(|e| anyhow::anyhow!("failed to save final model: {e}"))?;
 
-    tracing::info!("training completed successfully");
+    tracing::info!(path = %artifact_dir.join("model.bpk").display(), "training completed successfully");
     Ok(())
-}
-
-/// Creates the training dataloader.
-fn create_train_dataloader<B: AutodiffBackend>(
-    config: &TrainingConfig,
-) -> Result<Arc<dyn DataLoader<B, BiRefNetBatch<B>>>>
-where
-    B::InnerBackend: Backend,
-{
-    let model_config = ModelConfig::new(InterpolationStrategy::Bilinear);
-    let dataset = BiRefNetDataset::new(&model_config, "train")?;
-    let batcher = BiRefNetBatcher::<B>::new();
-
-    let dataloader = DataLoaderBuilder::new(batcher)
-        .batch_size(config.batch_size)
-        .shuffle(config.seed)
-        .num_workers(config.num_workers)
-        .build(dataset);
-
-    Ok(dataloader)
-}
-
-/// Creates the validation dataloader.
-fn create_valid_dataloader<B: AutodiffBackend>(
-    config: &TrainingConfig,
-) -> Result<Arc<dyn DataLoader<B::InnerBackend, BiRefNetBatch<B::InnerBackend>>>>
-where
-    B::InnerBackend: Backend,
-{
-    let model_config = ModelConfig::new(InterpolationStrategy::Bilinear);
-    let dataset = BiRefNetDataset::new(&model_config, "val")?;
-    let batcher = BiRefNetBatcher::<B::InnerBackend>::new();
-
-    let dataloader = DataLoaderBuilder::new(batcher)
-        .batch_size(config.batch_size)
-        .shuffle(config.seed)
-        .num_workers(config.num_workers)
-        .build(dataset);
-
-    Ok(dataloader)
 }
 
 /// Runs BiRefNet training from a CLI configuration.
 ///
-/// Loads the JSON configuration file, validates paths, selects the
-/// backend, and launches the training loop.
+/// Loads the JSON configuration file, validates paths, and launches the
+/// training loop on `device`.
 ///
 /// # Errors
 ///
-/// Returns an error if the configuration or checkpoint file is missing,
-/// the configuration cannot be parsed, or training fails.
-pub fn run_training(args: TrainingCliArgs) -> Result<()> {
+/// Returns an error if the configuration file is missing, the
+/// configuration cannot be parsed, or training fails.
+pub fn run_training(args: &TrainingCliArgs, device: &Device) -> Result<()> {
     tracing::info!(config = %args.config_path.display(), "BiRefNet training system initialization");
-
-    if let Some(checkpoint) = &args.resume_checkpoint {
-        tracing::info!(checkpoint = %checkpoint.display(), "resuming from checkpoint");
-    }
 
     if !args.config_path.exists() {
         anyhow::bail!(
             "Configuration file not found: {}",
             args.config_path.display()
         );
-    }
-
-    if let Some(checkpoint) = &args.resume_checkpoint {
-        if !Path::new(checkpoint).exists() {
-            anyhow::bail!("Checkpoint file not found: {}", checkpoint.display());
-        }
     }
 
     tracing::info!("loading training configuration");
@@ -292,10 +253,36 @@ pub fn run_training(args: TrainingCliArgs) -> Result<()> {
         "configuration loaded",
     );
 
-    tracing::info!(backend = NAME, "starting training on backend");
-    run_training_on_device::<Autodiff<InferenceBackend>>(
-        InferenceDevice::default(),
-        training_config,
-        args.resume_checkpoint,
+    run_training_on_device(
+        device,
+        &training_config,
+        &args.artifact_dir,
+        args.resume_epoch,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn optimizer(optimizer_type: &str) -> OptimizerConfig {
+        OptimizerConfig::new(optimizer_type.to_owned(), vec![])
+    }
+
+    #[test]
+    fn optimizer_type_is_case_insensitive() {
+        for name in ["AdamW", "adam", "SGD"] {
+            assert!(optimizer(name).init(1e-2).is_ok(), "{name}");
+        }
+    }
+
+    #[test]
+    fn unsupported_optimizer_type_is_an_error() {
+        let Err(err) = optimizer("Lion").init(1e-2) else {
+            panic!("`Lion` should be rejected");
+        };
+        let err = err.to_string();
+
+        assert!(err.contains("unsupported optimizer type: lion"), "{err}");
+    }
 }

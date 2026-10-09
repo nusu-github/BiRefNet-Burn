@@ -23,29 +23,40 @@
 //! - [`MSEMetric`]: Mean Squared Error with normalization
 //! - [`BIoUMetric`]: Boundary IoU replacing standard IoU
 //! - [`WeightedFMeasureMetric`]: Distance-weighted F-measure for boundary evaluation
-//! - [`LossMetric`]: Simple loss value tracking
 //!
 //! ## Usage
 //!
-//! ```rust,ignore
+//! ```rust
 //! use birefnet_metric::{FMeasureInput, FMeasureMetric};
-//! use burn::prelude::*;
+//! use burn::{
+//!     data::dataloader::Progress,
+//!     prelude::*,
+//!     train::metric::{Metric, MetricMetadata, Numeric},
+//! };
 //!
-//! # fn example<B: burn::tensor::backend::Backend>() {
+//! let device = Device::flex();
+//!
 //! // Create metric
 //! let mut f_measure = FMeasureMetric::new();
 //!
-//! // Prepare input (4D tensors: [batch, channel, height, width])
-//! let predictions = Tensor::<B, 4>::zeros([1, 1, 256, 256], &Default::default());
-//! let targets = Tensor::<B, 4>::zeros([1, 1, 256, 256], &Default::default());
+//! // Prepare input (4D tensors: [batch, channel, height, width], values in [0, 255])
+//! let predictions = Tensor::<4>::full([1, 1, 32, 32], 255.0, &device);
+//! let targets = Tensor::<4>::full([1, 1, 32, 32], 255.0, &device);
 //!
 //! // Calculate F-measure
 //! let input = FMeasureInput::new(predictions, targets);
-//! let metadata = burn::train::metric::MetricMetadata::fake();
-//! f_measure.update(&input, &metadata);
+//! let metadata = MetricMetadata {
+//!     progress: Progress {
+//!         items_processed: 1,
+//!         items_total: 1,
+//!         unit: None,
+//!     },
+//!     iteration: None,
+//!     lr: None,
+//! };
+//! f_measure.update(&input, &metadata).unwrap();
 //!
-//! println!("F-measure: {}", f_measure.value());
-//! # }
+//! println!("F-measure: {:?}", f_measure.value());
 //! ```
 //!
 //! ## Data Processing
@@ -59,7 +70,7 @@
 //! ## Architecture
 //!
 //! The crate follows Burn's metric patterns:
-//! - Generic over `Backend` for hardware portability
+//! - Backend-agnostic: tensors carry their runtime `Device`
 //! - Uses `Metric`, `Numeric`, and `NumericMetricState` traits
 //! - Standardized 4D tensor inputs `[batch, channel, height, width]`
 //! - Modular structure with each metric in separate module
@@ -70,7 +81,6 @@ pub mod biou;
 pub mod e_measure;
 pub mod f_measure;
 pub mod input;
-pub mod loss;
 pub mod mae;
 pub mod mse;
 pub mod s_measure;
@@ -84,11 +94,9 @@ pub use biou::{BIoUMetric, BIoUMetricConfig};
 pub use f_measure::{FMeasureMetric, FMeasureMetricConfig};
 #[doc(inline)]
 pub use input::{
-    BIoUInput, BiRefNetLossInput, EMeasureInput, FMeasureInput, MAEInput, MSEInput, SMeasureInput,
+    BIoUInput, EMeasureInput, FMeasureInput, MAEInput, MSEInput, SMeasureInput,
     WeightedFMeasureInput,
 };
-#[doc(inline)]
-pub use loss::LossMetric;
 #[doc(inline)]
 pub use mae::{MAEMetric, MAEMetricConfig};
 #[doc(inline)]
@@ -106,10 +114,3 @@ pub use utils::{AllMetricsResult, calculate_all_metrics};
 pub use weighted_f_measure::{
     WeightedFMeasureMetric, WeightedFMeasureMetricConfig, calculate_weighted_f_measure,
 };
-
-#[cfg(test)]
-mod tests {
-    use burn::backend::Cpu;
-
-    pub type TestBackend = Cpu;
-}

@@ -33,8 +33,9 @@
 ### Backbone Trait
 
 ```rust
-pub trait Backbone<B: Backend> {
-    fn forward(&self, x: Tensor<B, 4>) -> Vec<Tensor<B, 4>>;
+pub trait Backbone {
+    fn forward(&self, input: Tensor<4>) -> [Tensor<4>; 4];
+    fn output_channels(&self) -> [usize; 4];
 }
 ```
 
@@ -52,14 +53,16 @@ pub trait Backbone<B: Backend> {
 ## Usage
 
 ```rust
-use birefnet_backbones::{create_backbone, BackboneType, SwinVariant};
+use birefnet_backbones::{Backbone, BackboneType, SwinVariant, create_backbone};
+use burn::tensor::{Device, Tensor};
+
+let device = Device::flex();
 
 // Create Swin Transformer backbone
-let backbone_type = BackboneType::SwinV1(SwinVariant::Tiny);
-let backbone = create_backbone(backbone_type, &device);
+let backbone = create_backbone(BackboneType::SwinTransformer(SwinVariant::SwinT), &device);
 
 // Forward pass - returns multi-scale features
-let features = backbone.forward(input_tensor);
+let features = backbone.forward(Tensor::zeros([1, 3, 224, 224], &device));
 // features[0]: 1/4 resolution
 // features[1]: 1/8 resolution  
 // features[2]: 1/16 resolution

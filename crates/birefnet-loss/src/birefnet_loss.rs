@@ -6,11 +6,7 @@
 
 use std::collections::HashMap;
 
-use burn::{
-    nn::loss::Reduction,
-    prelude::*,
-    tensor::{Tensor, backend::Backend, cast::ToElement},
-};
+use burn::{nn::loss::Reduction, prelude::*, tensor::Tensor};
 use thiserror::Error;
 
 use crate::{
@@ -152,12 +148,12 @@ impl BiRefNetLossConfig {
 /// This loss system combines multiple loss functions optimized for segmentation tasks,
 /// providing both pixel-level and optional classification losses with configurable weights.
 #[derive(Module, Debug)]
-pub struct BiRefNetLoss<B: Backend> {
+pub struct BiRefNetLoss {
     /// Pixel-level loss component
-    pixel_loss: PixLoss<B>,
+    pixel_loss: PixLoss,
 
     /// Classification loss component (optional)
-    classification_loss: Option<ClassificationLoss<B>>,
+    classification_loss: Option<ClassificationLoss>,
 
     /// Classification weight
     classification_weight: f64,
@@ -168,7 +164,7 @@ pub struct BiRefNetLoss<B: Backend> {
 
 impl BiRefNetLossConfig {
     /// Initialize the BiRefNet loss system with the given configuration.
-    pub fn init<B: Backend>(&self, device: &B::Device) -> BiRefNetLoss<B> {
+    pub fn init(&self, device: &Device) -> BiRefNetLoss {
         let pixel_config = PixLossConfig::new(self.pixel_weights.clone());
         let pixel_loss = pixel_config.init(device);
 
@@ -184,13 +180,7 @@ impl BiRefNetLossConfig {
     }
 }
 
-impl<B: Backend> BiRefNetLoss<B> {
-    /// Create a new BiRefNet loss with default configuration.
-    pub fn new(config: BiRefNetLossConfig) -> Self {
-        let device = &B::Device::default();
-        config.init(device)
-    }
-
+impl BiRefNetLoss {
     /// Compute the forward pass of the integrated loss system.
     ///
     /// # Arguments
@@ -204,9 +194,9 @@ impl<B: Backend> BiRefNetLoss<B> {
     /// Returns `BiRefNetLossError::EmptyPredictions` if no predictions are provided.
     pub fn forward(
         &self,
-        scaled_preds: Vec<Tensor<B, 4>>,
-        targets: Tensor<B, 4>,
-    ) -> Result<Tensor<B, 1>, BiRefNetLossError> {
+        scaled_preds: Vec<Tensor<4>>,
+        targets: Tensor<4>,
+    ) -> Result<Tensor<1>, BiRefNetLossError> {
         self.forward_with_classification(scaled_preds, targets, None, None)
     }
 
@@ -215,8 +205,8 @@ impl<B: Backend> BiRefNetLoss<B> {
     /// # Arguments
     /// * `scaled_preds` - Multi-scale predictions from the model
     /// * `targets` - Ground truth segmentation maps
-    /// * `class_preds` - Optional classification predictions `[Tensor<B, 2>]`
-    /// * `class_targets` - Optional classification targets `Tensor<B, 1, Int>`
+    /// * `class_preds` - Optional classification predictions `[Tensor<2>]`
+    /// * `class_targets` - Optional classification targets `Tensor<1, Int>`
     ///
     /// # Returns
     /// Total loss combining pixel and classification components
@@ -225,11 +215,11 @@ impl<B: Backend> BiRefNetLoss<B> {
     /// Returns `BiRefNetLossError::EmptyPredictions` if no predictions are provided.
     pub fn forward_with_classification(
         &self,
-        scaled_preds: Vec<Tensor<B, 4>>,
-        targets: Tensor<B, 4>,
-        class_preds: Option<&[Tensor<B, 2>]>,
-        class_targets: Option<&Tensor<B, 1, Int>>,
-    ) -> Result<Tensor<B, 1>, BiRefNetLossError> {
+        scaled_preds: Vec<Tensor<4>>,
+        targets: Tensor<4>,
+        class_preds: Option<&[Tensor<2>]>,
+        class_targets: Option<&Tensor<1, Int>>,
+    ) -> Result<Tensor<1>, BiRefNetLossError> {
         if scaled_preds.is_empty() {
             return Err(BiRefNetLossError::EmptyPredictions);
         }
@@ -273,9 +263,9 @@ impl<B: Backend> BiRefNetLoss<B> {
     /// Returns `BiRefNetLossError::EmptyPredictions` if no predictions are provided.
     pub fn forward_detailed(
         &self,
-        scaled_preds: Vec<Tensor<B, 4>>,
-        targets: Tensor<B, 4>,
-    ) -> Result<(Tensor<B, 1>, HashMap<String, f64>), BiRefNetLossError> {
+        scaled_preds: Vec<Tensor<4>>,
+        targets: Tensor<4>,
+    ) -> Result<(Tensor<1>, HashMap<String, f64>), BiRefNetLossError> {
         self.forward_detailed_with_classification(scaled_preds, targets, None, None)
     }
 
@@ -284,8 +274,8 @@ impl<B: Backend> BiRefNetLoss<B> {
     /// # Arguments
     /// * `scaled_preds` - Multi-scale predictions from the model
     /// * `targets` - Ground truth segmentation maps
-    /// * `class_preds` - Optional classification predictions `[Tensor<B, 2>]`
-    /// * `class_targets` - Optional classification targets `Tensor<B, 1, Int>`
+    /// * `class_preds` - Optional classification predictions `[Tensor<2>]`
+    /// * `class_targets` - Optional classification targets `Tensor<1, Int>`
     ///
     /// # Returns
     /// Tuple of (total_loss, detailed_loss_dict) for monitoring training progress
@@ -294,11 +284,11 @@ impl<B: Backend> BiRefNetLoss<B> {
     /// Returns `BiRefNetLossError::EmptyPredictions` if no predictions are provided.
     pub fn forward_detailed_with_classification(
         &self,
-        scaled_preds: Vec<Tensor<B, 4>>,
-        targets: Tensor<B, 4>,
-        class_preds: Option<&[Tensor<B, 2>]>,
-        class_targets: Option<&Tensor<B, 1, Int>>,
-    ) -> Result<(Tensor<B, 1>, HashMap<String, f64>), BiRefNetLossError> {
+        scaled_preds: Vec<Tensor<4>>,
+        targets: Tensor<4>,
+        class_preds: Option<&[Tensor<2>]>,
+        class_targets: Option<&Tensor<1, Int>>,
+    ) -> Result<(Tensor<1>, HashMap<String, f64>), BiRefNetLossError> {
         if scaled_preds.is_empty() {
             return Err(BiRefNetLossError::EmptyPredictions);
         }
@@ -327,15 +317,12 @@ impl<B: Backend> BiRefNetLoss<B> {
             // Add classification loss to dictionary
             loss_dict.insert(
                 "classification".to_owned(),
-                cls_loss_value.into_scalar().to_f64(),
+                cls_loss_value.into_scalar::<f64>(),
             );
         }
 
         // Add total loss to dictionary
-        loss_dict.insert(
-            "total".to_owned(),
-            total_loss.clone().into_scalar().to_f64(),
-        );
+        loss_dict.insert("total".to_owned(), total_loss.clone().into_scalar::<f64>());
 
         Ok((total_loss, loss_dict))
     }
@@ -343,18 +330,14 @@ impl<B: Backend> BiRefNetLoss<B> {
 
 #[cfg(test)]
 mod tests {
-    use burn::{
-        backend::Cpu,
-        tensor::{Distribution, Tensor},
-    };
-    pub type TestBackend = Cpu<f32>;
     use super::*;
+    use burn::tensor::{Distribution, Tensor};
 
     #[test]
     fn birefnet_loss_config_creates_instance_with_positive_global_scale() {
         let config = BiRefNetLossConfig::new();
-        let device = Default::default();
-        let loss = config.init::<TestBackend>(&device);
+        let device = Device::flex();
+        let loss = config.init(&device);
 
         // Should create loss without errors
         assert!(loss.global_scale > 0.0);
@@ -363,17 +346,17 @@ mod tests {
     #[test]
     fn birefnet_loss_forward_computes_finite_total_loss() {
         let config = BiRefNetLossConfig::new();
-        let device = Default::default();
-        let loss = config.init::<TestBackend>(&device);
+        let device = Device::flex();
+        let loss = config.init(&device);
 
         // Create test tensors with appropriate ranges
         // Use reasonable logit values (sigmoid will map these to [0,1])
-        let pred = Tensor::<TestBackend, 4>::random(
+        let pred = Tensor::<4>::random(
             [2, 1, 64, 64],
             Distribution::Normal(0.0, 2.0), // Logits range: mostly [-6, 6]
             &device,
         );
-        let target = Tensor::<TestBackend, 4>::random(
+        let target = Tensor::<4>::random(
             [2, 1, 64, 64],
             Distribution::Uniform(0.0, 1.0), // Random values 0-1
             &device,
@@ -385,22 +368,22 @@ mod tests {
 
         assert!(result.is_ok());
         let total_loss = result.unwrap();
-        assert!(total_loss.into_scalar().to_f64().is_finite());
+        assert!(total_loss.into_scalar::<f64>().is_finite());
     }
 
     #[test]
     fn birefnet_loss_forward_detailed_returns_total_and_component_losses() {
         let config = BiRefNetLossConfig::new();
-        let device = Default::default();
-        let loss = config.init::<TestBackend>(&device);
+        let device = Device::flex();
+        let loss = config.init(&device);
 
         // Create test tensors with appropriate ranges
-        let pred = Tensor::<TestBackend, 4>::random(
+        let pred = Tensor::<4>::random(
             [2, 1, 64, 64],
             Distribution::Normal(0.0, 2.0), // Reasonable logits
             &device,
         );
-        let target = Tensor::<TestBackend, 4>::random(
+        let target = Tensor::<4>::random(
             [2, 1, 64, 64],
             Distribution::Uniform(0.0, 1.0), // Random values 0-1
             &device,
@@ -439,11 +422,11 @@ mod tests {
     #[test]
     fn birefnet_loss_forward_with_empty_predictions_returns_error() {
         let config = BiRefNetLossConfig::new();
-        let device = Default::default();
-        let loss = config.init::<TestBackend>(&device);
+        let device = Device::flex();
+        let loss = config.init(&device);
 
-        let target = Tensor::<TestBackend, 4>::zeros([2, 1, 64, 64], &device);
-        let scaled_preds: Vec<Tensor<TestBackend, 4>> = vec![];
+        let target = Tensor::<4>::zeros([2, 1, 64, 64], &device);
+        let scaled_preds: Vec<Tensor<4>> = vec![];
 
         let result = loss.forward(scaled_preds, target);
         assert!(result.is_err());
@@ -458,33 +441,24 @@ mod tests {
     #[test]
     fn birefnet_loss_forward_with_classification_computes_combined_loss() {
         let config = BiRefNetLossConfig::new().with_classification_weight(5.0);
-        let device = Default::default();
-        let loss = config.init::<TestBackend>(&device);
+        let device = Device::flex();
+        let loss = config.init(&device);
 
         // Create segmentation data
-        let pred = Tensor::<TestBackend, 4>::random(
-            [2, 1, 64, 64],
-            Distribution::Normal(0.0, 2.0),
-            &device,
-        );
-        let target = Tensor::<TestBackend, 4>::random(
-            [2, 1, 64, 64],
-            Distribution::Uniform(0.0, 1.0),
-            &device,
-        )
-        .round();
+        let pred = Tensor::<4>::random([2, 1, 64, 64], Distribution::Normal(0.0, 2.0), &device);
+        let target =
+            Tensor::<4>::random([2, 1, 64, 64], Distribution::Uniform(0.0, 1.0), &device).round();
 
         // Create classification data
-        let class_pred1 = Tensor::<TestBackend, 2>::random(
+        let class_pred1 = Tensor::<2>::random(
             [2, 10], // batch_size=2, num_classes=10
             Distribution::Normal(0.0, 1.0),
             &device,
         );
-        let class_pred2 =
-            Tensor::<TestBackend, 2>::random([2, 10], Distribution::Normal(0.0, 1.0), &device);
+        let class_pred2 = Tensor::<2>::random([2, 10], Distribution::Normal(0.0, 1.0), &device);
         let class_preds = vec![class_pred1, class_pred2];
         let class_targets =
-            Tensor::<TestBackend, 1>::random([2], Distribution::Uniform(0.0, 10.0), &device).int();
+            Tensor::<1>::random([2], Distribution::Uniform(0.0, 10.0), &device).int();
 
         let scaled_preds = vec![pred];
         let result = loss.forward_with_classification(
@@ -496,33 +470,24 @@ mod tests {
 
         assert!(result.is_ok());
         let total_loss = result.unwrap();
-        assert!(total_loss.into_scalar().to_f64().is_finite());
+        assert!(total_loss.into_scalar::<f64>().is_finite());
     }
 
     #[test]
     fn birefnet_loss_forward_detailed_with_classification_returns_loss_dict() {
         let config = BiRefNetLossConfig::new().with_classification_weight(3.0);
-        let device = Default::default();
-        let loss = config.init::<TestBackend>(&device);
+        let device = Device::flex();
+        let loss = config.init(&device);
 
         // Create data
-        let pred = Tensor::<TestBackend, 4>::random(
-            [2, 1, 32, 32],
-            Distribution::Normal(0.0, 2.0),
-            &device,
-        );
-        let target = Tensor::<TestBackend, 4>::random(
-            [2, 1, 32, 32],
-            Distribution::Uniform(0.0, 1.0),
-            &device,
-        )
-        .round();
+        let pred = Tensor::<4>::random([2, 1, 32, 32], Distribution::Normal(0.0, 2.0), &device);
+        let target =
+            Tensor::<4>::random([2, 1, 32, 32], Distribution::Uniform(0.0, 1.0), &device).round();
 
-        let class_pred =
-            Tensor::<TestBackend, 2>::random([2, 5], Distribution::Normal(0.0, 1.0), &device);
+        let class_pred = Tensor::<2>::random([2, 5], Distribution::Normal(0.0, 1.0), &device);
         let class_preds = vec![class_pred];
         let class_targets =
-            Tensor::<TestBackend, 1>::random([2], Distribution::Uniform(0.0, 5.0), &device).int();
+            Tensor::<1>::random([2], Distribution::Uniform(0.0, 5.0), &device).int();
 
         let scaled_preds = vec![pred];
         let result = loss.forward_detailed_with_classification(
@@ -538,33 +503,24 @@ mod tests {
         // Check that all expected keys are present
         assert!(loss_dict.contains_key("total"));
         assert!(loss_dict.contains_key("classification"));
-        assert!(total_loss.into_scalar().to_f64().is_finite());
+        assert!(total_loss.into_scalar::<f64>().is_finite());
     }
 
     #[test]
     fn birefnet_loss_without_classification_weight_ignores_classification() {
         let config = BiRefNetLossConfig::new().without_classification();
-        let device = Default::default();
-        let loss = config.init::<TestBackend>(&device);
+        let device = Device::flex();
+        let loss = config.init(&device);
 
         // Create data
-        let pred = Tensor::<TestBackend, 4>::random(
-            [2, 1, 32, 32],
-            Distribution::Normal(0.0, 2.0),
-            &device,
-        );
-        let target = Tensor::<TestBackend, 4>::random(
-            [2, 1, 32, 32],
-            Distribution::Uniform(0.0, 1.0),
-            &device,
-        )
-        .round();
+        let pred = Tensor::<4>::random([2, 1, 32, 32], Distribution::Normal(0.0, 2.0), &device);
+        let target =
+            Tensor::<4>::random([2, 1, 32, 32], Distribution::Uniform(0.0, 1.0), &device).round();
 
-        let class_pred =
-            Tensor::<TestBackend, 2>::random([2, 5], Distribution::Normal(0.0, 1.0), &device);
+        let class_pred = Tensor::<2>::random([2, 5], Distribution::Normal(0.0, 1.0), &device);
         let class_preds = vec![class_pred];
         let class_targets =
-            Tensor::<TestBackend, 1>::random([2], Distribution::Uniform(0.0, 5.0), &device).int();
+            Tensor::<1>::random([2], Distribution::Uniform(0.0, 5.0), &device).int();
 
         let scaled_preds = vec![pred];
 
@@ -580,8 +536,8 @@ mod tests {
         assert!(result1.is_ok());
         assert!(result2.is_ok());
 
-        let loss1 = result1.unwrap().into_scalar().to_f64();
-        let loss2 = result2.unwrap().into_scalar().to_f64();
+        let loss1 = result1.unwrap().into_scalar::<f64>();
+        let loss2 = result2.unwrap().into_scalar::<f64>();
 
         // Should be very close (considering floating point precision)
         assert!((loss1 - loss2).abs() < 1e-6);

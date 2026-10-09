@@ -2,6 +2,7 @@
 name = "birefnet"
 description = "BiRefNet: Bilateral Reference Network for high-resolution dichotomous image segmentation"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 readme.workspace = true
 repository.workspace = true
@@ -12,34 +13,34 @@ name = "birefnet"
 path = "src/bin/birefnet.rs"
 
 [features]
-default = ["inference", "ndarray"]
+default = ["inference", "flex", "fusion"]
 
-# Backend features - only at the top level
-select_backend = []
-cuda = ["burn/cuda", "burn/fusion", "burn/autotune", "select_backend"]
-rocm = ["burn/rocm", "burn/fusion", "burn/autotune", "select_backend"]
-metal = ["burn/metal", "burn/fusion", "burn/autotune", "select_backend"]
+# Backends. Burn 0.22 selects the backend at run time from a `Device` value, so several
+# backends can be compiled in at once; `--device` picks one. Library crates never enable
+# a backend: this binary is the only place where these choices are made.
+flex = ["burn/flex", "burn/simd", "burn/rayon"]
 cpu = ["burn/cpu"]
-ndarray = ["burn/ndarray", "select_backend"]
-wgpu = ["burn/wgpu", "burn/fusion", "burn/autotune", "select_backend"]
-vulkan = ["burn/vulkan", "burn/fusion", "burn/autotune", "select_backend"]
-wgpu-cpu = ["burn/wgpu", "select_backend"]
+wgpu = ["burn/wgpu"]
+vulkan = ["wgpu", "burn/vulkan"]
+metal = ["wgpu", "burn/metal"]
+cuda = ["burn/cuda"]
+rocm = ["burn/rocm"]
 
-f16 = []
-bf16 = []
-f32 = []
+# Kernel fusion and autotuning for the CubeCL backends (cpu, wgpu, vulkan, metal, cuda, rocm).
+# Spelled out here instead of relying on `burn`'s default features to switch them on.
+fusion = ["burn/fusion", "burn/autotune"]
 
-# Task features
+# Tasks
+inference = ["dep:birefnet-inference"]
 train = [
     "burn/train",
-    "birefnet-model/train",
-    "birefnet-train",
-    "birefnet-loss",
-    "birefnet-metric",
-    "burn/metrics",
     "burn/tui",
+    "burn/metrics",
+    "birefnet-model/train",
+    "dep:birefnet-train",
+    "dep:birefnet-loss",
+    "dep:birefnet-metric",
 ]
-inference = ["birefnet-inference"]
 
 [dependencies]
 # Core BiRefNet crates
@@ -53,12 +54,10 @@ birefnet-util = { path = "../birefnet-util", version = "0.1.0" }
 # CLI dependencies
 anyhow = { workspace = true }
 burn = { workspace = true }
-cfg-if = { workspace = true }
 clap = { workspace = true }
-serde_json = { workspace = true }
 stacker = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-[dev-dependencies]
-burn = { workspace = true, features = ["cpu"] }
+[lints]
+workspace = true

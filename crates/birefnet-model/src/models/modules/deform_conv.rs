@@ -38,13 +38,18 @@ pub struct DeformableConv2dConfig {
 
 impl DeformableConv2dConfig {
     /// Initializes a new `DeformableConv2d` module.
-    pub fn init<B: Backend>(&self, device: &Device<B>) -> BiRefNetResult<DeformableConv2d<B>> {
+    pub fn init(&self, device: &Device) -> BiRefNetResult<DeformableConv2d> {
         let mut offset_conv = Conv2dConfig::new(
             [self.in_channels, 2 * self.kernel_size * self.kernel_size],
             [self.kernel_size, self.kernel_size],
         )
         .with_stride([self.stride, self.stride])
-        .with_padding(PaddingConfig2d::Explicit(self.padding, self.padding, self.padding, self.padding))
+        .with_padding(PaddingConfig2d::Explicit(
+            self.padding,
+            self.padding,
+            self.padding,
+            self.padding,
+        ))
         .init(device);
 
         offset_conv.weight = Param::from_tensor(offset_conv.weight.val().zeros_like());
@@ -63,7 +68,12 @@ impl DeformableConv2dConfig {
             [self.kernel_size, self.kernel_size],
         )
         .with_stride([self.stride, self.stride])
-        .with_padding(PaddingConfig2d::Explicit(self.padding, self.padding, self.padding, self.padding))
+        .with_padding(PaddingConfig2d::Explicit(
+            self.padding,
+            self.padding,
+            self.padding,
+            self.padding,
+        ))
         .init(device);
 
         modulator_conv.weight = Param::from_tensor(modulator_conv.weight.val().zeros_like());
@@ -82,7 +92,12 @@ impl DeformableConv2dConfig {
             [self.kernel_size, self.kernel_size],
         )
         .with_stride([self.stride, self.stride])
-        .with_padding(PaddingConfig2d::Explicit(self.padding, self.padding, self.padding, self.padding))
+        .with_padding(PaddingConfig2d::Explicit(
+            self.padding,
+            self.padding,
+            self.padding,
+            self.padding,
+        ))
         .with_bias(self.bias)
         .init(device);
 
@@ -102,20 +117,20 @@ impl DeformableConv2dConfig {
 
 /// Deformable Convolution v2 layer.
 #[derive(Module, Debug)]
-pub struct DeformableConv2d<B: Backend> {
+pub struct DeformableConv2d {
     in_channels: usize,
     out_channels: usize,
     kernel_size: usize,
     stride: usize,
     padding: usize,
     bias: bool,
-    modulator_conv: Conv2d<B>,
-    offset_conv: Conv2d<B>,
-    regular_conv: Conv2d<B>,
+    modulator_conv: Conv2d,
+    offset_conv: Conv2d,
+    regular_conv: Conv2d,
 }
 
-impl<B: Backend> DeformableConv2d<B> {
-    pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
+impl DeformableConv2d {
+    pub fn forward(&self, x: Tensor<4>) -> Tensor<4> {
         let offset = self.offset_conv.forward(x.clone());
         let modulator = sigmoid(self.modulator_conv.forward(x.clone())).mul_scalar(2.0);
 

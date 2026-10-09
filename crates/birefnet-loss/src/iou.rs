@@ -13,7 +13,7 @@ use burn::{
     config::Config,
     module::{Content, DisplaySettings, Module, ModuleDisplay},
     nn::loss::Reduction,
-    tensor::{Int, Tensor, backend::Backend},
+    tensor::{Int, Tensor},
 };
 
 /// Configuration for creating an [IoU loss](IoULoss).
@@ -44,7 +44,7 @@ impl IoULossConfig {
 ///
 /// Calculates IoU loss for binary segmentation tasks.
 /// Supports batch processing and reduction options.
-#[derive(Module, Clone, Debug)]
+#[derive(Module, Debug)]
 #[module(custom_display)]
 pub struct IoULoss {
     /// Small epsilon value to avoid division by zero.
@@ -82,12 +82,12 @@ impl IoULoss {
     /// - predictions: `[batch_size, channels, height, width]`
     /// - targets: `[batch_size, channels, height, width]`
     /// - output: `[1]`
-    pub fn forward<B: Backend>(
+    pub fn forward(
         &self,
-        predictions: Tensor<B, 4>,
-        targets: Tensor<B, 4, Int>,
+        predictions: Tensor<4>,
+        targets: Tensor<4, Int>,
         reduction: Reduction,
-    ) -> Tensor<B, 1> {
+    ) -> Tensor<1> {
         let loss = self.forward_no_reduction(predictions, targets);
         crate::reduce_loss(loss, reduction)
     }
@@ -99,11 +99,11 @@ impl IoULoss {
     /// - predictions: `[batch_size, channels, height, width]`
     /// - targets: `[batch_size, channels, height, width]`
     /// - output: `[batch_size]`
-    pub fn forward_no_reduction<B: Backend>(
+    pub fn forward_no_reduction(
         &self,
-        predictions: Tensor<B, 4>,
-        targets: Tensor<B, 4, Int>,
-    ) -> Tensor<B, 1> {
+        predictions: Tensor<4>,
+        targets: Tensor<4, Int>,
+    ) -> Tensor<1> {
         self.assertions(&predictions, &targets);
 
         let targets_float = targets.float();
@@ -127,10 +127,10 @@ impl IoULoss {
 
         // IoU loss is (1 - IoU) [B, 1] -> [B]
         let loss = Tensor::ones_like(&iou) - iou;
-        loss.squeeze::<1>()
+        loss.squeeze_dim::<1>(1)
     }
 
-    fn assertions<B: Backend>(&self, predictions: &Tensor<B, 4>, targets: &Tensor<B, 4, Int>) {
+    fn assertions(&self, predictions: &Tensor<4>, targets: &Tensor<4, Int>) {
         let pred_dims = predictions.dims();
         let target_dims = targets.dims();
         assert_eq!(
@@ -142,24 +142,19 @@ impl IoULoss {
 
 #[cfg(test)]
 mod tests {
+    use burn::tensor::Device;
     use burn::tensor::{TensorData, Tolerance, Transaction};
 
     use super::*;
-    use crate::tests::TestBackend;
     #[test]
     fn iou_loss_forward_perfect_overlap_returns_zero_loss() {
-        let device = Default::default();
+        let device = Device::flex();
         let loss = IoULoss::new();
 
         // Perfect overlap: IoU = 1.0, Loss = 0.0
-        let predictions = Tensor::<TestBackend, 4>::from_data(
-            TensorData::from([[[[1.0, 1.0], [1.0, 1.0]]]]),
-            &device,
-        );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
-            TensorData::from([[[[1, 1], [1, 1]]]]),
-            &device,
-        );
+        let predictions =
+            Tensor::<4>::from_data(TensorData::from([[[[1.0, 1.0], [1.0, 1.0]]]]), &device);
+        let targets = Tensor::<4, Int>::from_data(TensorData::from([[[[1, 1], [1, 1]]]]), &device);
 
         let result_mean = loss.forward(predictions.clone(), targets.clone(), Reduction::Mean);
         let result_no_reduction = loss.forward_no_reduction(predictions, targets);
@@ -182,18 +177,13 @@ mod tests {
 
     #[test]
     fn iou_loss_forward_no_overlap_returns_one_loss() {
-        let device = Default::default();
+        let device = Device::flex();
         let loss = IoULoss::new();
 
         // No overlap: IoU = 0.0, Loss = 1.0
-        let predictions = Tensor::<TestBackend, 4>::from_data(
-            TensorData::from([[[[1.0, 1.0], [0.0, 0.0]]]]),
-            &device,
-        );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
-            TensorData::from([[[[0, 0], [1, 1]]]]),
-            &device,
-        );
+        let predictions =
+            Tensor::<4>::from_data(TensorData::from([[[[1.0, 1.0], [0.0, 0.0]]]]), &device);
+        let targets = Tensor::<4, Int>::from_data(TensorData::from([[[[0, 0], [1, 1]]]]), &device);
 
         let result_mean = loss.forward(predictions.clone(), targets.clone(), Reduction::Mean);
         let result_no_reduction = loss.forward_no_reduction(predictions, targets);
@@ -216,19 +206,14 @@ mod tests {
 
     #[test]
     fn iou_loss_forward_partial_overlap_computes_correct_loss() {
-        let device = Default::default();
+        let device = Device::flex();
         let loss = IoULoss::new();
 
         // Partial overlap: pred=[1,1,0,0], target=[1,0,1,0]
         // Intersection = 1, Union = 1+1+1 = 3, IoU = 1/3, Loss = 2/3
-        let predictions = Tensor::<TestBackend, 4>::from_data(
-            TensorData::from([[[[1.0, 1.0], [0.0, 0.0]]]]),
-            &device,
-        );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
-            TensorData::from([[[[1, 0], [1, 0]]]]),
-            &device,
-        );
+        let predictions =
+            Tensor::<4>::from_data(TensorData::from([[[[1.0, 1.0], [0.0, 0.0]]]]), &device);
+        let targets = Tensor::<4, Int>::from_data(TensorData::from([[[[1, 0], [1, 0]]]]), &device);
 
         let result = loss.forward(predictions, targets, Reduction::Mean);
 
@@ -241,18 +226,18 @@ mod tests {
 
     #[test]
     fn iou_loss_forward_batch_samples_processes_correctly() {
-        let device = Default::default();
+        let device = Device::flex();
         let loss = IoULoss::new();
 
         // Batch of 2: one perfect, one no overlap
-        let predictions = Tensor::<TestBackend, 4>::from_data(
+        let predictions = Tensor::<4>::from_data(
             TensorData::from([
                 [[[1.0, 1.0], [1.0, 1.0]]], // Perfect overlap
                 [[[1.0, 1.0], [0.0, 0.0]]], // No overlap
             ]),
             &device,
         );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
+        let targets = Tensor::<4, Int>::from_data(
             TensorData::from([
                 [[[1, 1], [1, 1]]], // Perfect overlap
                 [[[0, 0], [1, 1]]], // No overlap
@@ -286,19 +271,14 @@ mod tests {
 
     #[test]
     fn iou_loss_with_epsilon_handles_zero_division() {
-        let device = Default::default();
+        let device = Device::flex();
         let config = IoULossConfig::new().with_eps(1e-6);
         let loss = config.init();
 
         // All zeros case - should not crash due to division by zero
-        let predictions = Tensor::<TestBackend, 4>::from_data(
-            TensorData::from([[[[0.0, 0.0], [0.0, 0.0]]]]),
-            &device,
-        );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
-            TensorData::from([[[[0, 0], [0, 0]]]]),
-            &device,
-        );
+        let predictions =
+            Tensor::<4>::from_data(TensorData::from([[[[0.0, 0.0], [0.0, 0.0]]]]), &device);
+        let targets = Tensor::<4, Int>::from_data(TensorData::from([[[[0, 0], [0, 0]]]]), &device);
 
         let result = loss.forward(predictions, targets, Reduction::Mean);
 
@@ -311,17 +291,12 @@ mod tests {
 
     #[test]
     fn iou_loss_auto_reduction_equals_mean_reduction() {
-        let device = Default::default();
+        let device = Device::flex();
         let loss = IoULoss::new();
 
-        let predictions = Tensor::<TestBackend, 4>::from_data(
-            TensorData::from([[[[1.0, 0.5], [0.8, 0.2]]]]),
-            &device,
-        );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
-            TensorData::from([[[[1, 0], [1, 0]]]]),
-            &device,
-        );
+        let predictions =
+            Tensor::<4>::from_data(TensorData::from([[[[1.0, 0.5], [0.8, 0.2]]]]), &device);
+        let targets = Tensor::<4, Int>::from_data(TensorData::from([[[[1, 0], [1, 0]]]]), &device);
 
         let result_auto = loss.forward(predictions.clone(), targets.clone(), Reduction::Auto);
         let result_mean = loss.forward(predictions, targets, Reduction::Mean);
@@ -345,15 +320,11 @@ mod tests {
     #[test]
     #[should_panic = "Shape of predictions"]
     fn iou_loss_forward_mismatched_shapes_panics() {
-        let device = Default::default();
+        let device = Device::flex();
         let loss = IoULoss::new();
 
-        let predictions =
-            Tensor::<TestBackend, 4>::from_data(TensorData::from([[[[1.0, 2.0]]]]), &device);
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
-            TensorData::from([[[[1, 2], [3, 4]]]]),
-            &device,
-        );
+        let predictions = Tensor::<4>::from_data(TensorData::from([[[[1.0, 2.0]]]]), &device);
+        let targets = Tensor::<4, Int>::from_data(TensorData::from([[[[1, 2], [3, 4]]]]), &device);
 
         let _result = loss.forward_no_reduction(predictions, targets);
     }

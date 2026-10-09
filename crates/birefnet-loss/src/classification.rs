@@ -12,7 +12,8 @@ use burn::{
     config::Config,
     module::{Content, DisplaySettings, Module, ModuleDisplay},
     nn::loss::{CrossEntropyLoss, CrossEntropyLossConfig, Reduction},
-    tensor::{Int, Tensor, backend::Backend},
+    tensor::Device,
+    tensor::{Int, Tensor},
 };
 
 /// Configuration for creating a [Classification loss](ClassificationLoss).
@@ -25,7 +26,7 @@ pub struct ClassificationLossConfig {
 
 impl ClassificationLossConfig {
     /// Initialize [Classification loss](ClassificationLoss).
-    pub fn init<B: Backend>(&self, device: &B::Device) -> ClassificationLoss<B> {
+    pub fn init(&self, device: &Device) -> ClassificationLoss {
         self.assertions();
         ClassificationLoss {
             weight: self.weight,
@@ -49,14 +50,14 @@ impl ClassificationLossConfig {
 /// are also trained for classification tasks.
 #[derive(Module, Debug)]
 #[module(custom_display)]
-pub struct ClassificationLoss<B: Backend> {
+pub struct ClassificationLoss {
     /// Weight factor applied to each cross-entropy loss.
     pub weight: f64,
     /// Cross-entropy loss criterion.
-    pub ce_loss: CrossEntropyLoss<B>,
+    pub ce_loss: CrossEntropyLoss,
 }
 
-impl<B: Backend> ModuleDisplay for ClassificationLoss<B> {
+impl ModuleDisplay for ClassificationLoss {
     fn custom_settings(&self) -> Option<DisplaySettings> {
         DisplaySettings::new()
             .with_new_line_after_attribute(false)
@@ -71,9 +72,9 @@ impl<B: Backend> ModuleDisplay for ClassificationLoss<B> {
     }
 }
 
-impl<B: Backend> ClassificationLoss<B> {
+impl ClassificationLoss {
     /// Create a new classification loss with default configuration.
-    pub fn new(device: &B::Device) -> Self {
+    pub fn new(device: &Device) -> Self {
         ClassificationLossConfig::new().init(device)
     }
 
@@ -81,15 +82,15 @@ impl<B: Backend> ClassificationLoss<B> {
     ///
     /// # Shapes
     ///
-    /// - predictions: `&[Tensor<B, 2>]` where each tensor is `[batch_size, num_classes]`
+    /// - predictions: `&[Tensor<2>]` where each tensor is `[batch_size, num_classes]`
     /// - targets: `[batch_size]`
     /// - output: `[1]`
     pub fn forward(
         &self,
-        predictions: &[Tensor<B, 2>],
-        targets: &Tensor<B, 1, Int>,
+        predictions: &[Tensor<2>],
+        targets: &Tensor<1, Int>,
         reduction: Reduction,
-    ) -> Tensor<B, 1> {
+    ) -> Tensor<1> {
         let loss = self.forward_no_reduction(predictions, targets);
         crate::reduce_loss(loss, reduction)
     }
@@ -98,14 +99,14 @@ impl<B: Backend> ClassificationLoss<B> {
     ///
     /// # Shapes
     ///
-    /// - predictions: `&[Tensor<B, 2>]` where each tensor is `[batch_size, num_classes]`
+    /// - predictions: `&[Tensor<2>]` where each tensor is `[batch_size, num_classes]`
     /// - targets: `[batch_size]`
     /// - output: `[num_prediction_levels]`
     pub fn forward_no_reduction(
         &self,
-        predictions: &[Tensor<B, 2>],
-        targets: &Tensor<B, 1, Int>,
-    ) -> Tensor<B, 1> {
+        predictions: &[Tensor<2>],
+        targets: &Tensor<1, Int>,
+    ) -> Tensor<1> {
         self.assertions(predictions, targets);
 
         if predictions.is_empty() {
@@ -130,7 +131,7 @@ impl<B: Backend> ClassificationLoss<B> {
         }
     }
 
-    fn assertions(&self, predictions: &[Tensor<B, 2>], targets: &Tensor<B, 1, Int>) {
+    fn assertions(&self, predictions: &[Tensor<2>], targets: &Tensor<1, Int>) {
         if predictions.is_empty() {
             return;
         }
@@ -160,19 +161,18 @@ mod tests {
     use burn::tensor::{TensorData, Tolerance, Transaction};
 
     use super::*;
-    use crate::tests::TestBackend;
 
     #[test]
     fn cls_loss_forward_single_prediction_computes_weighted_cross_entropy() {
-        let device = Default::default();
-        let loss = ClassificationLoss::<TestBackend>::new(&device);
+        let device = Device::flex();
+        let loss = ClassificationLoss::new(&device);
 
         // Single prediction level
-        let pred = Tensor::<TestBackend, 2>::from_data(
+        let pred = Tensor::<2>::from_data(
             TensorData::from([[2.0, 1.0, 0.5], [0.1, 3.0, 0.2]]),
             &device,
         );
-        let targets = Tensor::<TestBackend, 1, Int>::from_data(TensorData::from([0, 1]), &device);
+        let targets = Tensor::<1, Int>::from_data(TensorData::from([0, 1]), &device);
 
         let predictions = vec![pred.clone()];
         let result_mean = loss.forward(&predictions, &targets, Reduction::Mean);
@@ -203,20 +203,14 @@ mod tests {
 
     #[test]
     fn cls_loss_forward_multiple_predictions_sums_weighted_losses() {
-        let device = Default::default();
+        let device = Device::flex();
         let config = ClassificationLossConfig::new().with_weight(0.5);
         let loss = config.init(&device);
 
         // Multiple prediction levels
-        let pred1 = Tensor::<TestBackend, 2>::from_data(
-            TensorData::from([[2.0, 1.0], [0.1, 3.0]]),
-            &device,
-        );
-        let pred2 = Tensor::<TestBackend, 2>::from_data(
-            TensorData::from([[1.5, 2.0], [0.5, 2.5]]),
-            &device,
-        );
-        let targets = Tensor::<TestBackend, 1, Int>::from_data(TensorData::from([0, 1]), &device);
+        let pred1 = Tensor::<2>::from_data(TensorData::from([[2.0, 1.0], [0.1, 3.0]]), &device);
+        let pred2 = Tensor::<2>::from_data(TensorData::from([[1.5, 2.0], [0.5, 2.5]]), &device);
+        let targets = Tensor::<1, Int>::from_data(TensorData::from([0, 1]), &device);
 
         let predictions = vec![pred1.clone(), pred2.clone()];
         let result = loss.forward(&predictions, &targets, Reduction::Mean);
@@ -238,12 +232,12 @@ mod tests {
 
     #[test]
     fn cls_loss_forward_empty_predictions_returns_zero() {
-        let device = Default::default();
-        let loss = ClassificationLoss::<TestBackend>::new(&device);
+        let device = Device::flex();
+        let loss = ClassificationLoss::new(&device);
 
-        let targets = Tensor::<TestBackend, 1, Int>::from_data(TensorData::from([0, 1]), &device);
+        let targets = Tensor::<1, Int>::from_data(TensorData::from([0, 1]), &device);
 
-        let predictions: Vec<Tensor<TestBackend, 2>> = vec![];
+        let predictions: Vec<Tensor<2>> = vec![];
         let result = loss.forward(&predictions, &targets, Reduction::Mean);
 
         // Should return zero loss for empty predictions
@@ -255,14 +249,11 @@ mod tests {
 
     #[test]
     fn cls_loss_auto_reduction_equals_mean_and_sum() {
-        let device = Default::default();
-        let loss = ClassificationLoss::<TestBackend>::new(&device);
+        let device = Device::flex();
+        let loss = ClassificationLoss::new(&device);
 
-        let pred = Tensor::<TestBackend, 2>::from_data(
-            TensorData::from([[2.0, 1.0], [0.1, 3.0]]),
-            &device,
-        );
-        let targets = Tensor::<TestBackend, 1, Int>::from_data(TensorData::from([0, 1]), &device);
+        let pred = Tensor::<2>::from_data(TensorData::from([[2.0, 1.0], [0.1, 3.0]]), &device);
+        let targets = Tensor::<1, Int>::from_data(TensorData::from([0, 1]), &device);
 
         let predictions = vec![pred];
         let result_auto = loss.forward(&predictions, &targets, Reduction::Auto);
@@ -292,21 +283,18 @@ mod tests {
 
     #[test]
     fn cls_loss_with_custom_weight_multiplies_default_result() {
-        let device = Default::default();
+        let device = Device::flex();
         let config = ClassificationLossConfig::new().with_weight(2.0);
         let loss = config.init(&device);
 
-        let pred = Tensor::<TestBackend, 2>::from_data(
-            TensorData::from([[2.0, 1.0], [0.1, 3.0]]),
-            &device,
-        );
-        let targets = Tensor::<TestBackend, 1, Int>::from_data(TensorData::from([0, 1]), &device);
+        let pred = Tensor::<2>::from_data(TensorData::from([[2.0, 1.0], [0.1, 3.0]]), &device);
+        let targets = Tensor::<1, Int>::from_data(TensorData::from([0, 1]), &device);
 
         let predictions = vec![pred];
         let result = loss.forward(&predictions, &targets, Reduction::Mean);
 
         // Compare with default weight loss
-        let default_loss = ClassificationLoss::<TestBackend>::new(&device);
+        let default_loss = ClassificationLoss::new(&device);
         let default_result = default_loss.forward(&predictions, &targets, Reduction::Mean);
 
         let expected = default_result * 2.0;
@@ -324,20 +312,20 @@ mod tests {
     #[test]
     #[should_panic = "Weight for ClassificationLoss must be positive"]
     fn cls_loss_config_negative_weight_panics() {
-        let device = Default::default();
+        let device = Device::flex();
         let _loss = ClassificationLossConfig::new()
             .with_weight(-1.0)
-            .init::<TestBackend>(&device);
+            .init(&device);
     }
 
     #[test]
     #[should_panic = "Prediction[0] batch size (1) must match targets batch size (2)"]
     fn cls_loss_forward_mismatched_batch_sizes_panics() {
-        let device = Default::default();
-        let loss = ClassificationLoss::<TestBackend>::new(&device);
+        let device = Device::flex();
+        let loss = ClassificationLoss::new(&device);
 
-        let pred = Tensor::<TestBackend, 2>::from_data(TensorData::from([[2.0, 1.0]]), &device);
-        let targets = Tensor::<TestBackend, 1, Int>::from_data(TensorData::from([0, 1]), &device);
+        let pred = Tensor::<2>::from_data(TensorData::from([[2.0, 1.0]]), &device);
+        let targets = Tensor::<1, Int>::from_data(TensorData::from([0, 1]), &device);
 
         let predictions = vec![pred];
         let _result = loss.forward_no_reduction(&predictions, &targets);
@@ -345,9 +333,9 @@ mod tests {
 
     #[test]
     fn cls_loss_display_shows_weight_parameter() {
-        let device = Default::default();
+        let device = Device::flex();
         let config = ClassificationLossConfig::new().with_weight(0.5);
-        let loss = config.init::<TestBackend>(&device);
+        let loss = config.init(&device);
 
         let display_str = format!("{loss}");
         assert!(display_str.contains("ClassificationLoss"));

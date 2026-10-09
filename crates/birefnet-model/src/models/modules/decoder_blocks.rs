@@ -3,7 +3,7 @@
 //! This module provides the core building blocks for BiRefNet's decoder, including
 //! BasicDecBlk and ResBlk modules that handle feature processing and upsampling.
 
-use birefnet_extra_ops::Identity;
+use burn::nn::Identity;
 use burn::{
     nn::{
         BatchNorm, BatchNormConfig, PaddingConfig2d, Relu,
@@ -22,28 +22,28 @@ use crate::{
 ///
 /// Uses BatchNorm when batch_size > 1, otherwise Identity (matching PyTorch behavior).
 #[derive(Module, Debug)]
-pub enum NormLayer<B: Backend> {
-    BatchNorm(BatchNorm<B>),
-    Identity(Identity<B>),
+pub enum NormLayer {
+    BatchNorm(BatchNorm),
+    Identity(Identity),
 }
 
-impl<B: Backend> NormLayer<B> {
+impl NormLayer {
     /// Creates a conditional normalization layer.
     ///
     /// # Arguments
     /// * `channels` - Number of channels for BatchNorm
     /// * `batch_size` - Batch size to determine normalization type
     /// * `device` - Device for layer initialization
-    pub fn new(channels: usize, batch_size: usize, device: &Device<B>) -> Self {
+    pub fn new(channels: usize, batch_size: usize, device: &Device) -> Self {
         if batch_size > 1 {
             Self::BatchNorm(BatchNormConfig::new(channels).init(device))
         } else {
-            Self::Identity(Identity::<B>::new())
+            Self::Identity(Identity::new())
         }
     }
 
     /// Forward pass through the conditional normalization layer.
-    pub(crate) fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
+    pub(crate) fn forward(&self, x: Tensor<4>) -> Tensor<4> {
         match self {
             Self::BatchNorm(bn) => bn.forward(x),
             Self::Identity(identity) => identity.forward(x),
@@ -53,9 +53,9 @@ impl<B: Backend> NormLayer<B> {
 
 /// An enum to wrap different types of squeeze blocks used within a `BasicDecBlk`.
 #[derive(Module, Debug)]
-enum BasicDecSqueezeBlockModule<B: Backend> {
-    ASPP(ASPP<B>),
-    ASPPDeformable(ASPPDeformable<B>),
+enum BasicDecSqueezeBlockModule {
+    ASPP(ASPP),
+    ASPPDeformable(ASPPDeformable),
 }
 
 /// Configuration for the `BasicDecBlk` module.
@@ -81,7 +81,7 @@ pub struct BasicDecBlkConfig {
 
 impl BasicDecBlkConfig {
     /// Creates a new `BasicDecBlk` module following Burn conventions.
-    pub fn init<B: Backend>(&self, device: &Device<B>) -> BiRefNetResult<BasicDecBlk<B>> {
+    pub fn init(&self, device: &Device) -> BiRefNetResult<BasicDecBlk> {
         let conv_in = Conv2dConfig::new([self.in_channels, self.inter_channels], [3, 3])
             .with_stride([1, 1])
             .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
@@ -124,16 +124,16 @@ impl BasicDecBlkConfig {
 ///   - input: `[batch_size, in_channels, height, width]`
 ///   - output: `[batch_size, out_channels, height, width]`
 #[derive(Module, Debug)]
-pub struct BasicDecBlk<B: Backend> {
-    conv_in: Conv2d<B>,
-    bn_in: NormLayer<B>,
+pub struct BasicDecBlk {
+    conv_in: Conv2d,
+    bn_in: NormLayer,
     relu_in: Relu,
-    dec_att: Option<BasicDecSqueezeBlockModule<B>>,
-    conv_out: Conv2d<B>,
-    bn_out: NormLayer<B>,
+    dec_att: Option<BasicDecSqueezeBlockModule>,
+    conv_out: Conv2d,
+    bn_out: NormLayer,
 }
 
-impl<B: Backend> BasicDecBlk<B> {
+impl BasicDecBlk {
     /// Forward pass through the basic decoder block.
     ///
     /// # Arguments
@@ -141,7 +141,7 @@ impl<B: Backend> BasicDecBlk<B> {
     ///
     /// # Returns
     /// Output tensor of shape `[batch_size, out_channels, height, width]`
-    pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
+    pub fn forward(&self, x: Tensor<4>) -> Tensor<4> {
         // First convolution block
         let x = self.conv_in.forward(x);
         let x = self.bn_in.forward(x);
@@ -164,9 +164,9 @@ impl<B: Backend> BasicDecBlk<B> {
 
 /// An enum to wrap different types of squeeze blocks used within a `ResBlk`.
 #[derive(Module, Debug)]
-enum ResBlkSqueezeBlockModule<B: Backend> {
-    Aspp(ASPP<B>),
-    ASPPDeformable(ASPPDeformable<B>),
+enum ResBlkSqueezeBlockModule {
+    Aspp(ASPP),
+    ASPPDeformable(ASPPDeformable),
 }
 
 /// Configuration for the `ResBlk` module.
@@ -196,7 +196,7 @@ pub struct ResBlkConfig {
 
 impl ResBlkConfig {
     /// Creates a new `ResBlk` module following Burn conventions.
-    pub fn init<B: Backend>(&self, device: &Device<B>) -> BiRefNetResult<ResBlk<B>> {
+    pub fn init(&self, device: &Device) -> BiRefNetResult<ResBlk> {
         let out_channels = self.out_channels.unwrap_or(self.in_channels);
 
         // Calculate inter_channels based on dec_channels_inter strategy
@@ -258,17 +258,17 @@ impl ResBlkConfig {
 ///   - input: `[batch_size, in_channels, height, width]`
 ///   - output: `[batch_size, out_channels, height, width]`
 #[derive(Module, Debug)]
-pub struct ResBlk<B: Backend> {
-    conv_resi: Conv2d<B>,
-    conv_in: Conv2d<B>,
-    bn_in: NormLayer<B>,
+pub struct ResBlk {
+    conv_resi: Conv2d,
+    conv_in: Conv2d,
+    bn_in: NormLayer,
     relu_in: Relu,
-    dec_att: Option<ResBlkSqueezeBlockModule<B>>,
-    conv_out: Conv2d<B>,
-    bn_out: NormLayer<B>,
+    dec_att: Option<ResBlkSqueezeBlockModule>,
+    conv_out: Conv2d,
+    bn_out: NormLayer,
 }
 
-impl<B: Backend> ResBlk<B> {
+impl ResBlk {
     /// Forward pass through the residual decoder block.
     ///
     /// # Arguments
@@ -276,7 +276,7 @@ impl<B: Backend> ResBlk<B> {
     ///
     /// # Returns
     /// Output tensor of shape `[batch_size, out_channels, height, width]`
-    pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
+    pub fn forward(&self, x: Tensor<4>) -> Tensor<4> {
         // Residual connection (skip connection)
         let residual = self.conv_resi.forward(x.clone());
 

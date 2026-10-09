@@ -4,18 +4,18 @@ use std::{
 };
 
 use anyhow::Result;
+use birefnet_model::BiRefNet;
 use birefnet_util::{
     BiRefNetWeightLoading, ManagedModel, ModelLoader, ModelName, WeightSource,
     apply_imagenet_normalization, apply_mask, is_supported_image_format, load_image,
     refine_foreground_core, tensor_to_dynamic_image,
 };
 use burn::tensor::{
+    Device,
     activation::sigmoid,
     module::interpolate,
     ops::{InterpolateMode, InterpolateOptions},
 };
-
-use crate::burn_backend_types::{InferenceBackend, InferenceDevice};
 
 /// Model input resolution used for `BiRefNet` inference.
 ///
@@ -70,9 +70,7 @@ impl InferenceConfig {
 ///
 /// Returns an error if the model cannot be loaded, the input path does
 /// not exist, or an image fails to process.
-pub fn run_inference(config: &InferenceConfig, device: &InferenceDevice) -> Result<()> {
-    use birefnet_model::BiRefNet;
-
+pub fn run_inference(config: &InferenceConfig, device: &Device) -> Result<()> {
     tracing::info!(
         input = %config.input_path.display(),
         output = %config.output_path.display(),
@@ -91,14 +89,14 @@ pub fn run_inference(config: &InferenceConfig, device: &InferenceDevice) -> Resu
         ManagedModel::from_pretrained(&config.model_spec)?
     };
 
-    if !<ManagedModel as ModelLoader<InferenceBackend>>::is_available(&managed_model) {
+    if !<ManagedModel as ModelLoader>::is_available(&managed_model) {
         anyhow::bail!("Model weights are not available. Please check your model specification.");
     }
 
     let model_input_size = model_input_size(&managed_model);
 
     tracing::info!("loading model");
-    let model: BiRefNet<InferenceBackend> = BiRefNet::from_managed_model(&managed_model, device)?;
+    let model = BiRefNet::from_managed_model(&managed_model, device)?;
     tracing::info!("model loaded successfully");
 
     fs::create_dir_all(&config.output_path)?;
@@ -129,10 +127,10 @@ pub fn run_inference(config: &InferenceConfig, device: &InferenceDevice) -> Resu
 
 /// Processes inference for a single image.
 fn process_single_image(
-    model: &birefnet_model::BiRefNet<InferenceBackend>,
+    model: &BiRefNet,
     input_path: &Path,
     output_dir: &Path,
-    device: &InferenceDevice,
+    device: &Device,
     model_input_size: usize,
 ) -> Result<()> {
     tracing::info!(path = %input_path.display(), "processing image");
@@ -145,8 +143,8 @@ fn process_single_image(
     tracing::info!("normalized image tensor");
     let image_tensor = interpolate(
         image_normalized,
-        [model_input_size, model_input_size],
-        InterpolateOptions::new(InterpolateMode::Bicubic),
+        InterpolateOptions::new(InterpolateMode::Bicubic)
+            .with_output_size([model_input_size, model_input_size]),
     );
     tracing::info!(size = model_input_size, "resized model input");
 
@@ -158,8 +156,7 @@ fn process_single_image(
 
     let mask = interpolate(
         mask,
-        [h, w],
-        InterpolateOptions::new(InterpolateMode::Bicubic),
+        InterpolateOptions::new(InterpolateMode::Bicubic).with_output_size([h, w]),
     );
     tracing::info!("resized mask");
 
@@ -183,10 +180,10 @@ fn process_single_image(
 
 /// Processes inference for all images in a directory.
 fn process_directory(
-    model: &birefnet_model::BiRefNet<InferenceBackend>,
+    model: &BiRefNet,
     input_dir: &Path,
     output_dir: &Path,
-    device: &InferenceDevice,
+    device: &Device,
     model_input_size: usize,
 ) -> Result<()> {
     for entry in fs::read_dir(input_dir)? {

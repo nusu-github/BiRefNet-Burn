@@ -41,24 +41,24 @@ const RESNET152_BLOCKS: [usize; 4] = [3, 8, 36, 3];
 /// This provides the 4 feature levels (conv1-4) needed for BiRefNet.
 /// Derived from torchvision.models.resnet.ResNet
 #[derive(Module, Debug)]
-pub struct ResNetBackbone<B: Backend> {
+pub struct ResNetBackbone {
     // First feature level: conv1 + bn1 + relu + maxpool + layer1
-    pub conv1_block: Conv1Block<B>,
-    pub layer1: LayerBlock<B>,
+    pub conv1_block: Conv1Block,
+    pub layer1: LayerBlock,
 
     // Second feature level: layer2
-    pub layer2: LayerBlock<B>,
+    pub layer2: LayerBlock,
 
     // Third feature level: layer3
-    pub layer3: LayerBlock<B>,
+    pub layer3: LayerBlock,
 
     // Fourth feature level: layer4
-    pub layer4: LayerBlock<B>,
+    pub layer4: LayerBlock,
 }
 
-impl<B: Backend> ResNetBackbone<B> {
+impl ResNetBackbone {
     /// Forward pass that returns the 4 feature levels required by BiRefNet.
-    pub fn forward(&self, input: Tensor<B, 4>) -> [Tensor<B, 4>; 4] {
+    pub fn forward(&self, input: Tensor<4>) -> [Tensor<4>; 4] {
         // First feature level: conv1 + bn1 + relu + maxpool + layer1
         let conv1 = self.conv1_block.forward(input);
         let conv1 = self.layer1.forward(conv1);
@@ -76,32 +76,32 @@ impl<B: Backend> ResNetBackbone<B> {
     }
 
     /// Create ResNet-18 backbone.
-    pub fn resnet18(device: &Device<B>) -> Self {
+    pub fn resnet18(device: &Device) -> Self {
         Self::new(RESNET18_BLOCKS, 1, device)
     }
 
     /// Create ResNet-34 backbone.
-    pub fn resnet34(device: &Device<B>) -> Self {
+    pub fn resnet34(device: &Device) -> Self {
         Self::new(RESNET34_BLOCKS, 1, device)
     }
 
     /// Create ResNet-50 backbone.
-    pub fn resnet50(device: &Device<B>) -> Self {
+    pub fn resnet50(device: &Device) -> Self {
         Self::new(RESNET50_BLOCKS, 4, device)
     }
 
     /// Create ResNet-101 backbone.
-    pub fn resnet101(device: &Device<B>) -> Self {
+    pub fn resnet101(device: &Device) -> Self {
         Self::new(RESNET101_BLOCKS, 4, device)
     }
 
     /// Create ResNet-152 backbone.
-    pub fn resnet152(device: &Device<B>) -> Self {
+    pub fn resnet152(device: &Device) -> Self {
         Self::new(RESNET152_BLOCKS, 4, device)
     }
 
     /// Create a new ResNet backbone with the specified configuration.
-    fn new(blocks: [usize; 4], expansion: usize, device: &Device<B>) -> Self {
+    fn new(blocks: [usize; 4], expansion: usize, device: &Device) -> Self {
         // Validate expansion
         assert!(
             expansion == 1 || expansion == 4,
@@ -151,15 +151,15 @@ impl<B: Backend> ResNetBackbone<B> {
 
 /// First conv block: conv1 + bn1 + relu + maxpool
 #[derive(Module, Debug)]
-pub struct Conv1Block<B: Backend> {
-    conv1: Conv2d<B>,
-    bn1: BatchNorm<B>,
+pub struct Conv1Block {
+    conv1: Conv2d,
+    bn1: BatchNorm,
     relu: Relu,
     maxpool: MaxPool2d,
 }
 
-impl<B: Backend> Conv1Block<B> {
-    pub fn forward(&self, input: Tensor<B, 4>) -> Tensor<B, 4> {
+impl Conv1Block {
+    pub fn forward(&self, input: Tensor<4>) -> Tensor<4> {
         let out = self.conv1.forward(input);
         let out = self.bn1.forward(out);
         let out = self.relu.forward(out);
@@ -167,7 +167,7 @@ impl<B: Backend> Conv1Block<B> {
     }
 
     /// Create a new Conv1Block.
-    pub fn new(in_channels: usize, out_channels: usize, device: &Device<B>) -> Self {
+    pub fn new(in_channels: usize, out_channels: usize, device: &Device) -> Self {
         let initializer = Initializer::KaimingNormal {
             gain: SQRT_2,
             fan_out_only: true,
@@ -229,25 +229,12 @@ impl ResNetConfig {
     }
 }
 
-/// ResNet model output containing multi-scale features
-#[derive(Debug, Clone)]
-pub struct ResNetOutput<B: Backend> {
-    /// Layer1 output (1/4 scale)
-    pub layer1: Tensor<B, 4>,
-    /// Layer2 output (1/8 scale)
-    pub layer2: Tensor<B, 4>,
-    /// Layer3 output (1/16 scale)
-    pub layer3: Tensor<B, 4>,
-    /// Layer4 output (1/32 scale)
-    pub layer4: Tensor<B, 4>,
-}
-
 impl ResNetConfig {
     /// Initialize ResNet model
     ///
     /// # Errors
     /// Returns `ResNetError::UnsupportedConfiguration` for unsupported layer configurations.
-    pub fn init<B: Backend>(&self, device: &B::Device) -> Result<ResNetBackbone<B>, ResNetError> {
+    pub fn init(&self, device: &Device) -> Result<ResNetBackbone, ResNetError> {
         match self.layers.as_slice() {
             [3, 4, 6, 3] => Ok(ResNetBackbone::resnet50(device)),
             [3, 4, 23, 3] => Ok(ResNetBackbone::resnet101(device)),
@@ -263,7 +250,6 @@ mod tests {
     use burn::tensor::Distribution;
 
     use super::*;
-    use crate::tests::TestBackend;
 
     #[test]
     fn resnet50_config_sets_correct_layer_depths() {
@@ -275,14 +261,10 @@ mod tests {
 
     #[test]
     fn resnet50_forward_returns_multiscale_features() {
-        let device = Default::default();
+        let device = Device::flex();
         let model = ResNetBackbone::resnet50(&device);
 
-        let input = Tensor::<TestBackend, 4>::random(
-            [1, 3, 224, 224],
-            Distribution::Normal(0.0, 1.0),
-            &device,
-        );
+        let input = Tensor::<4>::random([1, 3, 224, 224], Distribution::Normal(0.0, 1.0), &device);
         let output = model.forward(input);
 
         // Check output shapes for ResNet50
@@ -294,14 +276,10 @@ mod tests {
 
     #[test]
     fn resnet18_forward_returns_basic_block_features() {
-        let device = Default::default();
+        let device = Device::flex();
         let model = ResNetBackbone::resnet18(&device);
 
-        let input = Tensor::<TestBackend, 4>::random(
-            [1, 3, 224, 224],
-            Distribution::Normal(0.0, 1.0),
-            &device,
-        );
+        let input = Tensor::<4>::random([1, 3, 224, 224], Distribution::Normal(0.0, 1.0), &device);
         let output = model.forward(input);
 
         // Check output shapes for ResNet18 (expansion=1)

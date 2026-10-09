@@ -5,54 +5,60 @@
 
 **Bilateral Reference Network for high-resolution dichotomous image segmentation**
 
-This is the main BiRefNet crate that provides a unified CLI interface for inference across multiple backends (CPU, WebGPU, CUDA, ROCm, Metal, Vulkan).
+This is the main BiRefNet crate that provides a unified CLI for inference and training across multiple backends (CPU, WebGPU, Vulkan, Metal, CUDA, ROCm).
+
+Built on [Burn](https://burn.dev) 0.22: the backend is a run-time `Device` value. Cargo features only decide which backends are compiled in, and `--device` picks one when the program runs.
 
 ## Implemented Features
 
 - ✅ **Cross-platform inference**: Single and batch image processing
-- ✅ **Multi-backend support**: CPU (ndarray), GPU (WebGPU, CUDA, ROCm, Metal, Vulkan)
-- ✅ **CLI tool**: Complete command line interface for inference
-- ✅ **Model management**: Automatic PyTorch weight loading and conversion
-- ✅ **Backend information**: Runtime backend detection and reporting
+- ✅ **Multi-backend support**: CPU (Flex, CubeCL CPU), GPU (WebGPU, Vulkan, Metal, CUDA, ROCm), several in one binary
+- ✅ **CLI tool**: Inference, training and device information
+- ✅ **Model management**: PyTorch / SafeTensors weight loading, Burnpack (`.bpk`) checkpoints
+- ✅ **Precision selection**: `--precision f32|f16|bf16` at run time
 
 ## Installation
 
 ### As a CLI tool
 
 ```bash
-# CPU version (default)
+# CPU only (default: Flex backend, inference, kernel fusion)
 cargo install birefnet
 
-# GPU versions
-cargo install birefnet --features wgpu --no-default-features # WebGPU (cross-platform)
-cargo install birefnet --features cuda --no-default-features # NVIDIA CUDA
-cargo install birefnet --features rocm --no-default-features # AMD ROCm
-cargo install birefnet --features metal --no-default-features # Apple Metal
-cargo install birefnet --features vulkan --no-default-features # Vulkan
+# Add GPU backends next to the CPU one; `--device` chooses at run time
+cargo install birefnet --features wgpu   # WebGPU (cross-platform)
+cargo install birefnet --features vulkan # Vulkan (pins wgpu to SPIR-V)
+cargo install birefnet --features metal  # Apple Metal
+cargo install birefnet --features cuda   # NVIDIA CUDA
+cargo install birefnet --features rocm   # AMD ROCm
+
+# Training support
+cargo install birefnet --features train
 ```
 
-### As a library
+### Cargo features
 
-```toml
-[dependencies]
-# CPU inference
-birefnet = { version = "0.1.0", features = ["inference"] }
-
-# GPU inference examples
-birefnet = { version = "0.1.0", features = ["wgpu", "inference"], default-features = false }    # WebGPU
-birefnet = { version = "0.1.0", features = ["cuda", "inference"], default-features = false }   # NVIDIA CUDA
-birefnet = { version = "0.1.0", features = ["rocm", "inference"], default-features = false }   # AMD ROCm
-birefnet = { version = "0.1.0", features = ["metal", "inference"], default-features = false }  # Apple Metal
-birefnet = { version = "0.1.0", features = ["vulkan", "inference"], default-features = false } # Vulkan
-```
+| Feature     | Default | Effect                                                           |
+| ----------- | ------- | ---------------------------------------------------------------- |
+| `inference` | yes     | `infer` subcommand                                               |
+| `train`     | no      | `train` subcommand (Burn `train`, TUI dashboard, system metrics) |
+| `flex`      | yes     | Pure-Rust CPU backend with SIMD and threads                      |
+| `cpu`       | no      | CubeCL CPU backend (LLVM JIT; downloads an LLVM bundle at build) |
+| `wgpu`      | no      | WebGPU backend (Vulkan / Metal / DX12 chosen at run time)        |
+| `vulkan`    | no      | wgpu pinned to Vulkan                                            |
+| `metal`     | no      | wgpu pinned to Metal                                             |
+| `cuda`      | no      | NVIDIA CUDA backend                                              |
+| `rocm`      | no      | AMD ROCm backend                                                 |
+| `fusion`    | yes     | Kernel fusion and autotuning for the CubeCL backends             |
 
 ## Usage
 
 ### CLI
 
 ```bash
-# Show backend information
+# Show the devices compiled into this binary and the selected one
 birefnet info
+birefnet --device wgpu info
 
 # Single image inference
 birefnet infer --input image.jpg --output results/ --model General
@@ -62,33 +68,24 @@ birefnet infer --input image_folder/ --output results/ --model General
 
 # List available models
 birefnet infer --list-models
+
+# Pick a device and precision explicitly
+birefnet --device cuda:1 --precision f16 infer --input image.jpg --output results/ --model General
 ```
+
+`--device` accepts `default`, `flex`, `cpu`, `wgpu`, `wgpu-cpu`, `vulkan`, `metal`, `cuda[:N]` and `rocm[:N]` (only the ones compiled in). `default` uses Burn's `Device::default()`: the first compiled-in backend in the order CUDA, Metal, ROCm, Vulkan, wgpu, CPU, Flex, or the backend named by the `BURN_DEVICE` environment variable.
 
 ### Library
 
 ```rust
-use birefnet::{SelectedBackend, SelectedDevice, create_device, get_backend_name};
+use birefnet::device::select_device;
 
-fn main() {
-    let device = create_device();
-    println!("Using backend: {}", get_backend_name());
-
-    #[cfg(feature = "inference")]
-    {
-        // Inference functionality is available
-        // See examples in the repository
-    }
+fn main() -> anyhow::Result<()> {
+    let device = select_device("default")?;
+    println!("Using device: {device:?}");
+    Ok(())
 }
 ```
-
-## Supported Backends
-
-- **ndarray** (default): CPU backend, good for development and compatibility
-- **wgpu**: Cross-platform GPU backend, works on NVIDIA, AMD, Intel GPUs
-- **cuda**: NVIDIA CUDA GPU backend
-- **rocm**: AMD ROCm GPU backend
-- **metal**: Apple Metal GPU backend
-- **vulkan**: Vulkan GPU backend
 
 ## Architecture
 
@@ -98,10 +95,6 @@ This crate integrates the following specialized crates:
 - [`birefnet-backbones`](../birefnet-backbones): Backbone networks (Swin, ResNet, VGG, PVT v2)
 - [`birefnet-inference`](../birefnet-inference): Inference engine and post-processing
 - [`birefnet-util`](../birefnet-util): Image processing utilities
-
-## Currently Not Available
-
-- **Training functionality**: CLI structure exists but training loop is not implemented
 
 ## License
 

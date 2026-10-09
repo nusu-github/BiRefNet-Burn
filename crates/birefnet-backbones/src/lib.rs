@@ -15,7 +15,7 @@ pub use backbones::{
 use burn::prelude::*;
 
 /// Unified backbone trait for BiRefNet
-pub trait Backbone<B: Backend> {
+pub trait Backbone {
     /// Forward pass through the backbone
     ///
     /// # Arguments
@@ -23,15 +23,15 @@ pub trait Backbone<B: Backend> {
     ///
     /// # Returns
     /// Array of 4 feature maps at different scales
-    fn forward(&self, input: Tensor<B, 4>) -> [Tensor<B, 4>; 4];
+    fn forward(&self, input: Tensor<4>) -> [Tensor<4>; 4];
 
     /// Get output channels for each scale
     fn output_channels(&self) -> [usize; 4];
 }
 
 /// Implement Backbone trait for ResNet
-impl<B: Backend> Backbone<B> for ResNetBackbone<B> {
-    fn forward(&self, input: Tensor<B, 4>) -> [Tensor<B, 4>; 4] {
+impl Backbone for ResNetBackbone {
+    fn forward(&self, input: Tensor<4>) -> [Tensor<4>; 4] {
         self.forward(input)
     }
 
@@ -44,8 +44,8 @@ impl<B: Backend> Backbone<B> for ResNetBackbone<B> {
 }
 
 /// Implement Backbone trait for VGG
-impl<B: Backend> Backbone<B> for VGGBackbone<B> {
-    fn forward(&self, input: Tensor<B, 4>) -> [Tensor<B, 4>; 4] {
+impl Backbone for VGGBackbone {
+    fn forward(&self, input: Tensor<4>) -> [Tensor<4>; 4] {
         self.forward(input)
     }
 
@@ -56,8 +56,8 @@ impl<B: Backend> Backbone<B> for VGGBackbone<B> {
 }
 
 /// Implement Backbone trait for Swin Transformer
-impl<B: Backend> Backbone<B> for SwinTransformer<B> {
-    fn forward(&self, input: Tensor<B, 4>) -> [Tensor<B, 4>; 4] {
+impl Backbone for SwinTransformer {
+    fn forward(&self, input: Tensor<4>) -> [Tensor<4>; 4] {
         let input_dims = input.dims();
         self.forward(input).unwrap_or_else(|err| {
             panic!("SwinTransformer forward pass failed with input shape {input_dims:?}: {err}")
@@ -71,8 +71,8 @@ impl<B: Backend> Backbone<B> for SwinTransformer<B> {
 }
 
 /// Implement Backbone trait for PVTv2
-impl<B: Backend> Backbone<B> for PyramidVisionTransformerImpr<B> {
-    fn forward(&self, input: Tensor<B, 4>) -> [Tensor<B, 4>; 4] {
+impl Backbone for PyramidVisionTransformerImpr {
+    fn forward(&self, input: Tensor<4>) -> [Tensor<4>; 4] {
         self.forward(input)
     }
 
@@ -150,19 +150,19 @@ pub enum PvtV2Variant {
 
 /// Enum to wrap different backbone implementations
 #[derive(Module, Debug)]
-pub enum BackboneWrapper<B: Backend> {
+pub enum BackboneWrapper {
     /// ResNet backbone
-    ResNet(ResNetBackbone<B>),
+    ResNet(ResNetBackbone),
     /// VGG backbone
-    VGG(VGGBackbone<B>),
+    VGG(VGGBackbone),
     /// Swin Transformer backbone
-    SwinTransformer(SwinTransformer<B>),
+    SwinTransformer(SwinTransformer),
     /// PvtV2 backbone
-    PvtV2(PyramidVisionTransformerImpr<B>),
+    PvtV2(PyramidVisionTransformerImpr),
 }
 
-impl<B: Backend> Backbone<B> for BackboneWrapper<B> {
-    fn forward(&self, input: Tensor<B, 4>) -> [Tensor<B, 4>; 4] {
+impl Backbone for BackboneWrapper {
+    fn forward(&self, input: Tensor<4>) -> [Tensor<4>; 4] {
         match self {
             Self::ResNet(backbone) => backbone.forward(input),
             Self::VGG(backbone) => backbone.forward(input),
@@ -200,17 +200,19 @@ impl<B: Backend> Backbone<B> for BackboneWrapper<B> {
 /// # Panics
 /// * When Swin Transformer initialization fails due to invalid configuration parameters
 /// * When PvtV2 initialization fails due to invalid configuration parameters  
-/// * When the device is not compatible with the selected backend
 ///
 /// # Examples
-/// ```rust,ignore
-/// let backbone = create_backbone(BackboneType::ResNet(ResNetVariant::ResNet50), &device);
-/// let features = backbone.forward(input_tensor);
+/// ```rust
+/// use birefnet_backbones::{Backbone, BackboneType, ResNetVariant, create_backbone};
+/// use burn::tensor::{Device, Tensor};
+///
+/// let device = Device::flex();
+/// let backbone = create_backbone(BackboneType::ResNet(ResNetVariant::ResNet18), &device);
+/// let [x1, .., x4] = backbone.forward(Tensor::zeros([1, 3, 64, 64], &device));
+/// assert_eq!(x1.dims()[2..], [16, 16]);
+/// assert_eq!(x4.dims()[2..], [2, 2]);
 /// ```
-pub fn create_backbone<B: Backend>(
-    backbone_type: BackboneType,
-    device: &Device<B>,
-) -> BackboneWrapper<B> {
+pub fn create_backbone(backbone_type: BackboneType, device: &Device) -> BackboneWrapper {
     match backbone_type {
         BackboneType::ResNet(variant) => {
             let backbone = match variant {
@@ -270,11 +272,4 @@ pub fn create_backbone<B: Backend>(
             BackboneWrapper::PvtV2(backbone)
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use burn::backend::Cpu;
-
-    pub type TestBackend = Cpu;
 }

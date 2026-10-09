@@ -1,13 +1,14 @@
 //! Mean Squared Error (MSE) metric for BiRefNet.
 
-use core::marker::PhantomData;
 use std::sync::Arc;
 
+use burn::tensor::TensorReadError;
 use burn::{
     config::Config,
-    tensor::{Tensor, backend::Backend, cast::ToElement, s},
+    tensor::{Tensor, s},
     train::metric::{
-        Metric, MetricMetadata, Numeric, NumericEntry,
+        Metric, MetricAttributes, MetricMetadata, Numeric, NumericAttributes, NumericEntry,
+        SerializedEntry,
         state::{FormatOptions, NumericMetricState},
     },
 };
@@ -24,19 +25,17 @@ pub struct MSEMetricConfig {
 
 /// MSE metric.
 #[derive(Default, Clone)]
-pub struct MSEMetric<B: Backend> {
+pub struct MSEMetric {
     state: NumericMetricState,
     name: Arc<String>,
-    _backend: PhantomData<B>,
 }
 
-impl<B: Backend> MSEMetric<B> {
+impl MSEMetric {
     /// Creates a new MSE metric.
     pub fn new() -> Self {
         Self {
             state: NumericMetricState::default(),
             name: Arc::new("MSE".to_owned()),
-            _backend: PhantomData,
         }
     }
 
@@ -45,13 +44,12 @@ impl<B: Backend> MSEMetric<B> {
         Self {
             state: NumericMetricState::default(),
             name: Arc::new(name),
-            _backend: PhantomData,
         }
     }
 }
 
-impl<B: Backend> Metric for MSEMetric<B> {
-    type Input = MSEInput<B>;
+impl Metric for MSEMetric {
+    type Input = MSEInput;
 
     fn name(&self) -> Arc<String> {
         self.name.clone()
@@ -61,30 +59,47 @@ impl<B: Backend> Metric for MSEMetric<B> {
         &mut self,
         input: &Self::Input,
         _metadata: &MetricMetadata,
-    ) -> burn::train::metric::SerializedEntry {
+    ) -> Result<SerializedEntry, TensorReadError> {
         let [batch_size, ..] = input.predictions.dims();
 
         let mut total_mse = 0.0;
 
         // Process each item in the batch
         for b in 0..batch_size {
-            let pred: Tensor<B, 3> = input
+            let pred: Tensor<3> = input
                 .predictions
                 .clone()
                 .slice(s![b..=b, .., .., ..])
-                .squeeze();
-            let gt: Tensor<B, 3> = input.targets.clone().slice(s![b..=b, .., .., ..]).squeeze();
+                .squeeze_dim::<3>(0);
+            let gt: Tensor<3> = input
+                .targets
+                .clone()
+                .slice(s![b..=b, .., .., ..])
+                .squeeze_dim::<3>(0);
 
             let mse = calculate_mse_single(pred, gt);
             total_mse += mse;
         }
 
         let avg_mse = total_mse / batch_size as f64;
-        self.state.update(
-            avg_mse,
-            batch_size,
-            FormatOptions::new(self.name.clone()).precision(5),
-        )
+        self.state.update(avg_mse, batch_size);
+        Ok(self
+            .state
+            .compute_update(FormatOptions::new(self.name.clone()).precision(5)))
+    }
+
+    fn compute(&mut self) -> Result<SerializedEntry, TensorReadError> {
+        Ok(self
+            .state
+            .compute_final(FormatOptions::new(self.name.clone()).precision(5)))
+    }
+
+    fn attributes(&self) -> MetricAttributes {
+        NumericAttributes {
+            unit: None,
+            higher_is_better: false,
+        }
+        .into()
     }
 
     fn clear(&mut self) {
@@ -92,13 +107,17 @@ impl<B: Backend> Metric for MSEMetric<B> {
     }
 }
 
-impl<B: Backend> Numeric for MSEMetric<B> {
-    fn value(&self) -> NumericEntry {
-        self.state.current_value()
+impl Numeric for MSEMetric {
+    fn value(&self) -> Option<NumericEntry> {
+        Some(self.state.current_value())
     }
 
-    fn running_value(&self) -> NumericEntry {
-        self.state.running_value()
+    fn running_value(&self) -> Option<NumericEntry> {
+        Some(self.state.running_value())
+    }
+
+    fn final_value(&self) -> NumericEntry {
+        self.state.final_value()
     }
 }
 
@@ -115,10 +134,7 @@ impl<B: Backend> Numeric for MSEMetric<B> {
 ///
 /// # Returns
 /// The MSE value.
-fn calculate_mse_single<B: Backend, const D: usize>(
-    predictions: Tensor<B, D>,
-    targets: Tensor<B, D>,
-) -> f64 {
+fn calculate_mse_single<const D: usize>(predictions: Tensor<D>, targets: Tensor<D>) -> f64 {
     // Prepare data following Python _prepare_data function
     let (pred, gt) = prepare_data(predictions, targets);
 
@@ -127,14 +143,11 @@ fn calculate_mse_single<B: Backend, const D: usize>(
     let squared_diff = diff.powf_scalar(2.0);
     let mse = squared_diff.mean();
 
-    mse.into_scalar().to_f64()
+    mse.into_scalar::<f64>()
 }
 
 /// Prepares prediction and ground truth data following Python _prepare_data logic.
-fn prepare_data<B: Backend, const D: usize>(
-    pred: Tensor<B, D>,
-    gt: Tensor<B, D>,
-) -> (Tensor<B, D>, Tensor<B, D>) {
+fn prepare_data<const D: usize>(pred: Tensor<D>, gt: Tensor<D>) -> (Tensor<D>, Tensor<D>) {
     // gt = gt > 128 (binary ground truth)
     let gt_binary = gt.greater_elem(128).float();
 
@@ -146,10 +159,10 @@ fn prepare_data<B: Backend, const D: usize>(
     let pred_max = pred_norm.clone().max();
     let range = pred_max - pred_min.clone();
 
-    let pred_final = if range.clone().greater_elem(1e-8).into_scalar().to_bool() {
+    let pred_final = if range.clone().greater_elem(1e-8).into_scalar::<bool>() {
         // Normalize to [0, 1] if there's variation
-        let pred_min_scalar = pred_min.into_scalar().to_f64();
-        let range_scalar = range.into_scalar().to_f64();
+        let pred_min_scalar = pred_min.into_scalar::<f64>();
+        let range_scalar = range.into_scalar::<f64>();
         (pred_norm - pred_min_scalar) / range_scalar
     } else {
         // Use as-is if all values are the same
@@ -160,6 +173,6 @@ fn prepare_data<B: Backend, const D: usize>(
 }
 
 /// Public function for external use.
-pub fn calculate_mse<B: Backend>(predictions: Tensor<B, 2>, targets: Tensor<B, 2>) -> f64 {
+pub fn calculate_mse(predictions: Tensor<2>, targets: Tensor<2>) -> f64 {
     calculate_mse_single(predictions, targets)
 }

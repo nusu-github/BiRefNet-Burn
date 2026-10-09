@@ -19,7 +19,7 @@ use burn::{
         loss::Reduction,
         pool::{AvgPool2d, AvgPool2dConfig},
     },
-    tensor::{Int, Tensor, activation::sigmoid, backend::Backend},
+    tensor::{Int, Tensor, activation::sigmoid},
 };
 
 /// Configuration for creating a [Structure loss](StructureLoss).
@@ -50,7 +50,9 @@ impl StructureLossConfig {
         let padding = self.kernel_size / 2;
         let avg_pool = AvgPool2dConfig::new([self.kernel_size, self.kernel_size])
             .with_strides([1, 1])
-            .with_padding(PaddingConfig2d::Explicit(padding, padding, padding, padding))
+            .with_padding(PaddingConfig2d::Explicit(
+                padding, padding, padding, padding,
+            ))
             .init();
 
         StructureLoss {
@@ -91,7 +93,7 @@ impl StructureLossConfig {
 /// with edge-aware weighting to emphasize boundaries in segmentation tasks.
 /// The edge weighting is computed using average pooling to detect regions
 /// where the target changes rapidly.
-#[derive(Module, Clone, Debug)]
+#[derive(Module, Debug)]
 #[module(custom_display)]
 pub struct StructureLoss {
     /// Weight factor applied to the final loss.
@@ -140,12 +142,12 @@ impl StructureLoss {
     /// - predictions: `[batch_size, channels, height, width]` (logits)
     /// - targets: `[batch_size, channels, height, width]` (binary values)
     /// - output: `[1]`
-    pub fn forward<B: Backend>(
+    pub fn forward(
         &self,
-        predictions: Tensor<B, 4>,
-        targets: Tensor<B, 4, Int>,
+        predictions: Tensor<4>,
+        targets: Tensor<4, Int>,
         reduction: Reduction,
-    ) -> Tensor<B, 1> {
+    ) -> Tensor<1> {
         let loss = self.forward_no_reduction(predictions, targets);
         let reduced = crate::reduce_loss(loss, reduction);
 
@@ -160,11 +162,11 @@ impl StructureLoss {
     /// - predictions: `[batch_size, channels, height, width]` (logits)
     /// - targets: `[batch_size, channels, height, width]` (binary values)
     /// - output: `[batch_size]`
-    pub fn forward_no_reduction<B: Backend>(
+    pub fn forward_no_reduction(
         &self,
-        predictions: Tensor<B, 4>,
-        targets: Tensor<B, 4, Int>,
-    ) -> Tensor<B, 1> {
+        predictions: Tensor<4>,
+        targets: Tensor<4, Int>,
+    ) -> Tensor<1> {
         self.assertions(&predictions, &targets);
 
         let targets_float = targets.float();
@@ -189,12 +191,12 @@ impl StructureLoss {
     }
 
     /// Compute weighted binary cross-entropy with logits.
-    fn weighted_bce_with_logits<B: Backend>(
+    fn weighted_bce_with_logits(
         &self,
-        logits: Tensor<B, 4>,
-        targets: Tensor<B, 4>,
-        weights: Tensor<B, 4>,
-    ) -> Tensor<B, 1> {
+        logits: Tensor<4>,
+        targets: Tensor<4>,
+        weights: Tensor<4>,
+    ) -> Tensor<1> {
         // Numerically stable BCE with logits: max(x, 0) - x*y + log(1 + exp(-abs(x)))
         let term1 = logits.clone().clamp_min(0.0) - logits.clone() * targets;
         let term2 = (-logits.abs()).exp().add_scalar(1.0).log();
@@ -210,16 +212,16 @@ impl StructureLoss {
             .reshape([batch_size as i32, channels as i32]);
 
         // Mean over channels: [B,C] -> [B,1] -> [B]
-        bce_avg.mean_dim(1).squeeze::<1>()
+        bce_avg.mean_dim(1).squeeze_dim::<1>(1)
     }
 
     /// Compute weighted IoU loss.
-    fn weighted_iou_loss<B: Backend>(
+    fn weighted_iou_loss(
         &self,
-        predictions: Tensor<B, 4>,
-        targets: Tensor<B, 4>,
-        weights: Tensor<B, 4>,
-    ) -> Tensor<B, 1> {
+        predictions: Tensor<4>,
+        targets: Tensor<4>,
+        weights: Tensor<4>,
+    ) -> Tensor<1> {
         // Weighted intersection and union
         let weighted_pred = predictions.clone() * weights.clone();
         let weighted_target = targets.clone() * weights.clone();
@@ -239,10 +241,10 @@ impl StructureLoss {
             / (union_flat - inter_flat.add_scalar(self.eps));
 
         // IoU loss = 1 - IoU, average over channels: [B,C] -> [B,1] -> [B]
-        (iou.ones_like() - iou).mean_dim(1).squeeze::<1>()
+        (iou.ones_like() - iou).mean_dim(1).squeeze_dim::<1>(1)
     }
 
-    fn assertions<B: Backend>(&self, predictions: &Tensor<B, 4>, targets: &Tensor<B, 4, Int>) {
+    fn assertions(&self, predictions: &Tensor<4>, targets: &Tensor<4, Int>) {
         let pred_dims = predictions.dims();
         let target_dims = targets.dims();
         assert_eq!(
@@ -254,62 +256,51 @@ impl StructureLoss {
 
 #[cfg(test)]
 mod tests {
-    use burn::tensor::{TensorData, cast::ToElement};
+    use burn::tensor::Device;
+    use burn::tensor::TensorData;
 
     use super::*;
-    use crate::tests::TestBackend;
     #[test]
     fn structure_loss_forward_perfect_match_returns_non_negative() {
-        let device = Default::default();
+        let device = Device::flex();
         let loss = StructureLoss::new();
 
         // Perfect match: predictions and targets are identical
-        let predictions = Tensor::<TestBackend, 4>::from_data(
-            TensorData::from([[[[0.8, 0.9], [0.7, 0.95]]]]),
-            &device,
-        );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
-            TensorData::from([[[[1, 1], [1, 1]]]]),
-            &device,
-        );
+        let predictions =
+            Tensor::<4>::from_data(TensorData::from([[[[0.8, 0.9], [0.7, 0.95]]]]), &device);
+        let targets = Tensor::<4, Int>::from_data(TensorData::from([[[[1, 1], [1, 1]]]]), &device);
 
         let result = loss.forward(predictions, targets, Reduction::Mean);
 
         // Should be low loss for good predictions
         assert!(
-            result.into_scalar().to_f64() >= 0.0,
+            result.into_scalar::<f64>() >= 0.0,
             "Loss should be non-negative"
         );
     }
 
     #[test]
     fn structure_loss_forward_checkerboard_pattern_computes_finite_values() {
-        let device = Default::default();
+        let device = Device::flex();
         let loss = StructureLoss::new();
 
         // Create targets with clear edges (checkerboard pattern)
-        let predictions = Tensor::<TestBackend, 4>::from_data(
-            TensorData::from([[[[0.1, 0.9], [0.9, 0.1]]]]),
-            &device,
-        );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
-            TensorData::from([[[[0, 1], [1, 0]]]]),
-            &device,
-        );
+        let predictions =
+            Tensor::<4>::from_data(TensorData::from([[[[0.1, 0.9], [0.9, 0.1]]]]), &device);
+        let targets = Tensor::<4, Int>::from_data(TensorData::from([[[[0, 1], [1, 0]]]]), &device);
 
         let result_mean = loss.forward(predictions.clone(), targets.clone(), Reduction::Mean);
         let result_sum = loss.forward(predictions.clone(), targets.clone(), Reduction::Sum);
         let result_no_reduction = loss.forward_no_reduction(predictions, targets);
 
         // All should be valid finite values
-        assert!(result_mean.into_scalar().to_f64().is_finite());
-        assert!(result_sum.into_scalar().to_f64().is_finite());
+        assert!(result_mean.into_scalar::<f64>().is_finite());
+        assert!(result_sum.into_scalar::<f64>().is_finite());
         assert!(
             result_no_reduction
                 .clone()
                 .sum()
-                .into_scalar()
-                .to_f64()
+                .into_scalar::<f64>()
                 .is_finite()
         );
 
@@ -319,18 +310,18 @@ mod tests {
 
     #[test]
     fn structure_loss_processes_batches_correctly() {
-        let device = Default::default();
+        let device = Device::flex();
         let loss = StructureLoss::new();
 
         // Batch of 2 samples
-        let predictions = Tensor::<TestBackend, 4>::from_data(
+        let predictions = Tensor::<4>::from_data(
             TensorData::from([
                 [[[0.8, 0.2], [0.3, 0.9]]],    // Sample 1
                 [[[0.1, 0.95], [0.85, 0.05]]], // Sample 2
             ]),
             &device,
         );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
+        let targets = Tensor::<4, Int>::from_data(
             TensorData::from([
                 [[[1, 0], [0, 1]]], // Sample 1
                 [[[0, 1], [1, 0]]], // Sample 2
@@ -346,20 +337,19 @@ mod tests {
         assert_eq!(result_no_reduction.dims(), [2]); // batch_size = 2
 
         // All values should be finite and non-negative
-        assert!(result_mean.into_scalar().to_f64() >= 0.0);
+        assert!(result_mean.into_scalar::<f64>() >= 0.0);
         for i in 0..2 {
             let sample_loss = result_no_reduction
                 .clone()
                 .select(0, Tensor::from_data([i], &device))
-                .into_scalar()
-                .to_f64();
+                .into_scalar::<f64>();
             assert!(sample_loss >= 0.0, "Sample {i} loss should be non-negative");
         }
     }
 
     #[test]
     fn structure_loss_with_custom_weight_and_edge_factor_applies_correctly() {
-        let device = Default::default();
+        let device = Device::flex();
         let config = StructureLossConfig::new()
             .with_weight(2.0)
             .with_edge_factor(3.0)
@@ -367,40 +357,30 @@ mod tests {
             .with_eps(1e-6);
         let loss = config.init();
 
-        let predictions = Tensor::<TestBackend, 4>::from_data(
-            TensorData::from([[[[0.5, 0.5], [0.5, 0.5]]]]),
-            &device,
-        );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
-            TensorData::from([[[[1, 0], [0, 1]]]]),
-            &device,
-        );
+        let predictions =
+            Tensor::<4>::from_data(TensorData::from([[[[0.5, 0.5], [0.5, 0.5]]]]), &device);
+        let targets = Tensor::<4, Int>::from_data(TensorData::from([[[[1, 0], [0, 1]]]]), &device);
 
         let result = loss.forward(predictions, targets, Reduction::Mean);
 
         // Should incorporate the weight factor (2.0)
-        assert!(result.into_scalar().to_f64() > 0.0);
+        assert!(result.into_scalar::<f64>() > 0.0);
     }
 
     #[test]
     fn structure_loss_auto_reduction_equals_mean_reduction() {
-        let device = Default::default();
+        let device = Device::flex();
         let loss = StructureLoss::new();
 
-        let predictions = Tensor::<TestBackend, 4>::from_data(
-            TensorData::from([[[[0.3, 0.7], [0.8, 0.2]]]]),
-            &device,
-        );
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
-            TensorData::from([[[[0, 1], [1, 0]]]]),
-            &device,
-        );
+        let predictions =
+            Tensor::<4>::from_data(TensorData::from([[[[0.3, 0.7], [0.8, 0.2]]]]), &device);
+        let targets = Tensor::<4, Int>::from_data(TensorData::from([[[[0, 1], [1, 0]]]]), &device);
 
         let result_auto = loss.forward(predictions.clone(), targets.clone(), Reduction::Auto);
         let result_mean = loss.forward(predictions, targets, Reduction::Mean);
 
-        let auto_val = result_auto.into_scalar().to_f64();
-        let mean_val = result_mean.into_scalar().to_f64();
+        let auto_val = result_auto.into_scalar::<f64>();
+        let mean_val = result_mean.into_scalar::<f64>();
 
         assert!((auto_val - mean_val).abs() < 1e-6, "Auto should equal Mean");
     }
@@ -426,15 +406,11 @@ mod tests {
     #[test]
     #[should_panic = "Shape of predictions"]
     fn structure_loss_forward_mismatched_shapes_panics() {
-        let device = Default::default();
+        let device = Device::flex();
         let loss = StructureLoss::new();
 
-        let predictions =
-            Tensor::<TestBackend, 4>::from_data(TensorData::from([[[[1.0, 2.0]]]]), &device);
-        let targets = Tensor::<TestBackend, 4, Int>::from_data(
-            TensorData::from([[[[1, 2], [3, 4]]]]),
-            &device,
-        );
+        let predictions = Tensor::<4>::from_data(TensorData::from([[[[1.0, 2.0]]]]), &device);
+        let targets = Tensor::<4, Int>::from_data(TensorData::from([[[[1, 2], [3, 4]]]]), &device);
 
         let _result = loss.forward_no_reduction(predictions, targets);
     }

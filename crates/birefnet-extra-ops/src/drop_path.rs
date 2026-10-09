@@ -4,7 +4,11 @@
 //! During training, it randomly drops entire paths (sub-networks) and scales the
 //! remaining ones, effectively preventing co-adaptation of parallel paths.
 
-use burn::{prelude::*, tensor::Distribution};
+use burn::{
+    module::{Flag, Param},
+    prelude::*,
+    tensor::Distribution,
+};
 
 /// Configuration for the `DropPath` module.
 #[derive(Config, Debug)]
@@ -12,9 +16,6 @@ pub struct DropPathConfig {
     /// The probability of dropping a path.
     #[config(default = "0.0")]
     pub drop_prob: f64,
-    /// Whether the module is in training mode.
-    #[config(default = "false")]
-    pub training: bool,
     /// Whether to scale the output by the keep probability.
     #[config(default = "true")]
     pub scale_by_keep: bool,
@@ -22,35 +23,38 @@ pub struct DropPathConfig {
 
 impl DropPathConfig {
     /// Initializes a new `DropPath` module.
-    pub const fn init(&self) -> DropPath {
+    pub fn init(&self) -> DropPath {
         DropPath {
             drop_prob: self.drop_prob,
-            training: self.training,
             scale_by_keep: self.scale_by_keep,
+            training: Param::from_bool(true),
         }
     }
 }
 
 /// DropPath module.
-#[derive(Module, Clone, Debug)]
+///
+/// Like [`burn::nn::Dropout`], it is only active while its training flag is set (cleared by
+/// [`Module::valid`] and [`Module::freeze`]) and its input lives on an autodiff device.
+#[derive(Module, Debug)]
 pub struct DropPath {
     drop_prob: f64,
-    training: bool,
     scale_by_keep: bool,
+    training: Param<Flag>,
 }
 
 impl DropPath {
     /// Applies DropPath to the input tensor.
     ///
-    /// If not in training mode or `drop_prob` is 0, it returns the input tensor unchanged.
+    /// Returns the input unchanged outside of training or when `drop_prob` is 0.
     /// Otherwise, it randomly zeros out entire examples in the batch with probability `drop_prob`.
     /// The mask is generated only for the batch dimension and broadcasted to all other dimensions.
     ///
     /// # Shapes
     /// - input: `[batch_size, ..., channels]`
     /// - output: `[batch_size, ..., channels]`
-    pub fn forward<B: Backend, const D: usize>(&self, x: Tensor<B, D>) -> Tensor<B, D> {
-        if !self.training || self.drop_prob == 0.0 {
+    pub fn forward<const D: usize>(&self, x: Tensor<D>) -> Tensor<D> {
+        if !self.training.is_enabled() || !x.device().is_autodiff() || self.drop_prob == 0.0 {
             return x;
         }
         let keep_prob = 1.0 - self.drop_prob;
@@ -78,20 +82,15 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
-    use crate::tests::TestBackend;
 
     #[test]
     fn droppath_eval_mode_returns_input_unchanged() {
-        let device = Default::default();
-        let config = DropPathConfig {
-            drop_prob: 0.2,
-            training: false, // Evaluation mode
-            scale_by_keep: true,
-        };
-        let drop_path = config.init();
+        let device = Device::flex().autodiff();
+        // `valid()` clears the training flag (evaluation mode).
+        let drop_path = DropPathConfig::new().with_drop_prob(0.2).init().valid();
 
         // Test input tensor
-        let x = Tensor::<TestBackend, 4>::ones([2, 3, 4, 4], &device);
+        let x = Tensor::<4>::ones([2, 3, 4, 4], &device);
 
         // In evaluation mode, should return input unchanged
         let output = drop_path.forward(x.clone());
@@ -99,7 +98,7 @@ mod tests {
         // Verify input and output are equal
         let diff = (output - x).abs().sum();
         assert_eq!(
-            diff.into_scalar(),
+            diff.into_scalar::<f32>(),
             0.0,
             "In evaluation mode, input and output should be equal"
         );
@@ -107,16 +106,12 @@ mod tests {
 
     #[test]
     fn droppath_zero_prob_returns_input_unchanged() {
-        let device = Default::default();
-        let config = DropPathConfig {
-            drop_prob: 0.0, // Drop probability of 0
-            training: true,
-            scale_by_keep: true,
-        };
-        let drop_path = config.init();
+        let device = Device::flex().autodiff();
+        // Drop probability of 0
+        let drop_path = DropPathConfig::new().with_drop_prob(0.0).init();
 
         // Test input tensor
-        let x = Tensor::<TestBackend, 4>::ones([2, 3, 4, 4], &device);
+        let x = Tensor::<4>::ones([2, 3, 4, 4], &device);
 
         // With drop_prob=0, should return input unchanged
         let output = drop_path.forward(x.clone());
@@ -124,10 +119,22 @@ mod tests {
         // Verify input and output are equal
         let diff = (output - x).abs().sum();
         assert_eq!(
-            diff.into_scalar(),
+            diff.into_scalar::<f32>(),
             0.0,
             "With drop_prob=0, input and output should be equal"
         );
+    }
+
+    #[test]
+    fn droppath_is_inactive_on_a_plain_device() {
+        // Like `Dropout`, inputs that are not on an autodiff device are never dropped.
+        let device = Device::flex();
+        let drop_path = DropPathConfig::new().with_drop_prob(0.99).init();
+        let x = Tensor::<2>::ones([8, 4], &device);
+
+        let output = drop_path.forward(x.clone());
+
+        assert_eq!((output - x).abs().sum().into_scalar::<f32>(), 0.0);
     }
 
     #[rstest]
@@ -135,18 +142,13 @@ mod tests {
     #[case(vec![2, 196, 256], "3D")]
     #[case(vec![2, 3, 4, 4], "4D")]
     fn droppath_preserves_tensor_dimensions(#[case] shape: Vec<usize>, #[case] description: &str) {
-        let device = Default::default();
-        let config = DropPathConfig {
-            drop_prob: 0.5,
-            training: true,
-            scale_by_keep: true,
-        };
-        let drop_path = config.init();
+        let device = Device::flex().autodiff();
+        let drop_path = DropPathConfig::new().with_drop_prob(0.5).init();
 
         let dims = shape.len();
         match dims {
             2 => {
-                let x = Tensor::<TestBackend, 2>::ones([shape[0], shape[1]], &device);
+                let x = Tensor::<2>::ones([shape[0], shape[1]], &device);
                 let output = drop_path.forward(x.clone());
                 assert_eq!(
                     output.dims(),
@@ -155,7 +157,7 @@ mod tests {
                 );
             }
             3 => {
-                let x = Tensor::<TestBackend, 3>::ones([shape[0], shape[1], shape[2]], &device);
+                let x = Tensor::<3>::ones([shape[0], shape[1], shape[2]], &device);
                 let output = drop_path.forward(x.clone());
                 assert_eq!(
                     output.dims(),
@@ -164,10 +166,7 @@ mod tests {
                 );
             }
             4 => {
-                let x = Tensor::<TestBackend, 4>::ones(
-                    [shape[0], shape[1], shape[2], shape[3]],
-                    &device,
-                );
+                let x = Tensor::<4>::ones([shape[0], shape[1], shape[2], shape[3]], &device);
                 let output = drop_path.forward(x.clone());
                 assert_eq!(
                     output.dims(),
@@ -181,17 +180,12 @@ mod tests {
 
     #[test]
     fn droppath_training_mode_achieves_expected_drop_rate() {
-        let device = Default::default();
-        let config = DropPathConfig {
-            drop_prob: 0.5,
-            training: true,
-            scale_by_keep: true,
-        };
-        let drop_path = config.init();
+        let device = Device::flex().autodiff();
+        let drop_path = DropPathConfig::new().with_drop_prob(0.5).init();
 
         // Test with batch size 10 (for statistical verification)
         let batch_size = 10;
-        let x = Tensor::<TestBackend, 4>::ones([batch_size, 3, 4, 4], &device);
+        let x = Tensor::<4>::ones([batch_size, 3, 4, 4], &device);
 
         // Run multiple times to gather statistics
         let mut drop_counts = 0;
@@ -203,7 +197,7 @@ mod tests {
             // Check if each batch element was dropped
             for i in 0..batch_size {
                 let batch_output = output.clone().slice(s![i..=i, .., .., ..]);
-                let sum = batch_output.sum().into_scalar();
+                let sum = batch_output.sum().into_scalar::<f32>();
 
                 // If sum == 0, it was dropped
                 if sum.abs() < 1e-6 {
@@ -224,61 +218,47 @@ mod tests {
 
     #[test]
     fn droppath_scaling_behavior_varies_with_scale_by_keep() {
-        let device = Default::default();
+        let device = Device::flex().autodiff();
 
         // Case with scale_by_keep = true
-        let config_with_scale = DropPathConfig {
-            drop_prob: 0.0, // Set to 0 to verify scaling
-            training: true,
-            scale_by_keep: true,
-        };
-        let drop_path_with_scale = config_with_scale.init();
+        // Set drop_prob to 0 to verify scaling
+        let drop_path_with_scale = DropPathConfig::new().with_scale_by_keep(true).init();
 
         // Case with scale_by_keep = false
-        let config_no_scale = DropPathConfig {
-            drop_prob: 0.0,
-            training: true,
-            scale_by_keep: false,
-        };
-        let drop_path_no_scale = config_no_scale.init();
+        let drop_path_no_scale = DropPathConfig::new().with_scale_by_keep(false).init();
 
-        let x = Tensor::<TestBackend, 2>::ones([2, 4], &device);
+        let x = Tensor::<2>::ones([2, 4], &device);
 
         let output_with_scale = drop_path_with_scale.forward(x.clone());
         let output_no_scale = drop_path_no_scale.forward(x.clone());
 
         // With drop_prob=0, both should return input unchanged
         assert_eq!(
-            output_with_scale.sum().into_scalar(),
-            x.clone().sum().into_scalar(),
+            output_with_scale.sum().into_scalar::<f32>(),
+            x.clone().sum().into_scalar::<f32>(),
             "With scale_by_keep=true and drop_prob=0"
         );
         assert_eq!(
-            output_no_scale.sum().into_scalar(),
-            x.sum().into_scalar(),
+            output_no_scale.sum().into_scalar::<f32>(),
+            x.sum().into_scalar::<f32>(),
             "With scale_by_keep=false and drop_prob=0"
         );
     }
 
     #[test]
     fn droppath_applies_independently_per_batch_element() {
-        let device = Default::default();
-        let config = DropPathConfig {
-            drop_prob: 0.5,
-            training: true,
-            scale_by_keep: true,
-        };
-        let drop_path = config.init();
+        let device = Device::flex().autodiff();
+        let drop_path = DropPathConfig::new().with_drop_prob(0.5).init();
 
         // Test with batch size 4
-        let x = Tensor::<TestBackend, 3>::ones([4, 8, 16], &device);
+        let x = Tensor::<3>::ones([4, 8, 16], &device);
         let output = drop_path.forward(x);
 
         // Check the state of each batch element
         let mut batch_states = vec![];
         for i in 0..4 {
             let batch_elem = output.clone().slice(s![i..=i, .., ..]);
-            let sum = batch_elem.sum().into_scalar();
+            let sum = batch_elem.sum().into_scalar::<f32>();
 
             // Check if dropped or scaled and passed through
             if sum.abs() < 1e-6 {

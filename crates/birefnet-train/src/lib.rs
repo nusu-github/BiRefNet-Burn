@@ -9,10 +9,3 @@ pub use augmentation::{AugmentationConfig, AugmentationMethod, ImageAugmentor};
 pub use dataset::{BiRefNetBatcher, BiRefNetDataset, BiRefNetItem};
 #[doc(inline)]
 pub use error::{DatasetError, DatasetResult};
-
-#[cfg(test)]
-mod tests {
-    use burn::backend::Cpu;
-
-    pub type TestBackend = Cpu;
-}

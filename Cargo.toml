@@ -4,15 +4,25 @@ members = ["crates/*"]
 
 [workspace.package]
 edition = "2024"
+rust-version = "1.95"
 version = "0.1.0"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/nusu-github/BiRefNet-Burn"
 homepage = "https://github.com/nusu-github/BiRefNet-Burn"
 
+[workspace.lints.clippy]
+# Module enums wrap differently sized Burn modules (`Box<M>` does not implement `Module`), and
+# constructors and type names mirror the PyTorch reference implementation.
+large_enum_variant = "allow"
+too_many_arguments = "allow"
+upper_case_acronyms = "allow"
+
 [workspace.dependencies]
-# Core Burn dependencies
-burn = { version = "0.21.0", features = ["std"], default-features = false }
+# Every member starts from the leanest possible `burn` (no backend, no fusion/autotune,
+# no optim). Library crates add only the API features they use; the `birefnet` binary
+# alone selects backends and performance features.
+burn = { version = "=0.22.0", default-features = false, features = ["std"] }
 
 # Error handling
 anyhow = "1"
@@ -21,29 +31,29 @@ thiserror = "2"
 # CLI dependencies
 clap = { version = "4.5", features = ["derive", "cargo"] }
 
-# Serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-
 # Image processing
 image = { version = "0.25.9", default-features = false }
 imageproc = "0.27.0"
 
 # Utilities
 approx = "0.5"
-cfg-if = "1.0.4"
 libm = "0.2.15"
 rand = "0.10.2"
 stacker = "0.1.22"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-walkdir = "2.5.0"
 
 # Testing and benchmarking
 rstest = "0.26.1"
 
 # Model hub integration
 hf-hub = "1.0.0"
+
+# Unit tests run real tensor kernels on Flex; unoptimized Burn makes model-sized tests crawl.
+# Optimize every dependency even in the dev/test profile (as the Burn guide's companion
+# workspace does); workspace crates stay at opt-level 0 for fast rebuilds and debugging.
+[profile.dev.package."*"]
+opt-level = 2
 
 [profile.dev.package.image]
 opt-level = 3
