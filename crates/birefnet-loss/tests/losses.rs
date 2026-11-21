@@ -154,7 +154,7 @@ fn pixel_and_birefnet_loss_support_negative_logits_soft_matting_batch_and_autodi
         .with_ssim(1.0)
         .with_cnt(1.0)
         .with_structure(1.0);
-    let pix = PixLossConfig::new(weights.clone()).init(&device);
+    let pix = PixLossConfig::new(weights).init(&device);
 
     // Spatial dims 64x64 with batch = 2, negative logits, and continuous soft target = 0.3.
     let pred_logits = Tensor::<4>::full([2, 1, 64, 64], -2.0, &device).require_grad();

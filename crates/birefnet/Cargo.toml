@@ -11,7 +11,7 @@ rust-version.workspace = true
 description = "BiRefNet: Bilateral Reference Network for high-resolution dichotomous image segmentation"
 
 [features]
-default = ["inference", "hub", "flex"]
+default = ["inference", "hub"]
 
 # High-level subsystems
 weights = ["dep:birefnet-weights"]

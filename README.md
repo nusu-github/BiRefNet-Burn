@@ -1,11 +1,11 @@
 # BiRefNet-Burn
 
 ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)
-![Rust](https://img.shields.io/badge/rust-1.95%2B-orange.svg)
+![Rust](https://img.shields.io/badge/rust-1.100%2B-orange.svg)
 ![Burn](https://img.shields.io/badge/burn-0.22.1-red.svg)
 [![CI](https://github.com/nusu-github/BiRefNet-Burn/actions/workflows/rust.yml/badge.svg)](https://github.com/nusu-github/BiRefNet-Burn/actions/workflows/rust.yml)
 
-A Rust workspace implementing **BiRefNet** (Bilateral Reference Network) for high-resolution dichotomous image segmentation on the [Burn](https://burn.dev) deep learning framework (`0.22.1`, Edition `2024`, Rust `1.95+`).
+A Rust workspace implementing **BiRefNet** (Bilateral Reference Network) for high-resolution dichotomous image segmentation on the [Burn](https://burn.dev) deep learning framework (`0.22.1`, Edition `2024`, Rust `1.100+`).
 
 ## Table of Contents
 
@@ -44,7 +44,7 @@ BiRefNet is an encoder-decoder segmentation architecture with bilateral referenc
 
 ### Prerequisites
 
-- **Rust**: `1.95` or later (declared via `rust-version` in root `Cargo.toml`)
+- **Rust**: `1.100` or later (declared via `rust-version` in root `Cargo.toml`)
 - **System Dependencies**: Native drivers/SDKs only for optional GPU backends (`wgpu`, `vulkan`, `cuda`, `rocm`)
 
 ### Build the Workspace or CLI

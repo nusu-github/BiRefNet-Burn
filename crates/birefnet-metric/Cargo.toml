@@ -1,14 +1,14 @@
 [package]
 name = "birefnet-metric"
-description = "Evaluation metrics for BiRefNet implemented in Rust using Burn"
+version.workspace = true
+categories.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+keywords.workspace = true
 license.workspace = true
 readme = "README.md"
 repository.workspace = true
-version.workspace = true
-keywords.workspace = true
-categories.workspace = true
+rust-version.workspace = true
+description = "Evaluation metrics for BiRefNet implemented in Rust using Burn"
 
 [dependencies]
 birefnet-util.workspace = true

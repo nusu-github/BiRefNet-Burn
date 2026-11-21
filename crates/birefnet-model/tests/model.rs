@@ -137,7 +137,7 @@ fn train_and_inference_steps_produce_finite_loss_and_sync_detaches_autodiff() {
     );
     assert_eq!(batch.batch_size(), 2);
 
-    let train_out = TrainStep::step(&model, batch.clone());
+    let train_out = TrainStep::step(&model, batch);
     assert!(train_out.item.loss.clone().into_scalar::<f32>().is_finite());
     assert_eq!(train_out.item.output.dims(), [2, 1, 64, 64]);
 

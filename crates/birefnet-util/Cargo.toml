@@ -16,7 +16,7 @@ image-io = ["dep:image"]
 
 [dependencies]
 burn = { workspace = true }
-image = { workspace = true, optional = true, features = ["bmp", "jpeg", "png", "tiff", "webp"] }
+image = { workspace = true, optional = true, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 
 [dev-dependencies]
 approx = { workspace = true }

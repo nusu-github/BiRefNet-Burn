@@ -1,6 +1,6 @@
 # BiRefNet-Burn
 
-Rust workspace (`crates/*`, 11 crates, `resolver = "3"`, `edition = "2024"`, Rust >= 1.95) implementing BiRefNet on the [Burn](https://burn.dev) deep learning framework (`burn = "=0.22.1"`).
+Rust workspace (`crates/*`, 11 crates, `resolver = "3"`, `edition = "2024"`, Rust >= 1.100) implementing BiRefNet on the [Burn](https://burn.dev) deep learning framework (`burn = "=0.22.1"`).
 
 ## Commands
 
@@ -32,6 +32,6 @@ cargo run --release -p birefnet-cli -- info
 
 ## Cloud environment
 
-- `.claude/hooks/session-start.sh` (SessionStart, remote only) checks `rustc >= 1.95` (required by Burn 0.22), installs `rustfmt`/`clippy`, and runs `cargo fetch`.
+- `.claude/hooks/session-start.sh` (SessionStart, remote only) checks `rustc >= 1.100` (the workspace MSRV), installs `rustfmt`/`clippy`, and runs `cargo fetch`.
 - Network access: the default "Trusted" level covers `crates.io` and `github.com` (needed for Burn's LLVM bundle download). Pretrained-weight downloads via `hf-hub` need `huggingface.co` added under Allowed domains in the environment settings; offline tests use `MockFetcher`.
 - No GPU in cloud sessions: validate with `flex`/`cpu`/`wgpu` (software Vulkan) only.

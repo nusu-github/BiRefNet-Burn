@@ -12,6 +12,10 @@ use birefnet::{
     weights::list_available_models,
 };
 use clap::{Parser, Subcommand};
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 const WORKER_STACK_BYTES: usize = 4 * 1024 * 1024;
 

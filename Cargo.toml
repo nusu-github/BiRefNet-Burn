@@ -8,7 +8,7 @@ edition = "2024"
 keywords = ["birefnet", "burn", "deep-learning", "segmentation"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/nusu-github/BiRefNet-Burn"
-rust-version = "1.95"
+rust-version = "1.100"
 version = "0.1.0"
 
 [workspace.lints.rust]
@@ -25,6 +25,9 @@ unused_import_braces = "warn"
 unused_lifetimes = "warn"
 unused_qualifications = "warn"
 
+[workspace.lints.cargo]
+unused_dependencies = "warn"
+
 [workspace.lints.clippy]
 cargo = { level = "warn", priority = -1 }
 complexity = { level = "warn", priority = -1 }
@@ -34,6 +37,7 @@ perf = { level = "warn", priority = -1 }
 style = { level = "warn", priority = -1 }
 suspicious = { level = "warn", priority = -1 }
 
+allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
 as_pointer_underscore = "warn"
 assertions_on_result_states = "warn"
@@ -48,6 +52,7 @@ if_then_some_else_none = "warn"
 literal_string_with_formatting_args = "allow"
 map_err_ignore = "warn"
 multiple_crate_versions = "allow"
+redundant_clone = "warn"
 redundant_type_annotations = "warn"
 renamed_function_params = "warn"
 semicolon_outside_block = "warn"
@@ -78,7 +83,7 @@ burn = { version = "=0.22.1", default-features = false, features = ["std"] }
 anyhow = { version = "1.0.104", default-features = false, features = ["std"] }
 
 # CLI
-clap = { version = "4.6.8", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+clap = { version = "4.6.8", default-features = false, features = ["std"] }
 
 # Image processing
 image = { version = "0.25.10", default-features = false }
@@ -86,10 +91,11 @@ image = { version = "0.25.10", default-features = false }
 # Utilities
 approx = "0.5.1"
 libm = "0.2.16"
+mimalloc = { version = "0.1.52", default-features = false }
 rand = "0.10.4"
 stacker = "0.1.25"
-tracing = { version = "0.1.44", default-features = false, features = ["std", "attributes"] }
-tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "fmt", "env-filter", "ansi"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std"] }
 
 # Model hub integration
 hf-hub = { version = "1.0.0", default-features = false }
