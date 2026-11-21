@@ -1,0 +1,40 @@
+[package]
+name = "birefnet-cli"
+version.workspace = true
+categories = ["command-line-utilities", "computer-vision"]
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+rust-version.workspace = true
+description = "Command-line interface for BiRefNet inference and training."
+
+[[bin]]
+name = "birefnet"
+path = "src/main.rs"
+
+[features]
+default = ["flex", "hub"]
+hub = ["birefnet/hub"]
+train = ["birefnet/train", "burn/train"]
+flex = ["birefnet/flex"]
+cpu = ["birefnet/cpu"]
+wgpu = ["birefnet/wgpu"]
+vulkan = ["birefnet/vulkan"]
+metal = ["birefnet/metal"]
+cuda = ["birefnet/cuda"]
+rocm = ["birefnet/rocm"]
+fusion = ["birefnet/fusion"]
+
+[dependencies]
+anyhow.workspace = true
+birefnet = { workspace = true, default-features = false, features = ["inference"] }
+burn.workspace = true
+clap.workspace = true
+stacker.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

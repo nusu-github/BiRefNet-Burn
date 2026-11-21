@@ -3,126 +3,58 @@
 [![Crates.io](https://img.shields.io/crates/v/birefnet-train.svg)](https://crates.io/crates/birefnet-train)
 [![Documentation](https://docs.rs/birefnet-train/badge.svg)](https://docs.rs/birefnet-train)
 
-**Dataset handling and data augmentation for BiRefNet training using the Burn deep learning framework**
-
-## Implemented Features
-
-- ✅ **Complete dataset handling**: DIS5K dataset loading and processing
-- ✅ **Comprehensive data augmentation**: All augmentation methods fully implemented
-  - Horizontal flip with 50% probability
-  - Color enhancement (brightness, contrast, saturation, sharpness)
-  - Random rotation (±15 degrees, 20% probability)
-  - Pepper noise (0.15% density)
-  - Random crop with 10% border
-- ✅ **Dynamic sizing**: Multi-resolution training support with background patterns
-- ✅ **Burn integration**: Native Burn dataset traits and batch processing
-- ✅ **Thread-safe augmentation**: Deterministic random generation with configurable seeds
+**Dataset discovery, image augmentations, and tensor batching for `BiRefNet` training on Burn**
 
 ## Core Components
 
 ### Dataset Management
 
-- **`BiRefNetDataset`**: Complete dataset implementation for DIS5K format
-- **`BiRefNetItem`**: Individual data item with image and mask
-- **`BiRefNetBatch`**: Batched data for training
-- **`BiRefNetBatcher`**: Custom batching with augmentation pipeline
+- **`BiRefNetDataset`**: Discovers sorted paired images and ground-truth masks under `<root>/<task>/<split>/{im,gt}` (`DatasetSplit::Train`, `Val`, `Test1`–`Test4`, or `Custom(String)`), returning `TrainDataError` for missing directories or empty datasets.
+- **`BiRefNetItem`**: Preprocessed raw RGB `[H, W, 3]` and Luma `[H, W]` pixel buffers ready for Burn `DataLoaderBuilder`.
+- **`BiRefNetBatcher`**: Stacks `BiRefNetItem` batches into normalized `[B, 3, H, W]` / `[B, 1, H, W]` `BiRefNetBatch` tensors.
+- **`TrainDataError`**: Typed error with `is_not_found`, `is_empty_dataset`, `is_io`, `is_image`, and `is_invalid_path` predicates.
 
 ### Data Augmentation
 
-- **`ImageAugmentor`**: Main augmentation orchestrator
-- **`AugmentationConfig`**: Configuration for all augmentation parameters
-- **`AugmentationMethod`**: All augmentation methods implemented:
-  - `Flip`: Horizontal flipping
-  - `Enhance`: Color/brightness enhancement
-  - `Rotate`: Random rotation with interpolation
-  - `Pepper`: Salt-and-pepper noise
-  - `Crop`: Random cropping with resizing
-
-### Dynamic Sizing
-
-- **`DynamicSizeConfig`**: Multi-resolution training configuration
-- **`BackgroundPattern`**: Background fill patterns for resizing
+- **`ImageAugmentor` & `AugmentationConfig`**: Thread-safe, atomic-seed-advancing pipeline (`new`, `with_seed`) implementing horizontal flip, border crop, center rotation (`Rotate`), color enhancement (brightness, contrast, hue, Laplacian sharpen / Gaussian blur), salt-and-pepper noise, synthetic background compositing (`BackgroundPattern`), and 32-pixel-aligned dynamic input sizing (`DynamicSizeConfig`).
+- **Self-contained image transforms**: Rotation and 3x3 sharpening implemented directly with `image` without `imageproc`.
 
 ## Usage
 
-```rust
-use birefnet_model::{InterpolationStrategy, ModelConfig};
-use birefnet_train::{AugmentationConfig, BiRefNetBatcher, BiRefNetDataset};
+```rust,no_run
+use birefnet_model::Task;
+use birefnet_train::{AugmentationConfig, BiRefNetBatcher, BiRefNetDataset, DatasetSplit};
 use burn::{data::dataloader::DataLoaderBuilder, tensor::Device};
 
-// Dataset paths come from the model configuration (`path.data_root_dir`, `task.training_set`)
-let model_config = ModelConfig::new(InterpolationStrategy::Bilinear);
-let dataset = BiRefNetDataset::new_with_augmentation(
-    &model_config,
-    "train",
+let dataset = BiRefNetDataset::with_augmentation(
+    "/path/to/datasets",
+    Task::DIS5K,
+    &DatasetSplit::Train,
     AugmentationConfig::default(),
 )?;
 
-// `Dataset::get` returns `Result` in Burn 0.22: unreadable files surface as errors
-// instead of being skipped silently.
 let device = Device::flex().autodiff();
 let dataloader = DataLoaderBuilder::new(BiRefNetBatcher::new())
-    .batch_size(8)
+    .batch_size(4)
     .shuffle(42)
-    .set_device(device) // batches must live on the training device
+    .set_device(device)
     .build(dataset);
+# let _ = dataloader;
+# Ok::<(), birefnet_train::TrainDataError>(())
 ```
 
-## Dataset Format
+## Dataset Layout
 
-Supports DIS5K dataset structure:
-
+```text
+<root_dir>/
+└── DIS5K/
+    ├── DIS-TR/
+    │   ├── im/   # Training RGB images
+    │   └── gt/   # Training binary masks
+    └── DIS-VD/
+        ├── im/   # Validation RGB images
+        └── gt/   # Validation binary masks
 ```
-DIS5K/
-├── DIS-TR/
-│   ├── im/          # Training images
-│   └── gt/          # Ground truth masks
-└── DIS-VD/
-    ├── im/          # Validation images  
-    └── gt/          # Validation masks
-```
-
-## Augmentation Details
-
-### Implemented Transformations
-
-1. **Horizontal Flip**: 50% probability, applies to both image and mask
-2. **Color Enhancement**: Random brightness/contrast/saturation/sharpness adjustment
-3. **Rotation**: ±15 degrees with bilinear interpolation
-4. **Pepper Noise**: 0.15% pixel density salt-and-pepper noise
-5. **Random Crop**: 10% border crop with intelligent resizing
-
-### Thread Safety
-
-- Deterministic augmentation with configurable seeds
-- Thread-safe random number generation
-- Reproducible training runs
-
-## Current Status
-
-### ✅ Fully Implemented
-
-- Dataset loading and preprocessing
-- All data augmentation methods
-- Batch processing and iteration
-- Multi-resolution support
-- Error handling and validation
-
-### ❌ Not Implemented
-
-- **Training loop**: The actual model training logic is not implemented
-- **Optimizer integration**: No optimizer setup or parameter updates
-- **Checkpoint management**: No model saving/loading during training
-- **Validation loop**: No validation evaluation during training
-
-## Integration
-
-This crate provides the data pipeline for training but requires:
-
-- [`birefnet-model`](../birefnet-model): Model definitions
-- [`birefnet-loss`](../birefnet-loss): Loss function computation
-- [`birefnet-metric`](../birefnet-metric): Training metrics
-- Training loop implementation (not yet available)
 
 ## License
 

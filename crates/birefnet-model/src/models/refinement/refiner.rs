@@ -1,9 +1,10 @@
-use birefnet_backbones::{Backbone, BackboneType, BackboneWrapper, PvtV2Variant, create_backbone};
+//! Backbone-based refinement modules (`Refiner` and `RefinerPVTInChannels4`) for `BiRefNet`.
+
+use birefnet_backbones::{Backbone as _, BackboneModel, BackboneType, PvtV2Variant};
 use burn::{
     nn::{
-        BatchNorm, BatchNormConfig, PaddingConfig2d, Relu,
+        PaddingConfig2d,
         conv::{Conv2d, Conv2dConfig},
-        pool::{MaxPool2d, MaxPool2dConfig},
     },
     prelude::*,
     tensor::activation,
@@ -12,28 +13,28 @@ use burn::{
 use crate::{
     DecoderAttention, ModelConfig,
     config::{InterpolationStrategy, SqueezeBlock},
-    error::BiRefNetResult,
+    error::ModelError,
     models::modules::{
         BasicDecBlk, BasicDecBlkConfig, BasicLatBlk, BasicLatBlkConfig,
-        utils::{ActLayerEnum, NormLayerEnum, build_norm_layer, intelligent_interpolate},
+        utils::{ActLayerEnum, NormKind, NormLayerEnum, build_norm_layer, intelligent_interpolate},
     },
 };
 
-/// Configuration for the RefinerDecoder
+/// Configuration for [`RefinerDecoder`].
 #[derive(Config, Debug)]
 pub struct RefinerDecoderConfig {
-    /// The detailed model configuration.
+    /// Model configuration providing attention, intermediate width, and batch size settings.
     config: ModelConfig,
-    /// Channel sizes
+    /// Deep-to-shallow channel widths `[c4, c3, c2, c1]`.
     channels: [usize; 4],
-    /// Whether to use multi-scale supervision
+    /// Whether to emit multi-scale supervision outputs before the final map.
     #[config(default = false)]
     ms_supervision: bool,
     /// Interpolation strategy for tensor resizing operations.
     interpolation_strategy: InterpolationStrategy,
 }
 
-/// Decoder used by Refiner modules
+/// Decoder used by [`Refiner`] and [`RefinerPVTInChannels4`].
 #[derive(Module, Debug)]
 pub struct RefinerDecoder {
     decoder_block4: BasicDecBlk,
@@ -48,53 +49,56 @@ pub struct RefinerDecoder {
     conv_ms_spvn_3: Option<Conv2d>,
     conv_ms_spvn_2: Option<Conv2d>,
     ms_supervision: bool,
-    /// Interpolation strategy for tensor resizing operations.
     #[module(skip)]
     interpolation_strategy: InterpolationStrategy,
 }
 
+fn squeeze_for_attention(attention: DecoderAttention) -> SqueezeBlock {
+    match attention {
+        DecoderAttention::None => SqueezeBlock::None,
+        DecoderAttention::ASPP => SqueezeBlock::ASPP(0),
+        DecoderAttention::ASPPDeformable => SqueezeBlock::ASPPDeformable(0),
+    }
+}
+
 impl RefinerDecoderConfig {
-    pub fn init(&self, device: &Device) -> BiRefNetResult<RefinerDecoder> {
-        let squeeze_block = match self.config.decoder.dec_att {
-            DecoderAttention::None => SqueezeBlock::None,
-            DecoderAttention::ASPP => SqueezeBlock::ASPP(0),
-            DecoderAttention::ASPPDeformable => SqueezeBlock::ASPPDeformable(0),
-        };
+    fn make_decoder_block(
+        &self,
+        in_channels: usize,
+        out_channels: usize,
+        device: &Device,
+    ) -> Result<BasicDecBlk, ModelError> {
+        BasicDecBlkConfig::new(
+            squeeze_for_attention(self.config.decoder.dec_att),
+            self.config.interpolation,
+        )
+        .with_in_channels(in_channels)
+        .with_out_channels(out_channels)
+        .with_dec_channels_inter(self.config.decoder.dec_channels_inter)
+        .with_batch_size(self.config.task.batch_size)
+        .init(device)
+    }
 
-        let decoder_block4 =
-            BasicDecBlkConfig::new(squeeze_block.clone(), self.config.interpolation.clone())
-                .with_in_channels(self.channels[0])
-                .with_out_channels(self.channels[1])
-                .init(device)?;
-
-        let decoder_block3 =
-            BasicDecBlkConfig::new(squeeze_block.clone(), self.config.interpolation.clone())
-                .with_in_channels(self.channels[1])
-                .with_out_channels(self.channels[2])
-                .init(device)?;
-
-        let decoder_block2 =
-            BasicDecBlkConfig::new(squeeze_block.clone(), self.config.interpolation.clone())
-                .with_in_channels(self.channels[2])
-                .with_out_channels(self.channels[3])
-                .init(device)?;
-
+    /// Initializes a [`RefinerDecoder`] module.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError`] if any decoder block fails to initialize.
+    pub fn init(&self, device: &Device) -> Result<RefinerDecoder, ModelError> {
+        let decoder_block4 = self.make_decoder_block(self.channels[0], self.channels[1], device)?;
+        let decoder_block3 = self.make_decoder_block(self.channels[1], self.channels[2], device)?;
+        let decoder_block2 = self.make_decoder_block(self.channels[2], self.channels[3], device)?;
         let decoder_block1 =
-            BasicDecBlkConfig::new(squeeze_block, self.config.interpolation.clone())
-                .with_in_channels(self.channels[3])
-                .with_out_channels(self.channels[3] / 2)
-                .init(device)?;
+            self.make_decoder_block(self.channels[3], self.channels[3] / 2, device)?;
 
         let lateral_block4 = BasicLatBlkConfig::new()
             .with_in_channels(self.channels[1])
             .with_out_channels(self.channels[1])
             .init(device);
-
         let lateral_block3 = BasicLatBlkConfig::new()
             .with_in_channels(self.channels[2])
             .with_out_channels(self.channels[2])
             .init(device);
-
         let lateral_block2 = BasicLatBlkConfig::new()
             .with_in_channels(self.channels[3])
             .with_out_channels(self.channels[3])
@@ -126,8 +130,6 @@ impl RefinerDecoderConfig {
             (None, None, None)
         };
 
-        let interpolation_strategy = self.interpolation_strategy.clone();
-
         Ok(RefinerDecoder {
             decoder_block4,
             decoder_block3,
@@ -141,42 +143,38 @@ impl RefinerDecoderConfig {
             conv_ms_spvn_3,
             conv_ms_spvn_2,
             ms_supervision: self.ms_supervision,
-            interpolation_strategy,
+            interpolation_strategy: self.interpolation_strategy,
         })
     }
 }
 
 impl RefinerDecoder {
+    /// Runs the refinement decoder over `[input, x1, x2, x3, x4]`.
+    #[must_use]
     pub fn forward(&self, features: [Tensor<4>; 5]) -> Vec<Tensor<4>> {
         let [x, x1, x2, x3, x4] = features;
-        // Pre-allocate output vector - max 4 outputs (3 ms_supervision + 1 final)
         let mut outs = Vec::with_capacity(4);
 
-        // Decoder block 4
         let p4 = self.decoder_block4.forward(x4);
         let [_, _, h3, w3] = x3.dims();
-        let _p4 = intelligent_interpolate(p4.clone(), [h3, w3], &self.interpolation_strategy);
-        let _p3 = _p4 + self.lateral_block4.forward(x3);
+        let p4_up = intelligent_interpolate(p4.clone(), [h3, w3], self.interpolation_strategy);
+        let d3_in = p4_up + self.lateral_block4.forward(x3);
 
-        // Decoder block 3
-        let p3 = self.decoder_block3.forward(_p3);
+        let p3 = self.decoder_block3.forward(d3_in);
         let [_, _, h2, w2] = x2.dims();
-        let _p3 = intelligent_interpolate(p3.clone(), [h2, w2], &self.interpolation_strategy);
-        let _p2 = _p3 + self.lateral_block3.forward(x2);
+        let p3_up = intelligent_interpolate(p3.clone(), [h2, w2], self.interpolation_strategy);
+        let d2_in = p3_up + self.lateral_block3.forward(x2);
 
-        // Decoder block 2
-        let p2 = self.decoder_block2.forward(_p2);
+        let p2 = self.decoder_block2.forward(d2_in);
         let [_, _, h1, w1] = x1.dims();
-        let _p2 = intelligent_interpolate(p2.clone(), [h1, w1], &self.interpolation_strategy);
-        let _p1 = _p2 + self.lateral_block2.forward(x1);
+        let p2_up = intelligent_interpolate(p2.clone(), [h1, w1], self.interpolation_strategy);
+        let d1_in = p2_up + self.lateral_block2.forward(x1);
 
-        // Decoder block 1
-        let _p1 = self.decoder_block1.forward(_p1);
+        let d1 = self.decoder_block1.forward(d1_in);
         let [_, _, h, w] = x.dims();
-        let _p1 = intelligent_interpolate(_p1, [h, w], &self.interpolation_strategy);
-        let p1_out = self.conv_out1.forward(_p1);
+        let d1_up = intelligent_interpolate(d1, [h, w], self.interpolation_strategy);
+        let p1_out = self.conv_out1.forward(d1_up);
 
-        // Multi-scale supervision outputs
         if self.ms_supervision {
             if let Some(conv) = &self.conv_ms_spvn_4 {
                 outs.push(conv.forward(p4));
@@ -194,7 +192,7 @@ impl RefinerDecoder {
     }
 }
 
-/// Stem layer for processing input
+/// Convolutional stem layer converting 4-channel `(RGB + mask)` inputs for refinement backbones.
 #[derive(Module, Debug)]
 pub struct StemLayer {
     conv1: Conv2d,
@@ -206,19 +204,22 @@ pub struct StemLayer {
 }
 
 impl StemLayer {
+    /// Creates a new NCHW [`StemLayer`].
+    #[must_use]
     pub fn new(
         in_channels: usize,
         inter_channels: usize,
         out_channels: usize,
-        norm_layer: &str,
+        norm_kind: NormKind,
         device: &Device,
-    ) -> BiRefNetResult<Self> {
+    ) -> Self {
         let conv1 = Conv2dConfig::new([in_channels, inter_channels], [3, 3])
             .with_stride([1, 1])
             .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
             .init(device);
 
-        let norm1 = build_norm_layer(inter_channels, norm_layer, true, true, 1e-5, device)?;
+        // Convolutions produce NCHW tensors, so keep NCHW layout through stem normalization.
+        let norm1 = build_norm_layer(inter_channels, norm_kind, false, false, 1e-5, device);
         let act = ActLayerEnum::Gelu;
 
         let conv2 = Conv2dConfig::new([inter_channels, out_channels], [3, 3])
@@ -226,107 +227,98 @@ impl StemLayer {
             .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
             .init(device);
 
-        let norm2 = build_norm_layer(out_channels, norm_layer, true, true, 1e-5, device)?;
+        let norm2 = build_norm_layer(out_channels, norm_kind, false, false, 1e-5, device);
 
-        Ok(Self {
+        Self {
             conv1,
             norm1,
             act,
             conv2,
             norm2,
-        })
+        }
     }
 
-    pub fn forward(&self, x: Tensor<4>) -> Tensor<4> {
-        let mut x = self.conv1.forward(x);
-
-        // Apply norm layers
-        for norm in &self.norm1 {
+    fn apply_norms(mut x: Tensor<4>, norms: &[NormLayerEnum]) -> Tensor<4> {
+        for norm in norms {
             x = match norm {
                 NormLayerEnum::ChannelsFirst(layer) => layer.forward(x),
                 NormLayerEnum::ChannelsLast(layer) => layer.forward(x),
                 NormLayerEnum::BatchNorm2d(layer) => layer.forward(x),
-                NormLayerEnum::BasicDecBlk(layer) => {
-                    // Need to reshape for LayerNorm
-                    let [b, c, h, w] = x.dims();
-                    let x_reshaped = x.reshape([b, c, h * w]).transpose();
-                    let x_normed = layer.forward(x_reshaped);
-                    x_normed.transpose().reshape([b, c, h, w])
+                NormLayerEnum::LayerNorm(layer) => {
+                    let x_nhwc = x.permute([0, 2, 3, 1]);
+                    layer.forward(x_nhwc).permute([0, 3, 1, 2])
                 }
             };
         }
+        x
+    }
 
-        // Apply activation
-        x = match &self.act {
+    /// Runs the two-stage stem block over `[B, in_channels, H, W]`.
+    #[must_use]
+    pub fn forward(&self, x: Tensor<4>) -> Tensor<4> {
+        let x = self.conv1.forward(x);
+        let x = Self::apply_norms(x, &self.norm1);
+        let x = match self.act {
             ActLayerEnum::Gelu => activation::gelu(x),
         };
-
-        x = self.conv2.forward(x);
-
-        // Apply second norm layers
-        for norm in &self.norm2 {
-            x = match norm {
-                NormLayerEnum::ChannelsFirst(layer) => layer.forward(x),
-                NormLayerEnum::ChannelsLast(layer) => layer.forward(x),
-                NormLayerEnum::BatchNorm2d(layer) => layer.forward(x),
-                NormLayerEnum::BasicDecBlk(layer) => {
-                    // Need to reshape for LayerNorm
-                    let [b, c, h, w] = x.dims();
-                    let x_reshaped = x.reshape([b, c, h * w]).transpose();
-                    let x_normed = layer.forward(x_reshaped);
-                    x_normed.transpose().reshape([b, c, h, w])
-                }
-            };
-        }
-
-        x
+        let x = self.conv2.forward(x);
+        Self::apply_norms(x, &self.norm2)
     }
 }
 
-/// RefinerPVTInChannels4 configuration
+/// Configuration for [`RefinerPVTInChannels4`].
 #[derive(Config, Debug)]
 pub struct RefinerPVTInChannels4Config {
-    /// The detailed model configuration.
+    /// Model configuration.
     config: ModelConfig,
+    /// Number of input channels (default: `4`).
     #[config(default = 4)]
     in_channels: usize,
+    /// PVTv2 variant used as the refinement backbone.
     #[config(default = "PvtV2Variant::B2")]
     backbone_variant: PvtV2Variant,
     /// Interpolation strategy for tensor resizing operations.
     interpolation_strategy: InterpolationStrategy,
 }
 
-/// RefinerPVTInChannels4 module
+/// Refinement module taking 4-channel `(RGB + mask)` inputs using a PVTv2 backbone.
 #[derive(Module, Debug)]
 pub struct RefinerPVTInChannels4 {
-    backbone: BackboneWrapper,
+    backbone: BackboneModel,
     squeeze_module: BasicDecBlk,
     decoder: RefinerDecoder,
 }
 
 impl RefinerPVTInChannels4Config {
-    pub fn init(&self, device: &Device) -> BiRefNetResult<RefinerPVTInChannels4> {
-        // Create PVTv2 backbone with specified variant
-        let backbone = create_backbone(BackboneType::PvtV2(self.backbone_variant.clone()), device);
+    /// Initializes a [`RefinerPVTInChannels4`] module.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError`] if backbone or decoder initialization fails.
+    pub fn init(&self, device: &Device) -> Result<RefinerPVTInChannels4, ModelError> {
+        let backbone = BackboneType::PvtV2(self.backbone_variant).init(device)?;
+        let raw_channels = backbone.output_channels();
+        let dec_channels = [
+            raw_channels[3],
+            raw_channels[2],
+            raw_channels[1],
+            raw_channels[0],
+        ];
 
-        let channels = backbone.output_channels();
-
-        let squeeze_block = match self.config.decoder.dec_att {
-            DecoderAttention::None => SqueezeBlock::None,
-            DecoderAttention::ASPP => SqueezeBlock::ASPP(0),
-            DecoderAttention::ASPPDeformable => SqueezeBlock::ASPPDeformable(0),
-        };
-
-        let squeeze_module =
-            BasicDecBlkConfig::new(squeeze_block, self.config.interpolation.clone())
-                .with_in_channels(channels[3]) // Use highest resolution features
-                .with_out_channels(channels[3])
-                .init(device)?;
+        let squeeze_module = BasicDecBlkConfig::new(
+            squeeze_for_attention(self.config.decoder.dec_att),
+            self.config.interpolation,
+        )
+        .with_in_channels(raw_channels[3])
+        .with_out_channels(raw_channels[3])
+        .with_dec_channels_inter(self.config.decoder.dec_channels_inter)
+        .with_batch_size(self.config.task.batch_size)
+        .init(device)?;
 
         let decoder = RefinerDecoderConfig::new(
             self.config.clone(),
-            channels,
-            self.interpolation_strategy.clone(),
+            dec_channels,
+            self.interpolation_strategy,
         )
         .with_ms_supervision(false)
         .init(device)?;
@@ -340,92 +332,91 @@ impl RefinerPVTInChannels4Config {
 }
 
 impl RefinerPVTInChannels4 {
-    /// Forward pass for the refiner
-    ///
-    /// # Arguments
-    /// * `x` - Input tensor of shape [batch_size, 4, height, width] (RGB + mask)
+    /// Runs refinement over `[B, 4, H, W]` `(RGB + mask)` inputs.
+    #[must_use]
     pub fn forward(&self, x: Tensor<4>) -> Vec<Tensor<4>> {
-        // Handle channel mismatch: backbone expects 3 channels, but we have 4
-        let x_rgb = if x.dims()[1] == 4 {
-            // Take only RGB channels for backbone
+        let x_rgb = if x.dims()[1] > 3 {
             x.clone().slice(s![.., 0..3, .., ..])
         } else {
             x.clone()
         };
 
-        // Extract features from backbone
         let [x1, x2, x3, x4] = self.backbone.forward(x_rgb);
-
-        // Apply squeeze module to deepest features
         let x4 = self.squeeze_module.forward(x4);
 
-        // Forward through decoder with original input and extracted features
         let features = [x, x1, x2, x3, x4];
         self.decoder.forward(features)
     }
 }
 
-/// Refiner configuration
+/// Configuration for [`Refiner`].
 #[derive(Config, Debug)]
 pub struct RefinerConfig {
-    /// The detailed model configuration.
+    /// Model configuration.
     config: ModelConfig,
+    /// Number of input channels (default: `4` for RGB + mask).
     #[config(default = 4)]
     in_channels: usize,
+    /// Intermediate stem channel width.
     #[config(default = 48)]
     inter_channels: usize,
+    /// Stem output channel width passed into the PVTv2 backbone (must be `3`).
     #[config(default = 3)]
     out_channels: usize,
-    /// PvtV2 variant to use as backbone
+    /// PVTv2 variant used as the refinement backbone.
     #[config(default = "PvtV2Variant::B2")]
     pvt_variant: PvtV2Variant,
     /// Interpolation strategy for tensor resizing operations.
     interpolation_strategy: InterpolationStrategy,
 }
 
-/// Refiner module
+/// Stem + PVTv2 refinement module for `BiRefNet`.
 #[derive(Module, Debug)]
 pub struct Refiner {
     stem_layer: StemLayer,
-    backbone: BackboneWrapper,
+    backbone: BackboneModel,
     squeeze_module: BasicDecBlk,
     decoder: RefinerDecoder,
 }
 
 impl RefinerConfig {
-    pub fn init(&self, device: &Device) -> BiRefNetResult<Refiner> {
-        // Default norm layer - use BatchNorm
-        let norm_layer = "BN";
-
+    /// Initializes a [`Refiner`] module.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError`] if backbone or decoder initialization fails.
+    pub fn init(&self, device: &Device) -> Result<Refiner, ModelError> {
         let stem_layer = StemLayer::new(
             self.in_channels,
             self.inter_channels,
             self.out_channels,
-            norm_layer,
+            NormKind::BatchNorm,
             device,
-        )?;
+        );
 
-        // Create backbone with specified type
-        let backbone = create_backbone(BackboneType::PvtV2(self.pvt_variant.clone()), device);
+        let backbone = BackboneType::PvtV2(self.pvt_variant).init(device)?;
+        let raw_channels = backbone.output_channels();
+        let dec_channels = [
+            raw_channels[3],
+            raw_channels[2],
+            raw_channels[1],
+            raw_channels[0],
+        ];
 
-        let channels = backbone.output_channels();
-
-        let squeeze_block = match self.config.decoder.dec_att {
-            DecoderAttention::None => SqueezeBlock::None,
-            DecoderAttention::ASPP => SqueezeBlock::ASPP(0),
-            DecoderAttention::ASPPDeformable => SqueezeBlock::ASPPDeformable(0),
-        };
-
-        let squeeze_module =
-            BasicDecBlkConfig::new(squeeze_block, self.config.interpolation.clone())
-                .with_in_channels(channels[3]) // Use highest resolution features
-                .with_out_channels(channels[3])
-                .init(device)?;
+        let squeeze_module = BasicDecBlkConfig::new(
+            squeeze_for_attention(self.config.decoder.dec_att),
+            self.config.interpolation,
+        )
+        .with_in_channels(raw_channels[3])
+        .with_out_channels(raw_channels[3])
+        .with_dec_channels_inter(self.config.decoder.dec_channels_inter)
+        .with_batch_size(self.config.task.batch_size)
+        .init(device)?;
 
         let decoder = RefinerDecoderConfig::new(
             self.config.clone(),
-            channels,
-            self.interpolation_strategy.clone(),
+            dec_channels,
+            self.interpolation_strategy,
         )
         .with_ms_supervision(false)
         .init(device)?;
@@ -440,268 +431,14 @@ impl RefinerConfig {
 }
 
 impl Refiner {
-    /// Forward pass for the refiner
-    ///
-    /// # Arguments
-    /// * `x` - Input tensor of shape [batch_size, 4, height, width] (RGB + mask)
+    /// Runs stem projection, backbone encoding, squeeze block, and refinement decoder.
+    #[must_use]
     pub fn forward(&self, x: Tensor<4>) -> Vec<Tensor<4>> {
-        // Apply stem layer to reduce channels and preprocess input
         let x_processed = self.stem_layer.forward(x);
-
-        // Extract RGB channels for backbone (backbone expects 3-channel input)
-        let x_rgb = x_processed.clone();
-
-        // Extract features from backbone
-        let [x1, x2, x3, x4] = self.backbone.forward(x_rgb);
-
-        // Apply squeeze module to deepest features
+        let [x1, x2, x3, x4] = self.backbone.forward(x_processed.clone());
         let x4 = self.squeeze_module.forward(x4);
 
-        // Forward through decoder with processed input and extracted features
         let features = [x_processed, x1, x2, x3, x4];
         self.decoder.forward(features)
-    }
-}
-
-/// RefUNet configuration
-#[derive(Config, Debug)]
-pub struct RefUNetConfig {
-    #[config(default = 4)]
-    in_channels: usize,
-    /// Interpolation strategy for tensor resizing operations.
-    interpolation_strategy: InterpolationStrategy,
-}
-
-/// RefUNet module - U-Net based refinement
-#[derive(Module, Debug)]
-pub struct RefUNet {
-    // Encoder layers
-    encoder_1: (Conv2d, Conv2d, BatchNorm, Relu),
-    encoder_2: (MaxPool2d, Conv2d, BatchNorm, Relu),
-    encoder_3: (MaxPool2d, Conv2d, BatchNorm, Relu),
-    encoder_4: (MaxPool2d, Conv2d, BatchNorm, Relu),
-    pool4: MaxPool2d,
-
-    // Decoder layers
-    decoder_5: (Conv2d, BatchNorm, Relu),
-    decoder_4: (Conv2d, BatchNorm, Relu),
-    decoder_3: (Conv2d, BatchNorm, Relu),
-    decoder_2: (Conv2d, BatchNorm, Relu),
-    decoder_1: (Conv2d, BatchNorm, Relu),
-
-    conv_d0: Conv2d,
-    /// Interpolation strategy for tensor resizing operations.
-    #[module(skip)]
-    interpolation_strategy: InterpolationStrategy,
-}
-
-impl RefUNetConfig {
-    pub fn init(&self, device: &Device) -> RefUNet {
-        // Encoder
-        let encoder_1 = (
-            Conv2dConfig::new([self.in_channels, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
-                .init(device),
-            Conv2dConfig::new([64, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
-                .init(device),
-            BatchNormConfig::new(64).init(device),
-            Relu::new(),
-        );
-
-        let encoder_2 = (
-            MaxPool2dConfig::new([2, 2]).with_strides([2, 2]).init(),
-            Conv2dConfig::new([64, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
-                .init(device),
-            BatchNormConfig::new(64).init(device),
-            Relu::new(),
-        );
-
-        let encoder_3 = (
-            MaxPool2dConfig::new([2, 2]).with_strides([2, 2]).init(),
-            Conv2dConfig::new([64, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
-                .init(device),
-            BatchNormConfig::new(64).init(device),
-            Relu::new(),
-        );
-
-        let encoder_4 = (
-            MaxPool2dConfig::new([2, 2]).with_strides([2, 2]).init(),
-            Conv2dConfig::new([64, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
-                .init(device),
-            BatchNormConfig::new(64).init(device),
-            Relu::new(),
-        );
-
-        let pool4 = MaxPool2dConfig::new([2, 2]).with_strides([2, 2]).init();
-
-        // Decoder
-        let decoder_5 = (
-            Conv2dConfig::new([64, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
-                .init(device),
-            BatchNormConfig::new(64).init(device),
-            Relu::new(),
-        );
-
-        let decoder_4 = (
-            Conv2dConfig::new([128, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
-                .init(device),
-            BatchNormConfig::new(64).init(device),
-            Relu::new(),
-        );
-
-        let decoder_3 = (
-            Conv2dConfig::new([128, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
-                .init(device),
-            BatchNormConfig::new(64).init(device),
-            Relu::new(),
-        );
-
-        let decoder_2 = (
-            Conv2dConfig::new([128, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
-                .init(device),
-            BatchNormConfig::new(64).init(device),
-            Relu::new(),
-        );
-
-        let decoder_1 = (
-            Conv2dConfig::new([128, 64], [3, 3])
-                .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
-                .init(device),
-            BatchNormConfig::new(64).init(device),
-            Relu::new(),
-        );
-
-        let conv_d0 = Conv2dConfig::new([64, 1], [3, 3])
-            .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
-            .init(device);
-
-        let interpolation_strategy = self.interpolation_strategy.clone();
-
-        RefUNet {
-            encoder_1,
-            encoder_2,
-            encoder_3,
-            encoder_4,
-            pool4,
-            decoder_5,
-            decoder_4,
-            decoder_3,
-            decoder_2,
-            decoder_1,
-            conv_d0,
-            interpolation_strategy,
-        }
-    }
-}
-
-impl RefUNet {
-    pub fn forward(&self, x: Vec<Tensor<4>>) -> Vec<Tensor<4>> {
-        // Pre-allocate output vector - only 1 output expected
-        let mut outs = Vec::with_capacity(1);
-
-        // Concatenate inputs if provided as a list
-        let hx = if x.len() > 1 {
-            Tensor::cat(x, 1)
-        } else {
-            x[0].clone()
-        };
-
-        // Encoder
-        let hx1 = {
-            let x = self.encoder_1.0.forward(hx);
-            let x = self.encoder_1.1.forward(x);
-            let x = self.encoder_1.2.forward(x);
-            self.encoder_1.3.forward(x)
-        };
-
-        let hx2 = {
-            let x = self.encoder_2.0.forward(hx1.clone());
-            let x = self.encoder_2.1.forward(x);
-            let x = self.encoder_2.2.forward(x);
-            self.encoder_2.3.forward(x)
-        };
-
-        let hx3 = {
-            let x = self.encoder_3.0.forward(hx2.clone());
-            let x = self.encoder_3.1.forward(x);
-            let x = self.encoder_3.2.forward(x);
-            self.encoder_3.3.forward(x)
-        };
-
-        let hx4 = {
-            let x = self.encoder_4.0.forward(hx3.clone());
-            let x = self.encoder_4.1.forward(x);
-            let x = self.encoder_4.2.forward(x);
-            self.encoder_4.3.forward(x)
-        };
-
-        // Decoder
-        let hx = {
-            let x = self.pool4.forward(hx4.clone());
-            let x = self.decoder_5.0.forward(x);
-            let x = self.decoder_5.1.forward(x);
-            self.decoder_5.2.forward(x)
-        };
-
-        let hx = {
-            let [_, _, h, w] = hx4.dims();
-            let hx_up = intelligent_interpolate(hx, [h, w], &self.interpolation_strategy);
-            Tensor::cat(vec![hx_up, hx4], 1)
-        };
-
-        let d4 = {
-            let x = self.decoder_4.0.forward(hx);
-            let x = self.decoder_4.1.forward(x);
-            self.decoder_4.2.forward(x)
-        };
-
-        let hx = {
-            let [_, _, h, w] = hx3.dims();
-            let d4_up = intelligent_interpolate(d4, [h, w], &self.interpolation_strategy);
-            Tensor::cat(vec![d4_up, hx3], 1)
-        };
-
-        let d3 = {
-            let x = self.decoder_3.0.forward(hx);
-            let x = self.decoder_3.1.forward(x);
-            self.decoder_3.2.forward(x)
-        };
-
-        let hx = {
-            let [_, _, h, w] = hx2.dims();
-            let d3_up = intelligent_interpolate(d3, [h, w], &self.interpolation_strategy);
-            Tensor::cat(vec![d3_up, hx2], 1)
-        };
-
-        let d2 = {
-            let x = self.decoder_2.0.forward(hx);
-            let x = self.decoder_2.1.forward(x);
-            self.decoder_2.2.forward(x)
-        };
-
-        let hx = {
-            let [_, _, h, w] = hx1.dims();
-            let d2_up = intelligent_interpolate(d2, [h, w], &self.interpolation_strategy);
-            Tensor::cat(vec![d2_up, hx1], 1)
-        };
-
-        let d1 = {
-            let x = self.decoder_1.0.forward(hx);
-            let x = self.decoder_1.1.forward(x);
-            self.decoder_1.2.forward(x)
-        };
-
-        let x = self.conv_d0.forward(d1);
-        outs.push(x);
-
-        outs
     }
 }

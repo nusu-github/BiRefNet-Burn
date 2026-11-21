@@ -1,22 +1,21 @@
 [package]
 name = "birefnet-backbones"
-description = "Unified backbone implementations for BiRefNet"
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-readme.workspace = true
-repository.workspace = true
 version.workspace = true
+categories.workspace = true
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+rust-version.workspace = true
+description = "Unified backbone implementations for BiRefNet"
 
 [dependencies]
+birefnet-extra-ops.workspace = true
 burn = { workspace = true }
-birefnet-extra-ops = { path = "../birefnet-extra-ops" }
-
-thiserror = { workspace = true }
 
 [dev-dependencies]
-burn = { workspace = true, features = ["flex", "autodiff"] }
-rstest = { workspace = true }
+burn = { workspace = true, features = ["flex"] }
 
 [lints]
 workspace = true

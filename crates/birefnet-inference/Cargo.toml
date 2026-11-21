@@ -1,24 +1,25 @@
 [package]
 name = "birefnet-inference"
-description = "Inference engine for BiRefNet models"
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-readme.workspace = true
-repository.workspace = true
 version.workspace = true
+categories.workspace = true
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+rust-version.workspace = true
+description = "Inference engine and mask postprocessing for BiRefNet models"
 
 [dependencies]
-burn = { workspace = true }
-birefnet-model = { path = "../birefnet-model" }
-birefnet-util = { path = "../birefnet-util" }
+birefnet-model.workspace = true
+birefnet-util = { workspace = true, features = ["image-io"] }
+burn.workspace = true
 
-anyhow = { workspace = true }
-thiserror = { workspace = true }
-image = { workspace = true }
+image = { workspace = true, features = ["png", "jpeg", "bmp", "tiff", "webp", "gif"] }
 
 [dev-dependencies]
-burn = { workspace = true, features = ["flex", "autodiff"] }
+burn = { workspace = true, features = ["flex"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

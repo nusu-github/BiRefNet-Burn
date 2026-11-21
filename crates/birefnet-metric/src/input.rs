@@ -1,97 +1,38 @@
-//! Input structures for BiRefNet metrics.
-//!
-//! This module contains the input structures used by various metrics
-//! to pass prediction and target tensors along with other required data.
+//! Input structures for `BiRefNet` evaluation metrics.
 
 use burn::prelude::*;
 
-// --- Input Structs for Metrics ---
+macro_rules! define_metric_input {
+    ($name:ident, $doc:expr) => {
+        #[doc = $doc]
+        #[derive(Debug, Clone)]
+        pub struct $name {
+            /// Prediction tensor with shape `[batch_size, channels, height, width]`.
+            pub predictions: Tensor<4>,
+            /// Ground-truth tensor with shape `[batch_size, channels, height, width]`.
+            pub targets: Tensor<4>,
+        }
 
-/// F-measure metric input.
-#[derive(Debug, Clone)]
-pub struct FMeasureInput {
-    /// Predictions with shape `[batch_size, channels, height, width]`.
-    pub predictions: Tensor<4>,
-    /// Ground truth with shape `[batch_size, channels, height, width]`.
-    pub targets: Tensor<4>,
-}
-
-/// MAE metric input.
-#[derive(Debug, Clone)]
-pub struct MAEInput {
-    /// Predictions with shape `[batch_size, channels, height, width]`.
-    pub predictions: Tensor<4>,
-    /// Ground truth with shape `[batch_size, channels, height, width]`.
-    pub targets: Tensor<4>,
-}
-
-/// MSE metric input.
-#[derive(Debug, Clone)]
-pub struct MSEInput {
-    /// Predictions with shape `[batch_size, channels, height, width]`.
-    pub predictions: Tensor<4>,
-    /// Ground truth with shape `[batch_size, channels, height, width]`.
-    pub targets: Tensor<4>,
-}
-
-/// BIoU metric input.
-#[derive(Debug, Clone)]
-pub struct BIoUInput {
-    /// Predictions with shape `[batch_size, channels, height, width]`.
-    pub predictions: Tensor<4>,
-    /// Ground truth with shape `[batch_size, channels, height, width]`.
-    pub targets: Tensor<4>,
-}
-
-/// Weighted F-measure metric input.
-#[derive(Debug, Clone)]
-pub struct WeightedFMeasureInput {
-    /// Predictions with shape `[batch_size, channels, height, width]`.
-    pub predictions: Tensor<4>,
-    /// Ground truth with shape `[batch_size, channels, height, width]`.
-    pub targets: Tensor<4>,
-}
-
-/// S-measure metric input.
-#[derive(Debug, Clone)]
-pub struct SMeasureInput {
-    /// Predictions with shape `[batch_size, channels, height, width]`.
-    pub predictions: Tensor<4>,
-    /// Ground truth with shape `[batch_size, channels, height, width]`.
-    pub targets: Tensor<4>,
-}
-
-/// E-measure metric input.
-#[derive(Debug, Clone)]
-pub struct EMeasureInput {
-    /// Predictions with shape `[batch_size, channels, height, width]`.
-    pub predictions: Tensor<4>,
-    /// Ground truth with shape `[batch_size, channels, height, width]`.
-    pub targets: Tensor<4>,
-}
-
-macro_rules! impl_new {
-    ($($name:ident),* $(,)?) => {
-        $(
-            impl $name {
-                /// Creates the input from predictions and ground truth.
-                pub const fn new(predictions: Tensor<4>, targets: Tensor<4>) -> Self {
-                    Self {
-                        predictions,
-                        targets,
-                    }
+        impl $name {
+            /// Creates a metric input from `[B, C, H, W]` predictions and targets.
+            #[must_use]
+            pub const fn new(predictions: Tensor<4>, targets: Tensor<4>) -> Self {
+                Self {
+                    predictions,
+                    targets,
                 }
             }
-        )*
+        }
     };
 }
 
-impl_new!(
-    FMeasureInput,
-    MAEInput,
-    MSEInput,
-    BIoUInput,
+define_metric_input!(FMeasureInput, "Input pair for [`crate::FMeasureMetric`].");
+define_metric_input!(MAEInput, "Input pair for [`crate::MAEMetric`].");
+define_metric_input!(MSEInput, "Input pair for [`crate::MSEMetric`].");
+define_metric_input!(BIoUInput, "Input pair for [`crate::BIoUMetric`].");
+define_metric_input!(
     WeightedFMeasureInput,
-    SMeasureInput,
-    EMeasureInput
+    "Input pair for [`crate::WeightedFMeasureMetric`]."
 );
+define_metric_input!(SMeasureInput, "Input pair for [`crate::SMeasureMetric`].");
+define_metric_input!(EMeasureInput, "Input pair for [`crate::EMeasureMetric`].");

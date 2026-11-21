@@ -1,22 +1,4 @@
-//! # Pyramid Vision Transformer v2 (PVTv2) Implementation
-//!
-//! This module provides a Rust implementation of the PVTv2 backbone using the Burn framework.
-//! PVTv2 is a hierarchical vision transformer that uses overlapping patch embeddings and
-//! spatial reduction attention to achieve a balance between performance and computational cost.
-//!
-//! ## Architecture Overview
-//!
-//! The PVTv2 consists of several key components:
-//! - **OverlapPatchEmbed**: Converts input images into overlapping patch embeddings.
-//! - **Attention**: Spatially reductive attention mechanism.
-//! - **Mlp**: Feed-forward network with a depth-wise convolution.
-//! - **Block**: The main transformer block combining attention and MLP.
-//! - **PyramidVisionTransformerImpr**: The full model with 4 stages.
-//!
-//! ## Reference
-//! Based on "PVTv2: Improved Baselines with Pyramid Vision Transformer"
-//! - Paper: https://arxiv.org/abs/2106.13797
-//! - Original PyTorch implementation: https://github.com/whai362/PVT
+//! Pyramid Vision Transformer v2 (`PVTv2`) backbone implementation.
 
 use birefnet_extra_ops::{DropPath, DropPathConfig, trunc_normal};
 use burn::{
@@ -30,37 +12,63 @@ use burn::{
     tensor::activation::softmax,
 };
 
-/// Depth-wise convolution used in the MLP block.
+use crate::backbones::usize_to_f64;
+use crate::error::BackboneError;
+
+fn trunc_normal_linear(
+    in_features: usize,
+    out_features: usize,
+    bias: bool,
+    device: &Device,
+) -> Linear {
+    let std = 0.02;
+    let weight = trunc_normal(
+        [in_features, out_features],
+        0.0,
+        std,
+        -2.0 * std,
+        2.0 * std,
+        device,
+    );
+    let bias = bias.then(|| Param::from_tensor(Tensor::zeros([out_features], device)));
+    Linear {
+        weight: Param::from_tensor(weight),
+        bias,
+    }
+}
+
+/// Depth-wise convolution used in the `PVTv2` MLP block.
 #[derive(Module, Debug)]
 pub struct DWConv {
     dwconv: Conv2d,
 }
 
 impl DWConv {
+    /// Initializes a 3x3 depth-wise convolution for `dim` channels.
+    #[must_use]
     pub fn new(dim: usize, device: &Device) -> Self {
-        let fan_out = (3 * 3 * dim) / dim;
-        let std = (2.0 / fan_out as f64).sqrt();
-        let conv_initializer = Initializer::Normal { mean: 0.0, std };
-
+        let fan_out = usize_to_f64(3 * 3);
+        let std = (2.0 / fan_out).sqrt();
         let conv = Conv2dConfig::new([dim, dim], [3, 3])
             .with_stride([1, 1])
             .with_padding(PaddingConfig2d::Same)
             .with_groups(dim)
             .with_bias(true)
-            .with_initializer(conv_initializer)
+            .with_initializer(Initializer::Normal { mean: 0.0, std })
             .init(device);
         Self { dwconv: conv }
     }
 
-    pub fn forward(&self, x: Tensor<3>, h: usize, w: usize) -> Tensor<3> {
-        let [b, _, c] = x.dims();
-        let x = x.transpose().reshape([b, c, h, w]);
-        let x = self.dwconv.forward(x);
-        x.flatten(2, 3).transpose()
+    /// Applies depth-wise spatial mixing to sequence tensor `[B, H * W, C]`.
+    #[must_use]
+    pub fn forward(&self, x: Tensor<3>, height: usize, width: usize) -> Tensor<3> {
+        let [batch, _, channels] = x.dims();
+        let spatial = x.transpose().reshape([batch, channels, height, width]);
+        self.dwconv.forward(spatial).flatten(2, 3).transpose()
     }
 }
 
-/// Multi-Layer Perceptron (MLP) block for PVTv2.
+/// Multi-layer perceptron block with embedded depth-wise convolution.
 #[derive(Module, Debug)]
 pub struct Mlp {
     fc1: Linear,
@@ -71,6 +79,8 @@ pub struct Mlp {
 }
 
 impl Mlp {
+    /// Initializes a `PVTv2` [`Mlp`] block.
+    #[must_use]
     pub fn new(
         in_features: usize,
         hidden_features: usize,
@@ -78,56 +88,27 @@ impl Mlp {
         drop: f64,
         device: &Device,
     ) -> Self {
-        let std = 0.02;
-        let fc1 = {
-            let weight = trunc_normal(
-                Tensor::zeros([in_features, hidden_features], device),
-                0.0,
-                std,
-                -2.0 * std,
-                2.0 * std,
-            );
-            let bias = Tensor::zeros([hidden_features], device);
-            Linear {
-                weight: Param::from_tensor(weight),
-                bias: Some(Param::from_tensor(bias)),
-            }
-        };
-        let fc2 = {
-            let weight = trunc_normal(
-                Tensor::zeros([hidden_features, out_features], device),
-                0.0,
-                std,
-                -2.0 * std,
-                2.0 * std,
-            );
-            let bias = Tensor::zeros([out_features], device);
-            Linear {
-                weight: Param::from_tensor(weight),
-                bias: Some(Param::from_tensor(bias)),
-            }
-        };
-
         Self {
-            fc1,
+            fc1: trunc_normal_linear(in_features, hidden_features, true, device),
             dwconv: DWConv::new(hidden_features, device),
             act: Gelu::new(),
-            fc2,
+            fc2: trunc_normal_linear(hidden_features, out_features, true, device),
             drop: DropoutConfig::new(drop).init(),
         }
     }
 
+    /// Applies `fc1 -> dwconv -> gelu -> drop -> fc2 -> drop`.
+    #[must_use]
     pub fn forward(&self, x: Tensor<3>, h: usize, w: usize) -> Tensor<3> {
-        let x = self.fc1.forward(x);
-        let x = self.dwconv.forward(x, h, w);
-        let x = self.act.forward(x);
-        let x = self.drop.forward(x);
-        let x = self.fc2.forward(x);
-        self.drop.forward(x)
+        let x = self.drop.forward(
+            self.act
+                .forward(self.dwconv.forward(self.fc1.forward(x), h, w)),
+        );
+        self.drop.forward(self.fc2.forward(x))
     }
 }
 
-/// Spatially-reductive attention mechanism for PVTv2.
+/// Spatially-reductive multi-head attention module.
 #[derive(Module, Debug)]
 pub struct Attention {
     dim: usize,
@@ -144,6 +125,12 @@ pub struct Attention {
 }
 
 impl Attention {
+    /// Initializes a `PVTv2` [`Attention`] module.
+    #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mirrors the upstream PVTv2 attention signature directly"
+    )]
     pub fn new(
         dim: usize,
         num_heads: usize,
@@ -156,60 +143,12 @@ impl Attention {
         device: &Device,
     ) -> Self {
         let head_dim = dim / num_heads;
-        let std = 0.02;
-
-        let q = {
-            let weight = trunc_normal(
-                Tensor::zeros([dim, dim], device),
-                0.0,
-                std,
-                -2.0 * std,
-                2.0 * std,
-            );
-            let bias = qkv_bias.then(|| Param::from_tensor(Tensor::zeros([dim], device)));
-            Linear {
-                weight: Param::from_tensor(weight),
-                bias,
-            }
-        };
-
-        let kv = {
-            let weight = trunc_normal(
-                Tensor::zeros([dim, dim * 2], device),
-                0.0,
-                std,
-                -2.0 * std,
-                2.0 * std,
-            );
-            let bias = qkv_bias.then(|| Param::from_tensor(Tensor::zeros([dim * 2], device)));
-            Linear {
-                weight: Param::from_tensor(weight),
-                bias,
-            }
-        };
-
-        let proj = {
-            let weight = trunc_normal(
-                Tensor::zeros([dim, dim], device),
-                0.0,
-                std,
-                -2.0 * std,
-                2.0 * std,
-            );
-            let bias = Some(Param::from_tensor(Tensor::zeros([dim], device)));
-            Linear {
-                weight: Param::from_tensor(weight),
-                bias,
-            }
-        };
-
         let sr = (sr_ratio > 1).then(|| {
-            let fan_out = (sr_ratio * sr_ratio * dim) / dim;
-            let std = (2.0 / fan_out as f64).sqrt();
-            let conv_initializer = Initializer::Normal { mean: 0.0, std };
+            let fan_out = usize_to_f64(sr_ratio * sr_ratio * dim);
+            let std = (2.0 / fan_out).sqrt();
             Conv2dConfig::new([dim, dim], [sr_ratio, sr_ratio])
                 .with_stride([sr_ratio, sr_ratio])
-                .with_initializer(conv_initializer)
+                .with_initializer(Initializer::Normal { mean: 0.0, std })
                 .init(device)
         });
         let norm =
@@ -218,11 +157,11 @@ impl Attention {
         Self {
             dim,
             num_heads,
-            scale: qk_scale.unwrap_or_else(|| (head_dim as f64).powf(-0.5)),
-            q,
-            kv,
+            scale: qk_scale.unwrap_or_else(|| usize_to_f64(head_dim).powf(-0.5)),
+            q: trunc_normal_linear(dim, dim, qkv_bias, device),
+            kv: trunc_normal_linear(dim, dim * 2, qkv_bias, device),
             attn_drop: DropoutConfig::new(attn_drop).init(),
-            proj,
+            proj: trunc_normal_linear(dim, dim, true, device),
             proj_drop: DropoutConfig::new(proj_drop).init(),
             sr_ratio,
             sr,
@@ -230,27 +169,29 @@ impl Attention {
         }
     }
 
-    pub fn forward(&self, x: Tensor<3>, h: usize, w: usize) -> Tensor<3> {
-        let [b, n, c] = x.dims();
-        let q = self
+    /// Computes spatially-reduced multi-head self-attention on `[B, H * W, C]`.
+    #[must_use]
+    pub fn forward(&self, x: Tensor<3>, height: usize, width: usize) -> Tensor<3> {
+        let [batch, seq_len, channels] = x.dims();
+        let head_dim = channels / self.num_heads;
+        let query = self
             .q
             .forward(x.clone())
-            .reshape([b, n, self.num_heads, c / self.num_heads])
+            .reshape([batch, seq_len, self.num_heads, head_dim])
             .permute([0, 2, 1, 3]);
 
-        let (k, v) = if let (Some(sr), Some(norm)) = (&self.sr, &self.norm) {
-            let x_ = x.permute([0, 2, 1]).reshape([b, c, h, w]);
-            let x_ = sr.forward(x_);
-            let [_, _, new_h, new_w] = x_.dims();
-            let x_ = x_.flatten(2, 3).permute([0, 2, 1]);
-            let x_ = norm.forward(x_);
+        let (key, value) = if let (Some(sr), Some(norm)) = (&self.sr, &self.norm) {
+            let reduced = sr.forward(
+                x.permute([0, 2, 1])
+                    .reshape([batch, channels, height, width]),
+            );
+            let [_, _, new_h, new_w] = reduced.dims();
+            let reduced = norm.forward(reduced.flatten(2, 3).permute([0, 2, 1]));
             let kv = self
                 .kv
-                .forward(x_)
-                .reshape([b, new_h * new_w, 2, self.num_heads, c / self.num_heads])
+                .forward(reduced)
+                .reshape([batch, new_h * new_w, 2, self.num_heads, head_dim])
                 .permute([2, 0, 3, 1, 4]);
-            // Remove only the sliced head dimension; a plain `squeeze` would also drop
-            // the head axis when `num_heads == 1`.
             (
                 kv.clone().slice(s![0..1]).squeeze_dim::<4>(0),
                 kv.slice(s![1..2]).squeeze_dim::<4>(0),
@@ -259,27 +200,26 @@ impl Attention {
             let kv = self
                 .kv
                 .forward(x)
-                .reshape([b, n, 2, self.num_heads, c / self.num_heads])
+                .reshape([batch, seq_len, 2, self.num_heads, head_dim])
                 .permute([2, 0, 3, 1, 4]);
-            // Remove only the sliced head dimension; a plain `squeeze` would also drop
-            // the head axis when `num_heads == 1`.
             (
                 kv.clone().slice(s![0..1]).squeeze_dim::<4>(0),
                 kv.slice(s![1..2]).squeeze_dim::<4>(0),
             )
         };
 
-        let attn = q.matmul(k.transpose()) * self.scale;
-        let attn = softmax(attn, 3);
-        let attn = self.attn_drop.forward(attn);
-
-        let x = attn.matmul(v).permute([0, 2, 1, 3]).reshape([b, n, c]);
-        let x = self.proj.forward(x);
-        self.proj_drop.forward(x)
+        let attn = self
+            .attn_drop
+            .forward(softmax(query.matmul(key.transpose()) * self.scale, 3));
+        let attended = attn
+            .matmul(value)
+            .permute([0, 2, 1, 3])
+            .reshape([batch, seq_len, channels]);
+        self.proj_drop.forward(self.proj.forward(attended))
     }
 }
 
-/// Transformer block for PVTv2.
+/// Transformer block for `PVTv2`.
 #[derive(Module, Debug)]
 pub struct Block {
     norm1: LayerNorm,
@@ -290,6 +230,12 @@ pub struct Block {
 }
 
 impl Block {
+    /// Initializes a `PVTv2` [`Block`].
+    #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mirrors the upstream PVTv2 transformer block hyperparameters"
+    )]
     pub fn new(
         dim: usize,
         num_heads: usize,
@@ -298,22 +244,30 @@ impl Block {
         qk_scale: Option<f64>,
         drop: f64,
         attn_drop: f64,
-        _drop_path: f64,
+        drop_path: f64,
         sr_ratio: usize,
         epsilon: f64,
         device: &Device,
     ) -> Self {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "MLP ratio is a small non-negative scalar"
+        )]
+        let mlp_hidden_dim = (usize_to_f64(dim) * mlp_ratio) as usize;
         Self {
             norm1: LayerNormConfig::new(dim).with_epsilon(epsilon).init(device),
             attn: Attention::new(
                 dim, num_heads, qkv_bias, qk_scale, attn_drop, drop, sr_ratio, epsilon, device,
             ),
-            drop_path: DropPathConfig::new().init(),
+            drop_path: DropPathConfig::new().with_drop_prob(drop_path).init(),
             norm2: LayerNormConfig::new(dim).with_epsilon(epsilon).init(device),
-            mlp: Mlp::new(dim, (dim as f64 * mlp_ratio) as usize, dim, drop, device),
+            mlp: Mlp::new(dim, mlp_hidden_dim, dim, drop, device),
         }
     }
 
+    /// Runs attention and MLP residual branches for spatial dimensions `(h, w)`.
+    #[must_use]
     pub fn forward(&self, x: Tensor<3>, h: usize, w: usize) -> Tensor<3> {
         let x = x.clone()
             + self
@@ -326,7 +280,7 @@ impl Block {
     }
 }
 
-/// Overlapping patch embedding for PVTv2.
+/// Overlapping patch embedding layer for `PVTv2`.
 #[derive(Module, Debug)]
 pub struct OverlapPatchEmbed {
     proj: Conv2d,
@@ -334,6 +288,8 @@ pub struct OverlapPatchEmbed {
 }
 
 impl OverlapPatchEmbed {
+    /// Initializes an [`OverlapPatchEmbed`] layer.
+    #[must_use]
     pub fn new(
         patch_size: usize,
         stride: usize,
@@ -342,20 +298,15 @@ impl OverlapPatchEmbed {
         epsilon: f64,
         device: &Device,
     ) -> Self {
-        let fan_out = (patch_size * patch_size * embed_dim) as f64;
+        let fan_out = usize_to_f64(patch_size * patch_size * embed_dim);
         let std = (2.0 / fan_out).sqrt();
-        let conv_initializer = Initializer::Normal { mean: 0.0, std };
+        let pad = patch_size / 2;
 
         Self {
             proj: Conv2dConfig::new([in_channels, embed_dim], [patch_size, patch_size])
                 .with_stride([stride, stride])
-                .with_padding(PaddingConfig2d::Explicit(
-                    patch_size / 2,
-                    patch_size / 2,
-                    patch_size / 2,
-                    patch_size / 2,
-                ))
-                .with_initializer(conv_initializer)
+                .with_padding(PaddingConfig2d::Explicit(pad, pad, pad, pad))
+                .with_initializer(Initializer::Normal { mean: 0.0, std })
                 .init(device),
             norm: LayerNormConfig::new(embed_dim)
                 .with_epsilon(epsilon)
@@ -363,16 +314,17 @@ impl OverlapPatchEmbed {
         }
     }
 
+    /// Embeds `[B, C, H, W]` into `(tokens [B, H' * W', embed_dim], H', W')`.
+    #[must_use]
     pub fn forward(&self, x: Tensor<4>) -> (Tensor<3>, usize, usize) {
         let x = self.proj.forward(x);
         let [_, _, h, w] = x.dims();
-        let x = x.flatten(2, 3).transpose();
-        let x = self.norm.forward(x);
+        let x = self.norm.forward(x.flatten(2, 3).transpose());
         (x, h, w)
     }
 }
 
-/// Pyramid Vision Transformer v2 (PVTv2) model.
+/// Pyramid Vision Transformer v2 (`PVTv2`) hierarchical backbone.
 #[derive(Module, Debug)]
 pub struct PyramidVisionTransformerImpr {
     patch_embed1: OverlapPatchEmbed,
@@ -391,61 +343,71 @@ pub struct PyramidVisionTransformerImpr {
 }
 
 impl PyramidVisionTransformerImpr {
+    /// Runs the 4 `PVTv2` stages on `[B, C, H, W]` and returns 4 multi-scale `[B, C_i, H_i, W_i]` maps.
+    #[must_use]
     pub fn forward(&self, x: Tensor<4>) -> [Tensor<4>; 4] {
         let b = x.dims()[0];
-
-        // Stage 1
-        let (mut x, h, w) = self.patch_embed1.forward(x);
-        for blk in &self.block1 {
-            x = blk.forward(x, h, w);
-        }
-        x = self.norm1.forward(x);
-        let out1 = x
-            .reshape([b, h, w, self.embed_dims[0]])
-            .permute([0, 3, 1, 2]);
-
-        // Stage 2
-        let (x, h, w) = self.patch_embed2.forward(out1.clone());
-        let mut x = x;
-        for blk in &self.block2 {
-            x = blk.forward(x, h, w);
-        }
-        x = self.norm2.forward(x);
-        let out2 = x
-            .reshape([b, h, w, self.embed_dims[1]])
-            .permute([0, 3, 1, 2]);
-
-        // Stage 3
-        let (x, h, w) = self.patch_embed3.forward(out2.clone());
-        let mut x = x;
-        for blk in &self.block3 {
-            x = blk.forward(x, h, w);
-        }
-        x = self.norm3.forward(x);
-        let out3 = x
-            .reshape([b, h, w, self.embed_dims[2]])
-            .permute([0, 3, 1, 2]);
-
-        // Stage 4
-        let (x, h, w) = self.patch_embed4.forward(out3.clone());
-        let mut x = x;
-        for blk in &self.block4 {
-            x = blk.forward(x, h, w);
-        }
-        x = self.norm4.forward(x);
-        let out4 = x
-            .reshape([b, h, w, self.embed_dims[3]])
-            .permute([0, 3, 1, 2]);
-
+        let out1 = run_stage(
+            &self.patch_embed1,
+            &self.block1,
+            &self.norm1,
+            x,
+            b,
+            self.embed_dims[0],
+        );
+        let out2 = run_stage(
+            &self.patch_embed2,
+            &self.block2,
+            &self.norm2,
+            out1.clone(),
+            b,
+            self.embed_dims[1],
+        );
+        let out3 = run_stage(
+            &self.patch_embed3,
+            &self.block3,
+            &self.norm3,
+            out2.clone(),
+            b,
+            self.embed_dims[2],
+        );
+        let out4 = run_stage(
+            &self.patch_embed4,
+            &self.block4,
+            &self.norm4,
+            out3.clone(),
+            b,
+            self.embed_dims[3],
+        );
         [out1, out2, out3, out4]
     }
 
+    /// Returns the output channel counts `[C1, C2, C3, C4]` for each stage.
+    #[must_use]
     pub const fn output_channels(&self) -> [usize; 4] {
         self.embed_dims
     }
 }
 
-#[derive(Config, Debug)]
+fn run_stage(
+    patch_embed: &OverlapPatchEmbed,
+    blocks: &[Block],
+    norm: &LayerNorm,
+    input: Tensor<4>,
+    batch_size: usize,
+    embed_dim: usize,
+) -> Tensor<4> {
+    let (mut x, h, w) = patch_embed.forward(input);
+    for blk in blocks {
+        x = blk.forward(x, h, w);
+    }
+    norm.forward(x)
+        .reshape([batch_size, h, w, embed_dim])
+        .permute([0, 3, 1, 2])
+}
+
+/// Configuration for [`PyramidVisionTransformerImpr`].
+#[derive(Config, Debug, PartialEq)]
 pub struct PvtV2Config {
     in_channels: usize,
     embed_dims: [usize; 4],
@@ -461,7 +423,44 @@ pub struct PvtV2Config {
 }
 
 impl PvtV2Config {
-    pub fn init(&self, device: &Device) -> PyramidVisionTransformerImpr {
+    /// Validates hyperparameters and initializes a [`PyramidVisionTransformerImpr`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackboneError`] if channel dims, head counts, or spatial reduction ratios are invalid.
+    pub fn init(&self, device: &Device) -> Result<PyramidVisionTransformerImpr, BackboneError> {
+        if self.in_channels == 0 {
+            return Err(BackboneError::invalid_config(
+                "in_channels must be positive",
+            ));
+        }
+        for i in 0..4 {
+            if self.embed_dims[i] == 0
+                || self.num_heads[i] == 0
+                || !self.embed_dims[i].is_multiple_of(self.num_heads[i])
+            {
+                return Err(BackboneError::invalid_config(format!(
+                    "stage {i} embed_dim ({}) must be positive and divisible by num_heads ({})",
+                    self.embed_dims[i], self.num_heads[i]
+                )));
+            }
+            if self.sr_ratios[i] == 0 {
+                return Err(BackboneError::invalid_config(format!(
+                    "stage {i} sr_ratio must be positive"
+                )));
+            }
+        }
+
+        let total_depth: usize = self.depths.iter().sum();
+        let dpr: Vec<f64> = if total_depth <= 1 {
+            vec![0.0; total_depth]
+        } else {
+            let denom = usize_to_f64(total_depth - 1);
+            (0..total_depth)
+                .map(|i| self.drop_path_rate * usize_to_f64(i) / denom)
+                .collect()
+        };
+
         let patch_embed1 = OverlapPatchEmbed::new(
             7,
             4,
@@ -495,101 +494,16 @@ impl PvtV2Config {
             device,
         );
 
-        let dpr: Vec<f64> = (0..self.depths.iter().sum())
-            .map(|i| {
-                self.drop_path_rate * (i as f64) / ((self.depths.iter().sum::<usize>() - 1) as f64)
-            })
-            .collect();
+        let mut cursor = 0_usize;
+        let (block1, norm1) = self.build_stage(0, &dpr[cursor..cursor + self.depths[0]], device);
+        cursor += self.depths[0];
+        let (block2, norm2) = self.build_stage(1, &dpr[cursor..cursor + self.depths[1]], device);
+        cursor += self.depths[1];
+        let (block3, norm3) = self.build_stage(2, &dpr[cursor..cursor + self.depths[2]], device);
+        cursor += self.depths[2];
+        let (block4, norm4) = self.build_stage(3, &dpr[cursor..cursor + self.depths[3]], device);
 
-        let mut cur = 0;
-        let block1 = (0..self.depths[0])
-            .map(|i| {
-                Block::new(
-                    self.embed_dims[0],
-                    self.num_heads[0],
-                    self.mlp_ratios[0],
-                    self.qkv_bias,
-                    None,
-                    self.drop_rate,
-                    0.0,
-                    dpr[cur + i],
-                    self.sr_ratios[0],
-                    self.epsilon,
-                    device,
-                )
-            })
-            .collect();
-        let norm1 = LayerNormConfig::new(self.embed_dims[0])
-            .with_epsilon(self.epsilon)
-            .init(device);
-
-        cur += self.depths[0];
-        let block2 = (0..self.depths[1])
-            .map(|i| {
-                Block::new(
-                    self.embed_dims[1],
-                    self.num_heads[1],
-                    self.mlp_ratios[1],
-                    self.qkv_bias,
-                    None,
-                    self.drop_rate,
-                    0.0,
-                    dpr[cur + i],
-                    self.sr_ratios[1],
-                    self.epsilon,
-                    device,
-                )
-            })
-            .collect();
-        let norm2 = LayerNormConfig::new(self.embed_dims[1])
-            .with_epsilon(self.epsilon)
-            .init(device);
-
-        cur += self.depths[1];
-        let block3 = (0..self.depths[2])
-            .map(|i| {
-                Block::new(
-                    self.embed_dims[2],
-                    self.num_heads[2],
-                    self.mlp_ratios[2],
-                    self.qkv_bias,
-                    None,
-                    self.drop_rate,
-                    0.0,
-                    dpr[cur + i],
-                    self.sr_ratios[2],
-                    self.epsilon,
-                    device,
-                )
-            })
-            .collect();
-        let norm3 = LayerNormConfig::new(self.embed_dims[2])
-            .with_epsilon(self.epsilon)
-            .init(device);
-
-        cur += self.depths[2];
-        let block4 = (0..self.depths[3])
-            .map(|i| {
-                Block::new(
-                    self.embed_dims[3],
-                    self.num_heads[3],
-                    self.mlp_ratios[3],
-                    self.qkv_bias,
-                    None,
-                    self.drop_rate,
-                    0.0,
-                    dpr[cur + i],
-                    self.sr_ratios[3],
-                    self.epsilon,
-                    device,
-                )
-            })
-            .collect();
-        let norm4 = LayerNormConfig::new(self.embed_dims[3])
-            .with_epsilon(self.epsilon)
-            .init(device);
-
-        PyramidVisionTransformerImpr {
+        Ok(PyramidVisionTransformerImpr {
             patch_embed1,
             patch_embed2,
             patch_embed3,
@@ -603,9 +517,41 @@ impl PvtV2Config {
             block4,
             norm4,
             embed_dims: self.embed_dims,
-        }
+        })
     }
 
+    fn build_stage(
+        &self,
+        stage: usize,
+        stage_dpr: &[f64],
+        device: &Device,
+    ) -> (Vec<Block>, LayerNorm) {
+        let blocks = stage_dpr
+            .iter()
+            .map(|&dp| {
+                Block::new(
+                    self.embed_dims[stage],
+                    self.num_heads[stage],
+                    self.mlp_ratios[stage],
+                    self.qkv_bias,
+                    None,
+                    self.drop_rate,
+                    0.0,
+                    dp,
+                    self.sr_ratios[stage],
+                    self.epsilon,
+                    device,
+                )
+            })
+            .collect();
+        let norm = LayerNormConfig::new(self.embed_dims[stage])
+            .with_epsilon(self.epsilon)
+            .init(device);
+        (blocks, norm)
+    }
+
+    /// PVTv2-B0 configuration.
+    #[must_use]
     pub const fn b0(in_channels: usize) -> Self {
         Self {
             in_channels,
@@ -621,6 +567,8 @@ impl PvtV2Config {
         }
     }
 
+    /// PVTv2-B1 configuration.
+    #[must_use]
     pub const fn b1(in_channels: usize) -> Self {
         Self {
             in_channels,
@@ -636,6 +584,8 @@ impl PvtV2Config {
         }
     }
 
+    /// PVTv2-B2 configuration.
+    #[must_use]
     pub const fn b2(in_channels: usize) -> Self {
         Self {
             in_channels,
@@ -651,6 +601,8 @@ impl PvtV2Config {
         }
     }
 
+    /// PVTv2-B3 configuration.
+    #[must_use]
     pub const fn b3(in_channels: usize) -> Self {
         Self {
             in_channels,
@@ -666,6 +618,8 @@ impl PvtV2Config {
         }
     }
 
+    /// PVTv2-B4 configuration.
+    #[must_use]
     pub const fn b4(in_channels: usize) -> Self {
         Self {
             in_channels,
@@ -681,6 +635,8 @@ impl PvtV2Config {
         }
     }
 
+    /// PVTv2-B5 configuration.
+    #[must_use]
     pub const fn b5(in_channels: usize) -> Self {
         Self {
             in_channels,
@@ -694,45 +650,5 @@ impl PvtV2Config {
             drop_path_rate: 0.1,
             epsilon: 1e-6,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use burn::tensor::Distribution;
-
-    use super::*;
-
-    #[test]
-    fn pvt_v2_b2_forward_returns_hierarchical_features() {
-        let device = Device::flex();
-        let config = PvtV2Config::b2(3);
-        let model = config.init(&device);
-
-        let input = Tensor::<4>::random([1, 3, 224, 224], Distribution::Normal(0.0, 1.0), &device);
-        let output = model.forward(input);
-
-        // Check output shapes for PVTv2-B2
-        assert_eq!(output[0].dims(), [1, 64, 56, 56]);
-        assert_eq!(output[1].dims(), [1, 128, 28, 28]);
-        assert_eq!(output[2].dims(), [1, 320, 14, 14]);
-        assert_eq!(output[3].dims(), [1, 512, 7, 7]);
-    }
-
-    #[test]
-    fn overlap_patch_embed_calculates_correct_output_dimensions() {
-        let device = Device::flex();
-        let patch_embed = OverlapPatchEmbed::new(7, 4, 3, 64, 1e-6, &device);
-
-        let input = Tensor::<4>::random([1, 3, 224, 224], Distribution::Normal(0.0, 1.0), &device);
-
-        let (output, h, w) = patch_embed.forward(input);
-
-        // Verify output dimensions
-        let expected_h = (224 + 2 * (7 / 2) - 7) / 4 + 1;
-        let expected_w = (224 + 2 * (7 / 2) - 7) / 4 + 1;
-        assert_eq!(h, expected_h);
-        assert_eq!(w, expected_w);
-        assert_eq!(output.dims(), [1, expected_h * expected_w, 64]);
     }
 }

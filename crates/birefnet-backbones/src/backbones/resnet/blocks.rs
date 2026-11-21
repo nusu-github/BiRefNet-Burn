@@ -1,6 +1,6 @@
-//! ResNet block implementations.
+//! `ResNet` block implementations.
 //!
-//! This module contains the building blocks for ResNet: BasicBlock, Bottleneck, and LayerBlock.
+//! This module contains the building blocks for `ResNet`: `BasicBlock`, `Bottleneck`, and `LayerBlock`.
 
 use core::f64::consts::SQRT_2;
 
@@ -13,6 +13,10 @@ use burn::{
 };
 
 #[derive(Module, Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Burn Module requires inline storage because Box<M> does not implement Module"
+)]
 pub enum ResidualBlock {
     /// A bottleneck residual block.
     Bottleneck(Bottleneck),
@@ -29,7 +33,7 @@ impl ResidualBlock {
     }
 }
 
-/// ResNet basic residual block implementation.
+/// `ResNet` basic residual block implementation.
 /// Derived from torchvision.models.resnet.BasicBlock
 #[derive(Module, Debug)]
 pub struct BasicBlock {
@@ -62,7 +66,7 @@ impl BasicBlock {
         self.relu.forward(out)
     }
 
-    /// Create a new BasicBlock.
+    /// Create a new `BasicBlock`.
     pub fn new(in_channels: usize, out_channels: usize, stride: usize, device: &Device) -> Self {
         let initializer = Initializer::KaimingNormal {
             gain: SQRT_2,
@@ -101,12 +105,12 @@ impl BasicBlock {
     }
 }
 
-/// ResNet bottleneck residual block implementation.
+/// `ResNet` bottleneck residual block implementation.
 /// Derived from torchvision.models.resnet.Bottleneck
 ///
 /// **NOTE:** Following common practice, this bottleneck block places the stride for downsampling
 /// to the second 3x3 convolution while the original paper places it to the first 1x1 convolution.
-/// This variant improves the accuracy and is known as ResNet V1.5.
+/// This variant improves the accuracy and is known as `ResNet` V1.5.
 #[derive(Module, Debug)]
 pub struct Bottleneck {
     conv1: Conv2d,
@@ -244,7 +248,7 @@ impl LayerBlock {
         out
     }
 
-    /// Create a new LayerBlock.
+    /// Create a new `LayerBlock`.
     pub fn new(
         num_blocks: usize,
         in_channels: usize,

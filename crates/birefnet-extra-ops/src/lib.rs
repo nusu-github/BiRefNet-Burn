@@ -1,16 +1,12 @@
-//! Additional operations for the Burn deep learning framework
-//!
-//! This crate provides operations that are commonly used in deep learning but are not
-//! yet available in the core Burn framework.
+//! Additional tensor operations and layers for the Burn deep learning framework.
 
 mod drop_path;
 mod erfinv;
 mod trunc_normal;
 
-// Convenient re-exports
 #[doc(inline)]
 pub use drop_path::{DropPath, DropPathConfig};
 #[doc(inline)]
 pub use erfinv::{Erfinv, erfinv};
 #[doc(inline)]
-pub use trunc_normal::{trunc_normal, trunc_normal_};
+pub use trunc_normal::trunc_normal;

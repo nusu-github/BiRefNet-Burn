@@ -1,18 +1,20 @@
 [package]
 name = "birefnet-loss"
-description = "Comprehensive loss functions for deep learning segmentation tasks in Burn"
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-readme.workspace = true
-repository.workspace = true
 version.workspace = true
+categories.workspace = true
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+rust-version.workspace = true
+description = "Comprehensive loss functions for deep learning segmentation tasks in Burn"
 
 [dependencies]
 burn = { workspace = true }
-thiserror = { workspace = true }
 
 [dev-dependencies]
+approx = { workspace = true }
 burn = { workspace = true, features = ["flex", "autodiff"] }
 
 [lints]

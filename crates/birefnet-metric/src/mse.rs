@@ -1,11 +1,10 @@
-//! Mean Squared Error (MSE) metric for BiRefNet.
+//! Mean Squared Error (`MSE`) metric for `BiRefNet`.
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
-use burn::tensor::TensorReadError;
 use burn::{
-    config::Config,
-    tensor::{Tensor, s},
+    prelude::*,
+    tensor::TensorReadError,
     train::metric::{
         Metric, MetricAttributes, MetricMetadata, Numeric, NumericAttributes, NumericEntry,
         SerializedEntry,
@@ -13,38 +12,63 @@ use burn::{
     },
 };
 
-use super::input::MSEInput;
+use crate::{
+    common::{extract_sample_3d, prepare_data, usize_to_f64},
+    input::MSEInput,
+};
 
-/// Configuration for the MSE metric.
-#[derive(Config, Debug)]
+/// Configuration for [`MSEMetric`].
+#[derive(Config, Debug, Default)]
 pub struct MSEMetricConfig {
-    /// Name of the metric (default: "MSE").
+    /// Display name for the metric.
     #[config(default = "String::from(\"MSE\")")]
-    name: String,
+    pub name: String,
 }
 
-/// MSE metric.
-#[derive(Default, Clone)]
+impl MSEMetricConfig {
+    /// Initializes an [`MSEMetric`] from this configuration.
+    #[must_use]
+    pub fn init(&self) -> MSEMetric {
+        MSEMetric {
+            state: NumericMetricState::default(),
+            name: Arc::new(self.name.clone()),
+        }
+    }
+}
+
+/// Mean Squared Error metric over normalized `[0, 1]` segmentation predictions.
+#[derive(Clone)]
 pub struct MSEMetric {
     state: NumericMetricState,
     name: Arc<String>,
 }
 
+impl fmt::Debug for MSEMetric {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MSEMetric")
+            .field("name", &self.name)
+            .field("value", &self.value())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for MSEMetric {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MSEMetric {
-    /// Creates a new MSE metric.
+    /// Creates a new [`MSEMetric`] with default name `"MSE"`.
+    #[must_use]
     pub fn new() -> Self {
-        Self {
-            state: NumericMetricState::default(),
-            name: Arc::new("MSE".to_owned()),
-        }
+        MSEMetricConfig::new().init()
     }
 
-    /// Creates a new MSE metric with a custom name.
-    pub fn with_name(name: String) -> Self {
-        Self {
-            state: NumericMetricState::default(),
-            name: Arc::new(name),
-        }
+    /// Creates a new [`MSEMetric`] from `config`.
+    #[must_use]
+    pub fn with_config(config: &MSEMetricConfig) -> Self {
+        config.init()
     }
 }
 
@@ -52,46 +76,35 @@ impl Metric for MSEMetric {
     type Input = MSEInput;
 
     fn name(&self) -> Arc<String> {
-        self.name.clone()
+        Arc::clone(&self.name)
     }
 
     fn update(
         &mut self,
-        input: &Self::Input,
+        item: &Self::Input,
         _metadata: &MetricMetadata,
     ) -> Result<SerializedEntry, TensorReadError> {
-        let [batch_size, ..] = input.predictions.dims();
-
-        let mut total_mse = 0.0;
-
-        // Process each item in the batch
-        for b in 0..batch_size {
-            let pred: Tensor<3> = input
-                .predictions
-                .clone()
-                .slice(s![b..=b, .., .., ..])
-                .squeeze_dim::<3>(0);
-            let gt: Tensor<3> = input
-                .targets
-                .clone()
-                .slice(s![b..=b, .., .., ..])
-                .squeeze_dim::<3>(0);
-
-            let mse = calculate_mse_single(pred, gt);
-            total_mse += mse;
+        let [batch_size, ..] = item.predictions.dims();
+        if batch_size > 0 {
+            let mut total_mse = 0.0;
+            for b in 0..batch_size {
+                let pred = extract_sample_3d(&item.predictions, b);
+                let gt = extract_sample_3d(&item.targets, b);
+                total_mse += calculate_mse_tensor(pred, gt);
+            }
+            let avg_mse = total_mse / usize_to_f64(batch_size);
+            self.state.update(avg_mse, batch_size);
         }
 
-        let avg_mse = total_mse / batch_size as f64;
-        self.state.update(avg_mse, batch_size);
         Ok(self
             .state
-            .compute_update(FormatOptions::new(self.name.clone()).precision(5)))
+            .compute_update(FormatOptions::new(Arc::clone(&self.name)).precision(5)))
     }
 
     fn compute(&mut self) -> Result<SerializedEntry, TensorReadError> {
         Ok(self
             .state
-            .compute_final(FormatOptions::new(self.name.clone()).precision(5)))
+            .compute_final(FormatOptions::new(Arc::clone(&self.name)).precision(5)))
     }
 
     fn attributes(&self) -> MetricAttributes {
@@ -121,58 +134,13 @@ impl Numeric for MSEMetric {
     }
 }
 
-/// Calculates MSE for a single prediction-target pair.
-///
-/// Implements the _prepare_data logic from Python BiRefNet:
-/// - gt = gt > 128 (threshold at 128)
-/// - pred = pred / 255 (normalize to [0, 1])
-/// - if pred.max() != pred.min(): pred = (pred - pred.min()) / (pred.max() - pred.min())
-///
-/// # Arguments
-/// * `predictions` - Predictions with shape `[channels, height, width]` or `[height, width]`.
-/// * `targets` - Ground truth with shape `[channels, height, width]` or `[height, width]`.
-///
-/// # Returns
-/// The MSE value.
-fn calculate_mse_single<const D: usize>(predictions: Tensor<D>, targets: Tensor<D>) -> f64 {
-    // Prepare data following Python _prepare_data function
+fn calculate_mse_tensor<const D: usize>(predictions: Tensor<D>, targets: Tensor<D>) -> f64 {
     let (pred, gt) = prepare_data(predictions, targets);
-
-    // Calculate MSE: np.mean((pred - gt) ** 2)
-    let diff = pred - gt;
-    let squared_diff = diff.powf_scalar(2.0);
-    let mse = squared_diff.mean();
-
-    mse.into_scalar::<f64>()
+    (pred - gt).powf_scalar(2.0).mean().into_scalar::<f64>()
 }
 
-/// Prepares prediction and ground truth data following Python _prepare_data logic.
-fn prepare_data<const D: usize>(pred: Tensor<D>, gt: Tensor<D>) -> (Tensor<D>, Tensor<D>) {
-    // gt = gt > 128 (binary ground truth)
-    let gt_binary = gt.greater_elem(128).float();
-
-    // pred = pred / 255 (normalize predictions to [0, 1])
-    let pred_norm = pred.div_scalar(255.0);
-
-    // if pred.max() != pred.min(): pred = (pred - pred.min()) / (pred.max() - pred.min())
-    let pred_min = pred_norm.clone().min();
-    let pred_max = pred_norm.clone().max();
-    let range = pred_max - pred_min.clone();
-
-    let pred_final = if range.clone().greater_elem(1e-8).into_scalar::<bool>() {
-        // Normalize to [0, 1] if there's variation
-        let pred_min_scalar = pred_min.into_scalar::<f64>();
-        let range_scalar = range.into_scalar::<f64>();
-        (pred_norm - pred_min_scalar) / range_scalar
-    } else {
-        // Use as-is if all values are the same
-        pred_norm
-    };
-
-    (pred_final, gt_binary)
-}
-
-/// Public function for external use.
+/// Computes Mean Squared Error for a single 2D `[H, W]` prediction-target pair.
+#[must_use]
 pub fn calculate_mse(predictions: Tensor<2>, targets: Tensor<2>) -> f64 {
-    calculate_mse_single(predictions, targets)
+    calculate_mse_tensor(predictions, targets)
 }

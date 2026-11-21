@@ -1,20 +1,22 @@
 [package]
 name = "birefnet-extra-ops"
-description = "Additional operations for the Burn deep learning framework"
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-readme.workspace = true
-repository.workspace = true
 version.workspace = true
+categories.workspace = true
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+rust-version.workspace = true
+description = "Additional tensor operations and stochastic depth layers for the Burn deep learning framework."
 
 [dependencies]
 burn = { workspace = true }
 libm = { workspace = true }
 
 [dev-dependencies]
+approx = { workspace = true }
 burn = { workspace = true, features = ["flex", "autodiff"] }
-rstest = { workspace = true }
 
 [lints]
 workspace = true

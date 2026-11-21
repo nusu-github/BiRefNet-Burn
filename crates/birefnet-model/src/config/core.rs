@@ -1,7 +1,4 @@
-//! Core configuration structures for BiRefNet.
-//!
-//! This module contains the primary configuration structures that define
-//! the BiRefNet model architecture and behavior.
+//! Core configuration structures for `BiRefNet`.
 
 use burn::prelude::*;
 
@@ -9,17 +6,11 @@ use super::enums::{
     Backbone, DecBlk, DecChannelsInter, DecoderAttention, InterpolationStrategy, LateralBlock,
     MultiScaleInput, PromptForLocation, Refine, SqueezeBlock, Task,
 };
-use crate::error::{BiRefNetError, BiRefNetResult};
+use crate::error::ModelError;
 
-/// Main configuration for the BiRefNet model.
-///
-/// This struct aggregates all other configuration modules for the model,
-/// including paths, task-specific settings, backbone, decoder, and refinement options.
-#[derive(Config, Debug)]
+/// Top-level configuration for the `BiRefNet` model.
+#[derive(Config, Debug, PartialEq, Eq)]
 pub struct ModelConfig {
-    /// Path-related configurations.
-    #[config(default = "PathConfig::new()")]
-    pub path: PathConfig,
     /// Task-related configurations.
     #[config(default = "TaskConfig::new()")]
     pub task: TaskConfig,
@@ -33,151 +24,135 @@ pub struct ModelConfig {
     #[config(default = "RefineConfig::new()")]
     pub refine: RefineConfig,
     /// Interpolation strategy for tensor resizing operations.
-    ///
-    /// Controls how tensors are resized during training and inference.
     pub interpolation: InterpolationStrategy,
 }
 
-/// Path-related configuration.
-#[derive(Config, Debug)]
-pub struct PathConfig {
-    /// System home directory.
-    #[config(default = "None")]
-    pub sys_home_dir: Option<String>,
-    /// Root directory for the datasets.
-    #[config(default = "\"datasets/dis\".to_string()")]
-    pub data_root_dir: String,
-}
-
 /// Task-related configuration.
-#[derive(Config, Debug)]
+#[derive(Config, Debug, PartialEq, Eq)]
 pub struct TaskConfig {
-    /// The specific task the model is configured for (e.g., DIS5K, COD).
+    /// The target dataset or task preset (for example `DIS5K` or `COD`).
     #[config(default = "Task::DIS5K")]
     pub task: Task,
-    /// The type of prompt used for localization.
+    /// Type of prompt used for localization.
     #[config(default = "PromptForLocation::Dense")]
     pub prompt4_loc: PromptForLocation,
-    /// Batch size for training/inference. Controls BatchNorm vs Identity usage.
+    /// Batch size for training/inference; controls `BatchNorm` vs identity normalization.
     #[config(default = "4")]
     pub batch_size: usize,
 }
 
 /// Backbone network configuration.
-#[derive(Config, Debug)]
+#[derive(Config, Debug, PartialEq, Eq)]
 pub struct BackboneConfig {
-    /// The chosen backbone architecture (e.g., SwinV1L, Resnet50).
+    /// Chosen backbone encoder architecture.
     #[config(default = "Backbone::SwinV1L")]
     pub backbone: Backbone,
 }
 
-/// Decoder-related configuration.
-///
-/// Controls the behavior of the decoder part of the network, including supervision strategies,
-/// input handling, attention mechanisms, and block types.
-#[derive(Config, Debug)]
+/// Decoder module configuration.
+#[derive(Config, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors upstream BiRefNet boolean decoder configuration flags"
+)]
 pub struct DecoderConfig {
-    /// Enable multi-scale supervision during training.
+    /// Enable multi-scale supervision outputs during training.
     #[config(default = "true")]
     pub ms_supervision: bool,
-    /// Enable output refinement. Depends on `ms_supervision`.
+    /// Enable gradient-guided output refinement; requires `ms_supervision`.
     #[config(default = "true")]
     pub out_ref: bool,
-    /// Enable decoder input from the main input image.
+    /// Enable image-pyramid input branches in the decoder.
     #[config(default = "true")]
     pub dec_ipt: bool,
-    /// Split the decoder input. Depends on `dec_ipt`.
+    /// Split the decoder image input into spatial patches; requires `dec_ipt`.
     #[config(default = "true")]
     pub dec_ipt_split: bool,
-    /// Number of context features to use from earlier encoder stages. Range: [0, 3].
+    /// Number of encoder context features concatenated into the deepest stage (`0..=3`).
     #[config(default = "3")]
     pub cxt_num: usize,
-    /// Method for handling multi-scale input ('Cat', 'Add', or 'None').
+    /// Method for handling multi-scale encoder inputs.
     #[config(default = "MultiScaleInput::Cat")]
     pub mul_scl_ipt: MultiScaleInput,
-    /// Type of attention mechanism in the decoder.
+    /// Attention mechanism inside decoder and squeeze blocks.
     #[config(default = "DecoderAttention::ASPPDeformable")]
     pub dec_att: DecoderAttention,
-    /// The block type and count for the squeeze module.
+    /// Squeeze block architecture and depth.
     #[config(default = "SqueezeBlock::BasicDecBlk(1)")]
     pub squeeze_block: SqueezeBlock,
-    /// The type of block to use in the decoder.
+    /// Decoder block architecture.
     #[config(default = "DecBlk::BasicDecBlk")]
     pub dec_blk: DecBlk,
-    /// The type of lateral connection block to use.
+    /// Lateral connection block architecture.
     #[config(default = "LateralBlock::BasicLatBlk")]
     pub lat_blk: LateralBlock,
-    /// Strategy for intermediate channel sizes in the decoder.
+    /// Intermediate channel sizing strategy inside decoder blocks.
     #[config(default = "DecChannelsInter::Fixed")]
     pub dec_channels_inter: DecChannelsInter,
 }
 
-/// Refinement-related configuration.
-#[derive(Config, Debug)]
+/// Refinement module configuration.
+#[derive(Config, Debug, PartialEq, Eq)]
 pub struct RefineConfig {
-    /// The refinement strategy to use.
+    /// Refinement strategy appended after the decoder.
     #[config(default = "Refine::None")]
     pub refine: Refine,
 }
 
 impl ModelConfig {
-    /// Validate the configuration and return appropriate errors for invalid settings.
-    ///
-    /// This function checks for logical inconsistencies and unsupported features based on
-    /// constraints from the original PyTorch implementation.
+    /// Validates logical consistency across model configuration fields.
     ///
     /// # Errors
     ///
-    /// Returns `Err(BiRefNetError::InvalidConfiguration)` if any validation rule is violated.
-    /// Returns `Err(BiRefNetError::UnsupportedBackbone)` if the backbone is not implemented.
-    pub fn validate(&self) -> BiRefNetResult<()> {
-        // 1. Check context number is valid (本家では [0, 3] のみ)
+    /// Returns [`ModelError`] if `cxt_num > 3`, `squeeze_block.count() > 10`,
+    /// dependent flags (`out_ref` without `ms_supervision`, `dec_ipt_split` without `dec_ipt`)
+    /// are inconsistent, or `dec_att` mismatches `squeeze_block`.
+    pub fn validate(&self) -> Result<(), ModelError> {
+        // Upstream BiRefNet supports only 0..=3 context stages.
         if self.decoder.cxt_num > 3 {
-            return Err(BiRefNetError::InvalidConfiguration {
-                reason: format!("Context number must be <= 3, got {}", self.decoder.cxt_num),
-            });
+            return Err(ModelError::invalid_config(format!(
+                "context number must be <= 3, got {}",
+                self.decoder.cxt_num
+            )));
         }
 
-        // 2. Check squeeze block count is reasonable
         if self.decoder.squeeze_block.count() > 10 {
-            return Err(BiRefNetError::InvalidConfiguration {
-                reason: format!(
-                    "Squeeze block count is too high: {}",
-                    self.decoder.squeeze_block.count()
-                ),
-            });
+            return Err(ModelError::invalid_config(format!(
+                "squeeze block count is too high: {}",
+                self.decoder.squeeze_block.count()
+            )));
         }
 
-        // 3. Check logical dependencies (similar to original implementation)
-        // out_ref depends on ms_supervision (本家: self.out_ref = self.ms_supervision and True)
+        // `out_ref` depends on `ms_supervision`.
         if self.decoder.out_ref && !self.decoder.ms_supervision {
-            return Err(BiRefNetError::InvalidConfiguration {
-                reason: "out_ref can only be enabled when ms_supervision is true".to_owned(),
-            });
+            return Err(ModelError::invalid_config(
+                "out_ref can only be enabled when ms_supervision is true",
+            ));
         }
 
-        // 4. Check dec_ipt_split depends on dec_ipt
         if self.decoder.dec_ipt_split && !self.decoder.dec_ipt {
-            return Err(BiRefNetError::InvalidConfiguration {
-                reason: "dec_ipt_split can only be enabled when dec_ipt is true".to_owned(),
-            });
+            return Err(ModelError::invalid_config(
+                "dec_ipt_split can only be enabled when dec_ipt is true",
+            ));
         }
 
-        // 5. Check squeeze_block compatibility with dec_att
         if self.decoder.squeeze_block != SqueezeBlock::None {
             match self.decoder.dec_att {
                 DecoderAttention::None => {
-                    return Err(BiRefNetError::InvalidConfiguration {
-                        reason: "dec_att should not be None when squeeze_block is enabled"
-                            .to_owned(),
-                    });
+                    if matches!(
+                        self.decoder.squeeze_block,
+                        SqueezeBlock::ASPP(_) | SqueezeBlock::ASPPDeformable(_)
+                    ) {
+                        return Err(ModelError::invalid_config(
+                            "dec_att cannot be None when an ASPP squeeze_block is selected",
+                        ));
+                    }
                 }
                 DecoderAttention::ASPP => {
                     if !matches!(self.decoder.squeeze_block, SqueezeBlock::ASPP(_)) {
-                        return Err(BiRefNetError::InvalidConfiguration {
-                            reason: "dec_att ASPP should be used with SqueezeBlock::ASPP"
-                                .to_owned(),
-                        });
+                        return Err(ModelError::invalid_config(
+                            "dec_att ASPP should be used with SqueezeBlock::ASPP",
+                        ));
                     }
                 }
                 DecoderAttention::ASPPDeformable => {
@@ -185,9 +160,9 @@ impl ModelConfig {
                         self.decoder.squeeze_block,
                         SqueezeBlock::ASPPDeformable(_) | SqueezeBlock::BasicDecBlk(_)
                     ) {
-                        return Err(BiRefNetError::InvalidConfiguration {
-                            reason: "dec_att ASPPDeformable should be used with SqueezeBlock::ASPPDeformable or BasicDecBlk".to_owned()
-                        });
+                        return Err(ModelError::invalid_config(
+                            "dec_att ASPPDeformable requires SqueezeBlock::ASPPDeformable or BasicDecBlk",
+                        ));
                     }
                 }
             }
@@ -196,60 +171,36 @@ impl ModelConfig {
         Ok(())
     }
 
-    /// Get lateral channels for the backbone network.
-    ///
-    /// The number of channels depends on the chosen backbone and whether multi-scale
-    /// inputs are concatenated (`MultiScaleInput::Cat`).
+    /// Returns decoder-ordered `[x4, x3, x2, x1]` channel counts after multi-scale input fusion.
+    #[must_use]
     pub fn lateral_channels_in_collection(&self) -> [usize; 4] {
-        let channels = match self.backbone.backbone {
-            Backbone::Vgg16 | Backbone::Vgg16bn => [512, 256, 128, 64],
-            Backbone::Resnet50 => [1024, 512, 256, 64],
-            Backbone::SwinV1T | Backbone::SwinV1S => [768, 384, 192, 96],
-            Backbone::SwinV1B => [1024, 512, 256, 128],
-            Backbone::SwinV1L => [1536, 768, 384, 192],
-            Backbone::PvtV2B0 => [256, 160, 64, 32],
-            Backbone::PvtV2B1 | Backbone::PvtV2B2 | Backbone::PvtV2B5 => [512, 320, 128, 64],
-        };
+        let channels = self.backbone.lateral_channels_in_collection();
         if self.decoder.mul_scl_ipt == MultiScaleInput::Cat {
-            let [c1, c2, c3, c4] = channels;
-            [c1 * 2, c2 * 2, c3 * 2, c4 * 2]
+            let [c4, c3, c2, c1] = channels;
+            [c4 * 2, c3 * 2, c2 * 2, c1 * 2]
         } else {
             channels
         }
     }
 
-    /// Get context channels for skip connections.
-    ///
-    /// Retrieves the channel counts from the last `cxt_num` encoder features
-    /// (excluding the final one) to be used as context in the decoder.
+    /// Returns context channel counts `[c1, c2, c3]` active for skip concatenation into `x4`.
     ///
     /// # Errors
     ///
-    /// Returns `Err(BiRefNetError::InvalidConfiguration)` if `cxt_num` is invalid.
-    pub fn cxt(&self) -> BiRefNetResult<[usize; 3]> {
-        if self.decoder.cxt_num > 0 {
-            let reversed: Vec<usize> = self.lateral_channels_in_collection()[1..]
-                .iter()
-                .rev()
-                .copied()
-                .collect();
-            reversed[reversed.len().saturating_sub(self.decoder.cxt_num)..]
-                .try_into()
-                .map_err(|_| BiRefNetError::InvalidConfiguration {
-                    reason: format!("Invalid context number: {}", self.decoder.cxt_num),
-                })
-        } else {
-            Ok([0, 0, 0])
-        }
+    /// Returns [`ModelError`] if `cxt_num > 3`.
+    pub fn cxt(&self) -> Result<[usize; 3], ModelError> {
+        let lateral_channels = self.lateral_channels_in_collection();
+        self.decoder.cxt(&lateral_channels)
     }
 }
 
 impl BackboneConfig {
-    /// Get lateral channels for the backbone network.
+    /// Returns raw backbone output channels ordered deep-to-shallow `[x4, x3, x2, x1]`.
+    #[must_use]
     pub const fn lateral_channels_in_collection(&self) -> [usize; 4] {
         match self.backbone {
-            Backbone::Vgg16 | Backbone::Vgg16bn => [512, 256, 128, 64],
-            Backbone::Resnet50 => [1024, 512, 256, 64],
+            Backbone::Vgg16 | Backbone::Vgg16bn => [512, 512, 256, 128],
+            Backbone::Resnet50 => [2048, 1024, 512, 256],
             Backbone::SwinV1T | Backbone::SwinV1S => [768, 384, 192, 96],
             Backbone::SwinV1B => [1024, 512, 256, 128],
             Backbone::SwinV1L => [1536, 768, 384, 192],
@@ -260,17 +211,24 @@ impl BackboneConfig {
 }
 
 impl DecoderConfig {
-    /// Get context channels for skip connections.
-    pub fn cxt(&self, lateral_channels: &[usize; 4]) -> BiRefNetResult<[usize; 3]> {
-        if self.cxt_num > 0 {
-            let reversed: Vec<usize> = lateral_channels[1..].iter().rev().copied().collect();
-            reversed[reversed.len().saturating_sub(self.cxt_num)..]
-                .try_into()
-                .map_err(|_| BiRefNetError::InvalidConfiguration {
-                    reason: format!("Invalid context number: {}", self.cxt_num),
-                })
-        } else {
-            Ok([0, 0, 0])
+    /// Returns context channel counts for the deepest stage given `[x4, x3, x2, x1]` widths.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError`] if `cxt_num > 3`.
+    pub fn cxt(&self, lateral_channels: &[usize; 4]) -> Result<[usize; 3], ModelError> {
+        match self.cxt_num {
+            0 => Ok([0, 0, 0]),
+            1 => Ok([0, 0, lateral_channels[1]]),
+            2 => Ok([0, lateral_channels[2], lateral_channels[1]]),
+            3 => Ok([
+                lateral_channels[3],
+                lateral_channels[2],
+                lateral_channels[1],
+            ]),
+            other => Err(ModelError::invalid_config(format!(
+                "context number must be <= 3, got {other}"
+            ))),
         }
     }
 }

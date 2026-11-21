@@ -1,59 +1,109 @@
 [workspace]
-resolver = "3"
 members = ["crates/*"]
+resolver = "3"
 
 [workspace.package]
+categories = ["computer-vision", "science"]
 edition = "2024"
-rust-version = "1.95"
-version = "0.1.0"
-readme = "README.md"
+keywords = ["birefnet", "burn", "deep-learning", "segmentation"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/nusu-github/BiRefNet-Burn"
-homepage = "https://github.com/nusu-github/BiRefNet-Burn"
+rust-version = "1.95"
+version = "0.1.0"
+
+[workspace.lints.rust]
+ambiguous_negative_literals = "warn"
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
 
 [workspace.lints.clippy]
-# Module enums wrap differently sized Burn modules (`Box<M>` does not implement `Module`), and
-# constructors and type names mirror the PyTorch reference implementation.
-large_enum_variant = "allow"
-too_many_arguments = "allow"
-upper_case_acronyms = "allow"
+cargo = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+
+allow_attributes_without_reason = "warn"
+as_pointer_underscore = "warn"
+assertions_on_result_states = "warn"
+clone_on_ref_ptr = "warn"
+deref_by_slicing = "warn"
+disallowed_script_idents = "warn"
+empty_drop = "warn"
+empty_enum_variants_with_brackets = "warn"
+empty_structs_with_brackets = "warn"
+fn_to_numeric_cast_any = "warn"
+if_then_some_else_none = "warn"
+literal_string_with_formatting_args = "allow"
+map_err_ignore = "warn"
+multiple_crate_versions = "allow"
+redundant_type_annotations = "warn"
+renamed_function_params = "warn"
+semicolon_outside_block = "warn"
+too_long_first_doc_paragraph = "warn"
+undocumented_unsafe_blocks = "warn"
+unneeded_field_pattern = "warn"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
+unused_result_ok = "warn"
 
 [workspace.dependencies]
-# Every member starts from the leanest possible `burn` (no backend, no fusion/autotune,
-# no optim). Library crates add only the API features they use; the `birefnet` binary
-# alone selects backends and performance features.
-burn = { version = "=0.22.0", default-features = false, features = ["std"] }
+# Workspace crates
+birefnet = { path = "crates/birefnet", version = "0.1.0" }
+birefnet-backbones = { path = "crates/birefnet-backbones", version = "0.1.0" }
+birefnet-extra-ops = { path = "crates/birefnet-extra-ops", version = "0.1.0" }
+birefnet-inference = { path = "crates/birefnet-inference", version = "0.1.0" }
+birefnet-loss = { path = "crates/birefnet-loss", version = "0.1.0" }
+birefnet-metric = { path = "crates/birefnet-metric", version = "0.1.0" }
+birefnet-model = { path = "crates/birefnet-model", version = "0.1.0" }
+birefnet-train = { path = "crates/birefnet-train", version = "0.1.0" }
+birefnet-util = { path = "crates/birefnet-util", version = "0.1.0" }
+birefnet-weights = { path = "crates/birefnet-weights", version = "0.1.0" }
+
+# Burn framework (each library member enables only the API features it needs)
+burn = { version = "=0.22.1", default-features = false, features = ["std"] }
 
 # Error handling
-anyhow = "1"
-thiserror = "2"
+anyhow = { version = "1.0.104", default-features = false, features = ["std"] }
 
-# CLI dependencies
-clap = { version = "4.5", features = ["derive", "cargo"] }
+# CLI
+clap = { version = "4.6.8", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 
 # Image processing
-image = { version = "0.25.9", default-features = false }
-imageproc = "0.27.0"
+image = { version = "0.25.10", default-features = false }
 
 # Utilities
-approx = "0.5"
-libm = "0.2.15"
-rand = "0.10.2"
-stacker = "0.1.22"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-# Testing and benchmarking
-rstest = "0.26.1"
+approx = "0.5.1"
+libm = "0.2.16"
+rand = "0.10.4"
+stacker = "0.1.25"
+tracing = { version = "0.1.44", default-features = false, features = ["std", "attributes"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "fmt", "env-filter", "ansi"] }
 
 # Model hub integration
-hf-hub = "1.0.0"
+hf-hub = { version = "1.0.0", default-features = false }
 
-# Unit tests run real tensor kernels on Flex; unoptimized Burn makes model-sized tests crawl.
-# Optimize every dependency even in the dev/test profile (as the Burn guide's companion
-# workspace does); workspace crates stay at opt-level 0 for fast rebuilds and debugging.
+# Testing
+tempfile = "3.27.0"
+
+# Unit tests run real tensor kernels on Flex; optimize dependencies in dev/test while
+# keeping proc-macros and workspace crates fast to compile and debug.
 [profile.dev.package."*"]
 opt-level = 2
 
 [profile.dev.package.image]
 opt-level = 3
+
+[profile.dev.build-override]
+opt-level = 1

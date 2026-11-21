@@ -1,20 +1,15 @@
 //! `BiRefNet`: Bilateral Reference Network for dichotomous image segmentation.
 //!
-//! This crate provides a unified interface for `BiRefNet` models, supporting both
-//! inference and training capabilities across multiple backends. The backend is selected at
-//! run time with [`device::select_device`]; Cargo features only decide which backends are
-//! compiled in.
+//! This umbrella crate provides a single entrypoint to the modular `BiRefNet` workspace
+//! crates behind additive Cargo feature flags (`weights`, `hub`, `inference`, `train`).
+//! Backend selection happens at run time via [`device::select_device`], while Cargo features
+//! decide which backends are compiled in.
 
 pub mod device;
-#[cfg(feature = "inference")]
-pub mod inference;
-#[cfg(feature = "train")]
-pub mod training;
 
-// Re-export core modules
 #[cfg(feature = "inference")]
 #[doc(inline)]
-pub use birefnet_inference;
+pub use birefnet_inference as inference;
 #[cfg(feature = "train")]
 #[doc(inline)]
 pub use birefnet_loss as loss;
@@ -28,3 +23,6 @@ pub use birefnet_model as model;
 pub use birefnet_train as train;
 #[doc(inline)]
 pub use birefnet_util as util;
+#[cfg(feature = "weights")]
+#[doc(inline)]
+pub use birefnet_weights as weights;

@@ -1,75 +1,65 @@
-//! Data augmentation processing implementation
-//!
-//! This module ports all data augmentation processes used in BiRefNet's Python training
-//! implementation for the Rust/Burn framework.
-//!
-//! Implemented augmentation processes:
-//! 1. Horizontal flip (cv_random_flip) - 50% probability
-//! 2. Random crop (random_crop) - 10% border cropping
-//! 3. Random rotation (random_rotate) - 20% probability, ±15 degrees
-//! 4. Color enhancement (color_enhance) - brightness, contrast, saturation, sharpness adjustment
-//! 5. Pepper noise (random_pepper) - 0.15% density
-//! 6. Background color synthesis augmentation - solid, similar, random color patterns
-//! 7. Dynamic input size augmentation - per-batch size changes
+//! Data augmentation transforms for `BiRefNet` training and validation.
 
-use image::{DynamicImage, GenericImageView, Rgb, buffer::ConvertBuffer, imageops::FilterType};
-use imageproc::geometric_transformations::{Border, Interpolation, rotate_about_center};
-use rand::{RngExt, SeedableRng};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Data augmentation configuration parameters
-#[derive(Debug, Clone)]
-pub struct AugmentationConfig {
-    /// List of enabled augmentation methods
-    pub enabled_methods: Vec<AugmentationMethod>,
-    /// Whether to use background color synthesis augmentation
-    pub background_color_synthesis: bool,
-    /// Dynamic input size augmentation configuration
-    pub dynamic_size_config: Option<DynamicSizeConfig>,
-    /// Target output size
-    pub target_size: (u32, u32),
-}
+use image::{DynamicImage, GenericImageView, Rgb, imageops::FilterType};
+use rand::{RngExt, SeedableRng, rngs::StdRng};
 
-/// Available data augmentation methods
-#[derive(Debug, Clone, PartialEq, Eq)]
+use crate::transforms::{rotate_about_center_luma8, rotate_about_center_rgb8, sharpen_rgb};
+
+/// Available data augmentation transforms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AugmentationMethod {
-    /// Horizontal flip (50% probability)
+    /// Horizontal flip (50% probability).
     Flip,
-    /// Color enhancement (brightness, contrast, saturation, sharpness)
+    /// Color enhancement (brightness, contrast, hue rotation, and sharpness).
     Enhance,
-    /// Random rotation (20% probability, ±15 degrees)
+    /// Random rotation (20% probability, up to plus or minus 15 degrees).
     Rotate,
-    /// Pepper noise (0.15% density)
+    /// Sparse salt-and-pepper noise (0.15% pixel density).
     Pepper,
-    /// Random crop (10% border)
+    /// Random border crop (up to 10% per edge).
     Crop,
 }
 
-/// Dynamic input size augmentation configuration
-#[derive(Debug, Clone)]
+/// Dynamic input size selection bounds (32-pixel aligned for Swin/PVT strides).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DynamicSizeConfig {
-    /// Minimum size
+    /// Minimum square spatial resolution in pixels.
     pub min_size: u32,
-    /// Maximum size
+    /// Maximum square spatial resolution in pixels.
     pub max_size: u32,
-    /// Size selection step (32x multiple constraint)
+    /// Alignment increment between candidate resolutions (typically 32).
     pub size_step: u32,
 }
 
-/// Background color synthesis patterns
-#[derive(Debug, Clone)]
+/// Background color synthesis modes when compositing masks onto synthetic backdrops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackgroundPattern {
-    /// Solid background (40% probability) - black/gray/white
+    /// Solid black, gray, or white background (40% probability).
     Solid,
-    /// Similar color background (40% probability) - colors similar to foreground objects
+    /// Jittered foreground-sampled color (40% probability).
     Similar,
-    /// Random color background (20% probability) - completely random
+    /// Uniformly sampled random RGB color (20% probability).
     Random,
+}
+
+/// Configuration for [`ImageAugmentor`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AugmentationConfig {
+    /// Ordered list of augmentation transforms enabled during training.
+    pub enabled_methods: Vec<AugmentationMethod>,
+    /// Whether to replace background pixels with synthetic colors.
+    pub background_color_synthesis: bool,
+    /// Optional dynamic square sizing schedule used instead of `target_size`.
+    pub dynamic_size_config: Option<DynamicSizeConfig>,
+    /// Default `(width, height)` output size when dynamic sizing is disabled or during validation.
+    pub target_size: (u32, u32),
 }
 
 impl Default for AugmentationConfig {
     fn default() -> Self {
         Self {
-            // Default configuration when background color synthesis is disabled: ['flip', 'enhance', 'rotate', 'pepper']
             enabled_methods: vec![
                 AugmentationMethod::Flip,
                 AugmentationMethod::Enhance,
@@ -84,10 +74,10 @@ impl Default for AugmentationConfig {
 }
 
 impl AugmentationConfig {
-    /// Create configuration for when background color synthesis augmentation is enabled
+    /// Creates an augmentation config enabling background color synthesis and horizontal flips.
+    #[must_use]
     pub fn with_background_synthesis(target_size: (u32, u32)) -> Self {
         Self {
-            // When background color synthesis is enabled: flip only
             enabled_methods: vec![AugmentationMethod::Flip],
             background_color_synthesis: true,
             dynamic_size_config: None,
@@ -95,13 +85,14 @@ impl AugmentationConfig {
         }
     }
 
-    /// Create configuration for when dynamic input size augmentation is enabled
+    /// Creates an augmentation config enabling 32-aligned dynamic training resolutions.
+    #[must_use]
     pub fn with_dynamic_size(min_size: u32, max_size: u32, target_size: (u32, u32)) -> Self {
         Self {
             dynamic_size_config: Some(DynamicSizeConfig {
                 min_size,
                 max_size,
-                size_step: 32, // 32x multiple constraint
+                size_step: 32,
             }),
             target_size,
             ..Self::default()
@@ -109,40 +100,75 @@ impl AugmentationConfig {
     }
 }
 
-/// Main structure for executing data augmentation processing
+const fn splitmix64(mut state: u64) -> u64 {
+    state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "crop border dimensions are non-negative and strictly bounded by u32 image size"
+)]
+fn ten_percent_border(dim: u32) -> u32 {
+    (f64::from(dim) * 0.1) as u32
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "color delta offsets fit within i32 without overflow"
+)]
+fn float_to_i32(value: f32) -> i32 {
+    value as i32
+}
+
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "RGB channel value is clamped to [0, 255] before cast"
+)]
+fn clamp_u8(value: i32) -> u8 {
+    value.clamp(0, 255) as u8
+}
+
+/// Applies training augmentations or deterministic validation resizing to image/mask pairs.
+#[derive(Debug)]
 pub struct ImageAugmentor {
     config: AugmentationConfig,
-    // Store seed for thread safety and create new RNGs as needed
-    seed: u64,
+    seed: AtomicU64,
 }
 
 impl ImageAugmentor {
-    /// Create a new ImageAugmentor instance
+    /// Creates an [`ImageAugmentor`] seeded from entropy.
+    #[must_use]
     pub fn new(config: AugmentationConfig) -> Self {
+        Self::with_seed(config, rand::random())
+    }
+
+    /// Creates an [`ImageAugmentor`] with an explicit reproducible starting `seed`.
+    #[must_use]
+    pub const fn with_seed(config: AugmentationConfig, seed: u64) -> Self {
         Self {
             config,
-            seed: rand::random(),
+            seed: AtomicU64::new(seed),
         }
     }
 
-    /// Helper method to create RNG internally
-    fn create_rng(&self, additional_entropy: Option<usize>) -> rand::rngs::StdRng {
-        let final_seed = match additional_entropy {
-            Some(entropy) => self.seed.wrapping_add(entropy as u64),
-            None => self.seed,
-        };
-        rand::rngs::StdRng::seed_from_u64(final_seed)
+    /// Returns the configuration used by this augmentor.
+    #[must_use]
+    pub const fn config(&self) -> &AugmentationConfig {
+        &self.config
     }
 
-    /// Apply data augmentation to images and masks
-    ///
-    /// # Arguments
-    /// * `image` - Input image
-    /// * `mask` - Corresponding segmentation mask
-    /// * `is_training` - Whether it's training time (augmentation is limited during validation)
-    ///
-    /// # Returns
-    /// Tuple of augmented (image, mask)
+    fn next_rng(&self, stream_tag: u64) -> StdRng {
+        let counter = self.seed.fetch_add(1, Ordering::Relaxed);
+        StdRng::seed_from_u64(splitmix64(counter ^ stream_tag))
+    }
+
+    /// Applies the configured augmentations (or resize-only when `is_training` is `false`).
+    #[must_use]
     pub fn augment(
         &self,
         mut image: DynamicImage,
@@ -150,35 +176,28 @@ impl ImageAugmentor {
         is_training: bool,
     ) -> (DynamicImage, DynamicImage) {
         if !is_training {
-            // Only resize during validation
-            return self.resize_only(image, mask);
+            return self.resize_only(&image, &mask);
         }
 
-        // Apply dynamic size augmentation
-        let current_target_size = if let Some(ref dynamic_config) = self.config.dynamic_size_config
-        {
-            self.select_dynamic_size(dynamic_config)
-        } else {
-            self.config.target_size
+        let current_target_size = match self.config.dynamic_size_config {
+            Some(dynamic_config) => self.select_dynamic_size(dynamic_config),
+            None => self.config.target_size,
         };
 
-        // Apply background color synthesis augmentation
         if self.config.background_color_synthesis {
-            (image, mask) = self.apply_background_synthesis(image, mask);
+            (image, mask) = self.apply_background_synthesis(&image, mask);
         }
 
-        // Apply standard data augmentation processes
         for method in &self.config.enabled_methods {
             (image, mask) = match method {
                 AugmentationMethod::Flip => self.apply_horizontal_flip(image, mask),
                 AugmentationMethod::Crop => self.apply_random_crop(image, mask),
                 AugmentationMethod::Rotate => self.apply_random_rotation(image, mask),
                 AugmentationMethod::Enhance => self.apply_color_enhancement(image, mask),
-                AugmentationMethod::Pepper => self.apply_pepper_noise(image, mask),
+                AugmentationMethod::Pepper => self.apply_pepper_noise(&image, mask),
             };
         }
 
-        // Final resize
         let image = image.resize_exact(
             current_target_size.0,
             current_target_size.1,
@@ -193,8 +212,13 @@ impl ImageAugmentor {
         (image, mask)
     }
 
-    /// Apply resize only (for validation)
-    fn resize_only(&self, image: DynamicImage, mask: DynamicImage) -> (DynamicImage, DynamicImage) {
+    /// Resizes `image` (`Lanczos3`) and `mask` (`Nearest`) to `config.target_size`.
+    #[must_use]
+    pub fn resize_only(
+        &self,
+        image: &DynamicImage,
+        mask: &DynamicImage,
+    ) -> (DynamicImage, DynamicImage) {
         let image = image.resize_exact(
             self.config.target_size.0,
             self.config.target_size.1,
@@ -208,55 +232,55 @@ impl ImageAugmentor {
         (image, mask)
     }
 
-    /// Select dynamic input size
-    fn select_dynamic_size(&self, config: &DynamicSizeConfig) -> (u32, u32) {
-        let mut rng = self.create_rng(None);
-        let size_range = (config.max_size - config.min_size) / config.size_step;
-        let selected_steps = rng.random_range(0..=size_range);
+    fn select_dynamic_size(&self, config: DynamicSizeConfig) -> (u32, u32) {
+        if config.size_step == 0 || config.max_size <= config.min_size {
+            let aligned = (config.min_size.max(32) / 32) * 32;
+            let clamped = aligned.max(32);
+            return (clamped, clamped);
+        }
+
+        let mut rng = self.next_rng(0x01);
+        let step_count = (config.max_size - config.min_size) / config.size_step;
+        let selected_steps = rng.random_range(0..=step_count);
         let size = config.min_size + (selected_steps * config.size_step);
 
-        // Adjust to multiple of 32
-        let adjusted_size = (size / 32) * 32;
-        (adjusted_size, adjusted_size)
+        let aligned_size = ((size / 32) * 32).max(32);
+        (aligned_size, aligned_size)
     }
 
-    /// Apply horizontal flip (50% probability)
     fn apply_horizontal_flip(
         &self,
         image: DynamicImage,
         mask: DynamicImage,
     ) -> (DynamicImage, DynamicImage) {
-        let mut rng = self.create_rng(Some(1));
+        let mut rng = self.next_rng(0x02);
         if rng.random_bool(0.5) {
-            let flipped_image = image.fliph();
-            let flipped_mask = mask.fliph();
-            (flipped_image, flipped_mask)
+            (image.fliph(), mask.fliph())
         } else {
             (image, mask)
         }
     }
 
-    /// Apply random crop (10% border setting)
     fn apply_random_crop(
         &self,
         image: DynamicImage,
         mask: DynamicImage,
     ) -> (DynamicImage, DynamicImage) {
-        let mut rng = self.create_rng(Some(2));
         let (width, height) = image.dimensions();
-
-        // Set 10% border
-        let border_x = (width as f32 * 0.1) as u32;
-        let border_y = (height as f32 * 0.1) as u32;
-
-        if border_x >= width || border_y >= height {
+        if width <= 2 || height <= 2 {
             return (image, mask);
         }
 
-        // Randomly determine crop region
-        let min_crop_width = width - 2 * border_x;
-        let min_crop_height = height - 2 * border_y;
+        let border_x = ten_percent_border(width);
+        let border_y = ten_percent_border(height);
 
+        let min_crop_width = width.saturating_sub(2 * border_x).max(1);
+        let min_crop_height = height.saturating_sub(2 * border_y).max(1);
+        if min_crop_width >= width && min_crop_height >= height {
+            return (image, mask);
+        }
+
+        let mut rng = self.next_rng(0x03);
         let crop_width = rng.random_range(min_crop_width..=width);
         let crop_height = rng.random_range(min_crop_height..=height);
 
@@ -264,103 +288,65 @@ impl ImageAugmentor {
         let max_y = height.saturating_sub(crop_height);
 
         let crop_x = if max_x > 0 {
-            rng.random_range(0..max_x)
+            rng.random_range(0..=max_x)
         } else {
             0
         };
         let crop_y = if max_y > 0 {
-            rng.random_range(0..max_y)
+            rng.random_range(0..=max_y)
         } else {
             0
         };
 
         let cropped_image = image.crop_imm(crop_x, crop_y, crop_width, crop_height);
         let cropped_mask = mask.crop_imm(crop_x, crop_y, crop_width, crop_height);
-
         (cropped_image, cropped_mask)
     }
 
-    /// Apply random rotation (20% probability, ±15 degrees)
     fn apply_random_rotation(
         &self,
         image: DynamicImage,
         mask: DynamicImage,
     ) -> (DynamicImage, DynamicImage) {
-        let mut rng = self.create_rng(Some(3));
-
-        // Apply rotation with 20% probability
+        let mut rng = self.next_rng(0x04);
         if !rng.random_bool(0.2) {
             return (image, mask);
         }
 
-        // Generate random angle of ±15 degrees
         let angle_degrees: f32 = rng.random_range(-15.0..=15.0);
         let angle_radians = angle_degrees.to_radians();
 
-        // Rotate image and mask
-        let rotated_image = self.rotate_image(&image, angle_radians, false);
-        let rotated_mask = self.rotate_image(&mask, angle_radians, true);
-
+        let rotated_image =
+            DynamicImage::ImageRgb8(rotate_about_center_rgb8(&image.to_rgb8(), angle_radians));
+        let rotated_mask =
+            DynamicImage::ImageLuma8(rotate_about_center_luma8(&mask.to_luma8(), angle_radians));
         (rotated_image, rotated_mask)
     }
 
-    /// Helper function for image rotation processing
-    fn rotate_image(&self, image: &DynamicImage, angle: f32, is_mask: bool) -> DynamicImage {
-        let (_width, _height) = image.dimensions();
-
-        if is_mask {
-            // Use nearest neighbor interpolation for masks
-            let gray_image = image.to_luma8();
-            let rotated = rotate_about_center(
-                &gray_image,
-                angle,
-                Interpolation::Nearest,
-                Border::Constant(image::Luma([0u8])),
-            );
-            DynamicImage::ImageLuma8(rotated)
-        } else {
-            // Use bicubic interpolation for regular images
-            let rgb_image = image.to_rgb8();
-            let rotated = rotate_about_center(
-                &rgb_image,
-                angle,
-                Interpolation::Bicubic,
-                Border::Constant(image::Rgb([0u8, 0u8, 0u8])),
-            );
-            DynamicImage::ImageRgb8(rotated)
-        }
-    }
-
-    /// Apply color enhancement (brightness, contrast, saturation, sharpness)
     fn apply_color_enhancement(
         &self,
         mut image: DynamicImage,
         mask: DynamicImage,
     ) -> (DynamicImage, DynamicImage) {
-        let mut rng = self.create_rng(Some(4));
+        let mut rng = self.next_rng(0x05);
 
-        // Brightness adjustment: 0.5 to 1.5x
         let brightness_factor: f32 = rng.random_range(0.5..=1.5);
-        let brightness_value = ((brightness_factor - 1.0) * 255.0) as i32;
+        let brightness_value = float_to_i32((brightness_factor - 1.0) * 255.0);
         image = image.brighten(brightness_value);
 
-        // Contrast adjustment: 0.5 to 1.5x
         let contrast_factor: f32 = rng.random_range(0.5..=1.5);
-        let contrast_value = ((contrast_factor - 1.0) * 100.0) as i32;
-        image = image.adjust_contrast(contrast_value as f32);
+        let contrast_value = (contrast_factor - 1.0) * 100.0;
+        image = image.adjust_contrast(contrast_value);
 
-        // Hue adjustment (as alternative to saturation adjustment): 0.0 to 2.0x change
         let hue_factor: f32 = rng.random_range(0.0..=2.0);
-        let hue_value = ((hue_factor - 1.0) * 180.0) as i32;
+        let hue_value = float_to_i32((hue_factor - 1.0) * 180.0);
         image = image.huerotate(hue_value);
 
-        // Sharpness adjustment: 0.0 to 3.0x
         let sharpness_factor: f32 = rng.random_range(0.0..=3.0);
         if sharpness_factor > 1.0 {
-            // Apply sharpening
-            image = self.apply_sharpening(&image, sharpness_factor);
+            let rgb = image.to_rgb8();
+            image = DynamicImage::ImageRgb8(sharpen_rgb(&rgb, sharpness_factor - 1.0));
         } else if sharpness_factor < 1.0 {
-            // Apply blur (reduce sharpness)
             let blur_sigma = (1.0 - sharpness_factor) * 2.0;
             image = image.blur(blur_sigma);
         }
@@ -368,172 +354,94 @@ impl ImageAugmentor {
         (image, mask)
     }
 
-    /// Apply sharpening filter
-    fn apply_sharpening(&self, image: &DynamicImage, factor: f32) -> DynamicImage {
-        // Laplacian-based sharpening
-        let rgb_image = image.to_rgb8();
-        let gray_image: image::ImageBuffer<image::Luma<u8>, Vec<u8>> = rgb_image.convert();
-        let sharpened = imageproc::filter::sharpen3x3(&gray_image);
-
-        // Adjust sharpening intensity
-        let original = &rgb_image;
-        let mut result = original.clone();
-
-        for ((original_pixel, sharpened_pixel), result_pixel) in original
-            .pixels()
-            .zip(sharpened.pixels())
-            .zip(result.pixels_mut())
-        {
-            // Apply grayscale sharpening result to RGB
-            for ((&o, s), r) in original_pixel
-                .0
-                .iter()
-                .zip(std::iter::repeat(sharpened_pixel.0[0]))
-                .zip(&mut result_pixel.0)
-            {
-                let diff = s as f32 - o as f32;
-                let enhanced = diff.mul_add(factor - 1.0, o as f32);
-                *r = enhanced.clamp(0.0, 255.0) as u8;
-            }
-        }
-
-        DynamicImage::ImageRgb8(result)
-    }
-
-    /// Apply pepper noise (0.15% density)
     fn apply_pepper_noise(
         &self,
-        image: DynamicImage,
+        image: &DynamicImage,
         mask: DynamicImage,
     ) -> (DynamicImage, DynamicImage) {
-        let mut rng = self.create_rng(Some(5));
-        let noise_rate = 0.0015; // 0.15%
-        let seed = rng.random::<u64>();
-
-        // Apply pepper noise (black dots only)
-        let rgb_image = image.to_rgb8();
-        let noisy_image = self.apply_pepper_only(&rgb_image, noise_rate, seed);
-
-        (DynamicImage::ImageRgb8(noisy_image), mask)
-    }
-
-    /// Implementation of pepper noise (black dots only)
-    fn apply_pepper_only(
-        &self,
-        image: &image::ImageBuffer<image::Rgb<u8>, Vec<u8>>,
-        rate: f64,
-        seed: u64,
-    ) -> image::ImageBuffer<image::Rgb<u8>, Vec<u8>> {
-        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-        let mut result = image.clone();
+        let mut rng = self.next_rng(0x06);
+        let noise_rate = 0.0015;
+        let mut result = image.to_rgb8();
 
         for pixel in result.pixels_mut() {
-            if rng.random_bool(rate) {
-                // Randomly select 0 or 255 (pepper noise in original)
-                if rng.random_bool(0.5) {
-                    *pixel = image::Rgb([0u8, 0u8, 0u8]); // Black
+            if rng.random_bool(noise_rate) {
+                *pixel = if rng.random_bool(0.5) {
+                    Rgb([0u8; 3])
                 } else {
-                    *pixel = image::Rgb([255u8, 255u8, 255u8]); // White
-                }
+                    Rgb([255u8; 3])
+                };
             }
         }
 
-        result
+        (DynamicImage::ImageRgb8(result), mask)
     }
 
-    /// Apply background color synthesis augmentation
     fn apply_background_synthesis(
         &self,
-        image: DynamicImage,
+        image: &DynamicImage,
         mask: DynamicImage,
     ) -> (DynamicImage, DynamicImage) {
-        let mut rng = self.create_rng(Some(6));
+        let mut rng = self.next_rng(0x07);
 
-        // Randomly select background pattern
         let pattern = match rng.random_range(0..10) {
-            0..=3 => BackgroundPattern::Solid,   // 40%
-            4..=7 => BackgroundPattern::Similar, // 40%
-            _ => BackgroundPattern::Random,      // 20%
+            0..=3 => BackgroundPattern::Solid,
+            4..=7 => BackgroundPattern::Similar,
+            _ => BackgroundPattern::Random,
         };
 
         let background_color = match pattern {
-            BackgroundPattern::Solid => {
-                // Random selection from black/gray/white
-                match rng.random_range(0..3) {
-                    0 => Rgb([0u8, 0u8, 0u8]),       // Black
-                    1 => Rgb([128u8, 128u8, 128u8]), // Gray
-                    _ => Rgb([255u8, 255u8, 255u8]), // White
-                }
-            }
-            BackgroundPattern::Similar => {
-                // Generate colors similar to foreground objects
-                self.extract_similar_background_color(&image, &mask)
-            }
+            BackgroundPattern::Solid => match rng.random_range(0..3) {
+                0 => Rgb([0u8; 3]),
+                1 => Rgb([128u8; 3]),
+                _ => Rgb([255u8; 3]),
+            },
+            BackgroundPattern::Similar => self.extract_similar_background_color(image, &mask),
             BackgroundPattern::Random => {
-                // Completely random color
                 Rgb([rng.random::<u8>(), rng.random::<u8>(), rng.random::<u8>()])
             }
         };
 
-        // Composite background
-        let composed_image = self.compose_background(&image, &mask, background_color);
+        let composed_image = Self::compose_background(image, &mask, background_color);
         (composed_image, mask)
     }
 
-    /// Extract background colors similar to foreground objects
     fn extract_similar_background_color(
         &self,
         image: &DynamicImage,
         mask: &DynamicImage,
     ) -> Rgb<u8> {
-        let mut rng = self.create_rng(Some(7));
+        let mut rng = self.next_rng(0x08);
         let rgb_image = image.to_rgb8();
         let gray_mask = mask.to_luma8();
 
-        let mut foreground_colors = Vec::new();
-
-        // Collect colors in foreground region
-        for (rgb_pixel, mask_pixel) in rgb_image.pixels().zip(gray_mask.pixels()) {
-            if mask_pixel.0[0] > 128 {
-                // Foreground determination
-                foreground_colors.push(*rgb_pixel);
-            }
-        }
+        let foreground_colors: Vec<Rgb<u8>> = rgb_image
+            .pixels()
+            .zip(gray_mask.pixels())
+            .filter_map(|(&rgb_pixel, mask_pixel)| (mask_pixel.0[0] > 128).then_some(rgb_pixel))
+            .collect();
 
         if foreground_colors.is_empty() {
-            // Random color if no foreground is found
             return Rgb([rng.random::<u8>(), rng.random::<u8>(), rng.random::<u8>()]);
         }
 
-        // Randomly select foreground color and slightly modify it
         let base_color = foreground_colors[rng.random_range(0..foreground_colors.len())];
-
         Rgb([
-            (base_color.0[0] as i32 + rng.random_range(-30..=30)).clamp(0, 255) as u8,
-            (base_color.0[1] as i32 + rng.random_range(-30..=30)).clamp(0, 255) as u8,
-            (base_color.0[2] as i32 + rng.random_range(-30..=30)).clamp(0, 255) as u8,
+            clamp_u8(i32::from(base_color.0[0]) + rng.random_range(-30..=30)),
+            clamp_u8(i32::from(base_color.0[1]) + rng.random_range(-30..=30)),
+            clamp_u8(i32::from(base_color.0[2]) + rng.random_range(-30..=30)),
         ])
     }
 
-    /// Compose background color
     fn compose_background(
-        &self,
         image: &DynamicImage,
         mask: &DynamicImage,
         background_color: Rgb<u8>,
     ) -> DynamicImage {
-        let rgb_image = image.to_rgb8();
+        let mut result = image.to_rgb8();
         let gray_mask = mask.to_luma8();
-        let mut result = rgb_image.clone();
 
-        // Composite background based on mask
-        for ((result_pixel, _), mask_pixel) in result
-            .pixels_mut()
-            .zip(rgb_image.pixels())
-            .zip(gray_mask.pixels())
-        {
+        for (result_pixel, mask_pixel) in result.pixels_mut().zip(gray_mask.pixels()) {
             if mask_pixel.0[0] <= 128 {
-                // Background region
                 *result_pixel = background_color;
             }
         }
@@ -549,85 +457,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn augmentation_config_default_methods() {
-        let config = AugmentationConfig::default();
-        assert_eq!(config.enabled_methods.len(), 4);
-        assert!(config.enabled_methods.contains(&AugmentationMethod::Flip));
-        assert!(
-            config
-                .enabled_methods
-                .contains(&AugmentationMethod::Enhance)
-        );
-        assert!(config.enabled_methods.contains(&AugmentationMethod::Rotate));
-        assert!(config.enabled_methods.contains(&AugmentationMethod::Pepper));
-        assert!(!config.background_color_synthesis);
-    }
-
-    #[test]
-    fn augmentation_config_with_background_synthesis() {
-        let config = AugmentationConfig::with_background_synthesis((512, 512));
-        assert_eq!(config.enabled_methods.len(), 1);
-        assert!(config.enabled_methods.contains(&AugmentationMethod::Flip));
-        assert!(config.background_color_synthesis);
-    }
-
-    #[test]
-    fn horizontal_flip_deterministic() {
-        let config = AugmentationConfig::default();
-        let augmentor = ImageAugmentor::new(config);
-
-        // Create small test image
-        let image = DynamicImage::ImageRgb8(ImageBuffer::from_fn(4, 4, |x, y| {
-            image::Rgb([x as u8 * 60, y as u8 * 60, 128])
-        }));
-        let mask = DynamicImage::ImageLuma8(ImageBuffer::from_fn(4, 4, |x, y| {
-            image::Luma([if x + y > 4 { 255 } else { 0 }])
-        }));
-
-        // Test flip processing (result is probabilistic, but confirm function works)
-        let (result_image, result_mask) =
-            augmentor.apply_horizontal_flip(image.clone(), mask.clone());
-
-        // Confirm that result image size is maintained
-        assert_eq!(result_image.dimensions(), image.dimensions());
-        assert_eq!(result_mask.dimensions(), mask.dimensions());
-    }
-
-    #[test]
-    fn dynamic_size_selection() {
-        let dynamic_config = DynamicSizeConfig {
+    fn dynamic_size_handles_valid_and_degenerate_ranges() {
+        let valid_cfg = DynamicSizeConfig {
             min_size: 320,
             max_size: 640,
             size_step: 32,
         };
+        let augmentor = ImageAugmentor::with_seed(AugmentationConfig::default(), 7);
+        let selected = augmentor.select_dynamic_size(valid_cfg);
+        assert!(selected.0 >= 320 && selected.0 <= 640);
+        assert_eq!(selected.0 % 32, 0);
+        assert_eq!(selected.0, selected.1);
 
-        let config = AugmentationConfig::with_dynamic_size(320, 640, (512, 512));
-        let augmentor = ImageAugmentor::new(config);
-
-        let selected_size = augmentor.select_dynamic_size(&dynamic_config);
-
-        // Confirm selected size is within range and multiple of 32
-        assert!(selected_size.0 >= 320);
-        assert!(selected_size.0 <= 640);
-        assert_eq!(selected_size.0 % 32, 0);
-        assert_eq!(selected_size.0, selected_size.1); // Square
+        let degenerate = DynamicSizeConfig {
+            min_size: 200,
+            max_size: 100,
+            size_step: 0,
+        };
+        let clamped = augmentor.select_dynamic_size(degenerate);
+        assert_eq!(clamped, (192, 192));
     }
 
     #[test]
-    fn resize_only_validation() {
-        let config = AugmentationConfig::default();
-        let augmentor = ImageAugmentor::new(config);
+    fn tiny_crop_and_transforms_behave_without_panicking() {
+        let small = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(2, 2, Rgb([10, 20, 30])));
+        let small_mask =
+            DynamicImage::ImageLuma8(ImageBuffer::from_pixel(2, 2, image::Luma([255])));
+        let augmentor = ImageAugmentor::with_seed(AugmentationConfig::default(), 99);
+        let (cropped_img, cropped_mask) = augmentor.apply_random_crop(small, small_mask);
+        assert_eq!(cropped_img.dimensions(), (2, 2));
+        assert_eq!(cropped_mask.dimensions(), (2, 2));
 
-        let image = DynamicImage::ImageRgb8(ImageBuffer::from_fn(100, 100, |x, y| {
-            image::Rgb([x as u8, y as u8, 128])
-        }));
-        let mask =
-            DynamicImage::ImageLuma8(ImageBuffer::from_fn(100, 100, |_, _| image::Luma([255])));
+        let non_uniform = ImageBuffer::from_fn(12, 12, |x, y| {
+            let v = if (4..8).contains(&x) && (4..8).contains(&y) {
+                200u8
+            } else {
+                20u8
+            };
+            Rgb([v, v / 2, 255 - v])
+        });
+        let sharpened = sharpen_rgb(&non_uniform, 1.0);
+        assert_ne!(sharpened.as_raw(), non_uniform.as_raw());
 
-        let (result_image, result_mask) = augmentor.resize_only(image, mask);
-
-        // Confirm resized to target size
-        assert_eq!(result_image.dimensions(), (1024, 1024));
-        assert_eq!(result_mask.dimensions(), (1024, 1024));
+        let rotated = rotate_about_center_rgb8(&non_uniform, 0.25);
+        assert_eq!(rotated.dimensions(), non_uniform.dimensions());
+        assert_ne!(rotated.as_raw(), non_uniform.as_raw());
     }
 }

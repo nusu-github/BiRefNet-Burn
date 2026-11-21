@@ -1,8 +1,8 @@
-//! # Lateral Blocks
-//!
-//! This module defines the lateral connection blocks used in the decoder of BiRefNet.
-//! These blocks are typically simple convolutions that process features from the encoder
-//! before they are merged with the decoder path.
+//! Lateral connection blocks used to merge encoder features into the decoder.
+#![expect(
+    clippy::struct_field_names,
+    reason = "Burn Config macro generates shadow builder structs mirroring *_channels fields"
+)]
 
 use burn::{
     nn::{
@@ -12,7 +12,7 @@ use burn::{
     prelude::*,
 };
 
-/// Configuration for the `BasicLatBlk` module.
+/// Configuration for [`BasicLatBlk`].
 #[derive(Config, Debug)]
 pub struct BasicLatBlkConfig {
     /// Number of input channels.
@@ -21,13 +21,14 @@ pub struct BasicLatBlkConfig {
     /// Number of output channels.
     #[config(default = "64")]
     out_channels: usize,
-    /// Number of intermediate channels (not used in this block).
+    /// Unused placeholder maintained for config parity.
     #[config(default = "64")]
     inter_channels: usize,
 }
 
 impl BasicLatBlkConfig {
-    /// Initializes a new `BasicLatBlk` module.
+    /// Initializes a new [`BasicLatBlk`] module.
+    #[must_use]
     pub fn init(&self, device: &Device) -> BasicLatBlk {
         BasicLatBlk {
             conv: Conv2dConfig::new([self.in_channels, self.out_channels], [1, 1])
@@ -38,13 +39,15 @@ impl BasicLatBlkConfig {
     }
 }
 
-/// A basic lateral block, consisting of a single 1x1 convolution.
+/// Basic lateral block consisting of a single `1x1` convolution.
 #[derive(Module, Debug)]
 pub struct BasicLatBlk {
     conv: Conv2d,
 }
 
 impl BasicLatBlk {
+    /// Projects encoder skip features with a `1x1` convolution.
+    #[must_use]
     pub fn forward(&self, x: Tensor<4>) -> Tensor<4> {
         self.conv.forward(x)
     }

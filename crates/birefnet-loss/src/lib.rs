@@ -1,102 +1,26 @@
-//! Comprehensive loss functions for deep learning segmentation tasks.
-//!
-//! This crate provides a collection of loss functions optimized for image segmentation,
-//! object detection, and related computer vision tasks using the Burn deep learning framework.
-//! All loss functions are designed to be composable, efficient, and backend-agnostic.
-//!
-//! ## Core Loss Functions
-//!
-//! ### Geometric Losses
-//! - **[`IoULoss`]**: Intersection over Union loss for shape-aware training
-//! - **[`ContourLoss`]**: Boundary-aware loss emphasizing object contours
-//! - **[`StructureLoss`]**: Edge-aware segmentation with adaptive weighting
-//!
-//! ### Pixel-wise Losses
-//! - **[`MaeLoss`]**: Mean Absolute Error loss for robust pixel-level training
-//! - **[`SSIMLoss`]**: Structural Similarity Index loss for perceptual quality
-//! - **[`ThresholdRegularizationLoss`]**: Threshold regularization for binary segmentation
-//!
-//! ### Specialized Losses
-//! - **[`PatchIoULoss`]**: Patch-based IoU for multi-scale evaluation
-//! - **[`ClassificationLoss`]**: Classification loss for auxiliary supervision
-//! - **[`PixLoss`]**: Multi-loss aggregation system with configurable weights
-//!
-//! ## Key Features
-//!
-//! - **Backend Agnostic**: Works with any Burn backend (CPU, GPU, etc.)
-//! - **Configurable**: Extensive configuration options via the `Config` trait
-//! - **Composable**: Individual losses can be combined for complex training scenarios
-//! - **Efficient**: Optimized tensor operations with minimal memory overhead
-//! - **Type Safe**: Compile-time dimension checking and tensor type safety
-//!
-//! ## Usage Example
-//!
-//! ```rust
-//! use birefnet_loss::{IoULoss, IoULossConfig, SSIMLoss, SSIMLossConfig};
-//! use burn::prelude::*;
-//!
-//! fn create_combined_loss() -> (IoULoss, SSIMLoss) {
-//!     let iou_loss = IoULossConfig::new().with_eps(1e-5).init();
-//!
-//!     let ssim_loss = SSIMLossConfig::new()
-//!         .with_window_size(11)
-//!         .with_sigma(1.5)
-//!         .init();
-//!
-//!     (iou_loss, ssim_loss)
-//! }
-//! ```
-//!
-//! ## Loss Function Categories
-//!
-//! ### Individual Loss Functions
-//! Each loss function implements both `forward` (with reduction) and `forward_no_reduction`
-//! methods following Burn's standard patterns:
-//!
-//! - Shape-preserving computation in `forward_no_reduction`
-//! - Configurable reduction (Mean, Sum, Auto) in `forward`
-//! - Comprehensive input validation and error handling
-//!
-//! ### Multi-Loss Systems
-//! The [`PixLoss`] system provides a framework for combining multiple loss functions
-//! with configurable weights, supporting complex training scenarios common in
-//! segmentation tasks.
-//!
-//! All loss functions are thoroughly tested and provide detailed documentation
-//! for their mathematical formulations and expected tensor shapes.
+//! Segmentation loss functions and BiRefNet multi-scale training objectives.
 
+mod birefnet_loss;
 mod classification;
 mod contour;
+mod error;
 mod iou;
 mod mae;
+mod ops;
 mod patch_iou;
 mod pixel;
 mod ssim;
 mod structure;
 mod threshold_regularization;
-// Integrated loss system
-mod birefnet_loss;
 
-use burn::{nn::loss::Reduction, prelude::*};
-
-pub(crate) fn reduce_loss<const D: usize>(loss: Tensor<D>, reduction: Reduction) -> Tensor<1> {
-    match reduction {
-        Reduction::Mean | Reduction::Auto => loss.mean(),
-        Reduction::Sum => loss.sum(),
-        Reduction::BatchMean => {
-            let batch_size = loss.dims()[0] as f64;
-            loss.sum().div_scalar(batch_size)
-        }
-    }
-}
-
-// Re-export core loss functions and configurations
 #[doc(inline)]
 pub use birefnet_loss::{BiRefNetLoss, BiRefNetLossConfig};
 #[doc(inline)]
 pub use classification::{ClassificationLoss, ClassificationLossConfig};
 #[doc(inline)]
 pub use contour::{ContourLoss, ContourLossConfig};
+#[doc(inline)]
+pub use error::LossError;
 #[doc(inline)]
 pub use iou::{IoULoss, IoULossConfig};
 #[doc(inline)]

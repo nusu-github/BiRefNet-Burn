@@ -1,16 +1,12 @@
-//! Dataset implementation for BiRefNet training and inference.
-//!
-//! This module provides an efficient dataset implementation for BiRefNet,
-//! handling data loading, preprocessing, and augmentation directly.
-//! This approach avoids the inefficiencies of reading files multiple times and
-//! provides a clear framework for adding data augmentation.
+//! Dataset discovery, loading, and batching for `BiRefNet` training and validation.
 
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
 
-use birefnet_model::{ModelConfig, Task, training::BiRefNetBatch};
+use birefnet_model::{BiRefNetBatch, Task};
 use birefnet_util::apply_imagenet_normalization;
 use burn::{
     data::{dataloader::batcher::Batcher, dataset::Dataset},
@@ -20,35 +16,70 @@ use image::{DynamicImage, ImageFormat};
 
 use crate::{
     augmentation::{AugmentationConfig, ImageAugmentor},
-    error::{DatasetError, DatasetResult},
+    error::TrainDataError,
 };
 
-/// Represents a single preprocessed data item from the BiRefNet dataset.
-///
-/// This struct contains the raw image and mask data after preprocessing,
-/// following Burn's convention where datasets return raw data and batchers
-/// handle tensor creation and device placement.
+/// Dataset split selecting subdirectory conventions under `<root>/<task>/`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DatasetSplit {
+    /// Training split (`DIS-TR`).
+    Train,
+    /// Validation split (`DIS-VD`).
+    Val,
+    /// First test split (`DIS-TE1`).
+    Test1,
+    /// Second test split (`DIS-TE2`).
+    Test2,
+    /// Third test split (`DIS-TE3`).
+    Test3,
+    /// Fourth test split (`DIS-TE4`).
+    Test4,
+    /// Custom directory name relative to the task root.
+    Custom(String),
+}
+
+impl DatasetSplit {
+    /// Returns the subdirectory name expected under `<root>/<task>/`.
+    #[must_use]
+    pub fn dir_name(&self) -> &str {
+        match self {
+            Self::Train => "DIS-TR",
+            Self::Val => "DIS-VD",
+            Self::Test1 => "DIS-TE1",
+            Self::Test2 => "DIS-TE2",
+            Self::Test3 => "DIS-TE3",
+            Self::Test4 => "DIS-TE4",
+            Self::Custom(name) => name.as_str(),
+        }
+    }
+
+    /// Returns `true` when full training augmentations should be enabled.
+    #[must_use]
+    pub const fn is_train(&self) -> bool {
+        matches!(self, Self::Train)
+    }
+}
+
+/// Single preprocessed image/mask pair emitted by [`BiRefNetDataset`].
 #[derive(Debug, Clone)]
 pub struct BiRefNetItem {
-    /// Preprocessed RGB image data as 3D array [H, W, C] with normalized floats
+    /// Flattened `[H, W, 3]` RGB pixel values in `[0.0, 1.0]`.
     pub image: Vec<f32>,
-    /// Preprocessed binary mask data as 2D array [H, W] with normalized floats
+    /// Flattened `[H, W]` grayscale mask values in `[0.0, 1.0]`.
     pub mask: Vec<f32>,
-    /// Image height in pixels
+    /// Preprocessed image height in pixels.
     pub height: usize,
-    /// Image width in pixels
+    /// Preprocessed image width in pixels.
     pub width: usize,
 }
 
-/// Batcher implementation for converting vectors of BiRefNetItem into BiRefNetBatch.
-///
-/// This batcher handles the conversion from individual data items to batched tensors,
-/// following the same pattern as Burn's official examples.
-#[derive(Clone, Debug, Default)]
+/// Converts a batch of [`BiRefNetItem`]s into normalized `[B, 3, H, W]` / `[B, 1, H, W]` tensors.
+#[derive(Clone, Copy, Debug, Default)]
 pub struct BiRefNetBatcher;
 
 impl BiRefNetBatcher {
-    /// Create a new BiRefNet batcher.
+    /// Creates a new [`BiRefNetBatcher`].
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -57,49 +88,77 @@ impl BiRefNetBatcher {
 impl Batcher<BiRefNetItem, BiRefNetBatch> for BiRefNetBatcher {
     fn batch(&self, items: Vec<BiRefNetItem>, device: &Device) -> BiRefNetBatch {
         let batch_size = items.len();
-
-        // Pre-allocate vectors with known capacity to avoid reallocations
         let mut images = Vec::with_capacity(batch_size);
         let mut masks = Vec::with_capacity(batch_size);
 
-        // Convert raw data to tensors and collect
         for item in items {
-            // Convert image data to tensor [C, H, W]
             let image_tensor = Tensor::<3>::from_data(
                 TensorData::new(item.image, [item.height, item.width, 3]),
                 device,
             )
-            .permute([2, 0, 1]); // HWC to CHW
+            .permute([2, 0, 1]);
 
-            // Apply ImageNet normalization: add batch dimension, normalize, then remove batch dimension
-            let image_tensor_with_batch = image_tensor.unsqueeze::<4>(); // [C, H, W] -> [1, C, H, W]
-            let normalized_tensor = apply_imagenet_normalization(image_tensor_with_batch)
-                .expect("Failed to apply ImageNet normalization")
-                .squeeze_dim::<3>(0); // [1, C, H, W] -> [C, H, W]
+            let normalized_tensor = apply_imagenet_normalization(image_tensor.unsqueeze::<4>())
+                .expect("3-channel RGB tensor matches ImageNet normalization")
+                .squeeze_dim::<3>(0);
 
-            // Convert mask data to tensor [1, H, W]
             let mask_tensor = Tensor::<2>::from_data(
                 TensorData::new(item.mask, [item.height, item.width]),
                 device,
             )
-            .unsqueeze::<3>(); // Add channel dimension
+            .unsqueeze::<3>();
 
             images.push(normalized_tensor);
             masks.push(mask_tensor);
         }
 
-        // Stack tensors along the batch dimension (dim 0) to create [B, C, H, W] tensors
-        let images = Tensor::stack(images, 0);
-        let masks = Tensor::stack(masks, 0);
-
-        BiRefNetBatch::new(images, masks)
+        BiRefNetBatch::new(Tensor::stack(images, 0), Tensor::stack(masks, 0))
     }
 }
 
-/// BiRefNet dataset for training and inference.
-///
-/// This dataset loads image/mask pairs from the DIS5K dataset structure and applies
-/// preprocessing and augmentation, returning raw data following Burn's convention.
+const fn task_dir_name(task: Task) -> &'static str {
+    match task {
+        Task::DIS5K => "DIS5K",
+        Task::COD => "COD",
+        Task::HRSOD => "HRSOD",
+        Task::General => "General",
+        Task::General2k => "General2k",
+        Task::Matting => "Matting",
+    }
+}
+
+fn supported_image_extensions() -> Vec<&'static str> {
+    let mut extensions: Vec<&'static str> = ImageFormat::all()
+        .filter(ImageFormat::reading_enabled)
+        .flat_map(|format| format.extensions_str().iter().copied())
+        .collect();
+    extensions.sort_unstable();
+    extensions.dedup();
+    extensions
+}
+
+fn has_supported_extension(path: &Path, valid_extensions: &[&str]) -> bool {
+    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+        return false;
+    };
+    valid_extensions
+        .iter()
+        .any(|valid| ext.eq_ignore_ascii_case(valid))
+}
+
+fn read_dir_entries(dir: &Path) -> Result<Vec<PathBuf>, TrainDataError> {
+    let reader = fs::read_dir(dir).map_err(|err| TrainDataError::io(dir, err))?;
+    let mut paths = Vec::new();
+    for entry in reader {
+        let entry = entry.map_err(|err| TrainDataError::io(dir, err))?;
+        paths.push(entry.path());
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+/// Dataset loading paired segmentation images and masks for [`BiRefNetDataset`].
+#[derive(Debug)]
 pub struct BiRefNetDataset {
     items: Vec<(PathBuf, PathBuf)>,
     is_train: bool,
@@ -107,262 +166,126 @@ pub struct BiRefNetDataset {
 }
 
 impl BiRefNetDataset {
-    /// Create a new BiRefNet dataset.
+    /// Discovers paired image/mask samples under `<root_dir>/<task>/<split>/{im,gt}`
+    /// using default [`AugmentationConfig`].
     ///
-    /// # Arguments
+    /// # Errors
     ///
-    /// * `config` - Model configuration containing dataset paths and task settings
-    /// * `split` - Dataset split ("train", "val", "test")
-    ///
-    /// # Returns
-    ///
-    /// A new dataset instance or an error if the dataset cannot be loaded.
-    pub fn new(config: &ModelConfig, split: &str) -> DatasetResult<Self> {
-        let items = Self::collect_dataset_items(config, split)?;
-        let is_train = split == "train";
-
-        // Create default reinforcement settings
-        let augmentation_config = AugmentationConfig::default();
-        let augmentor = ImageAugmentor::new(augmentation_config);
-
-        Ok(Self {
-            items,
-            is_train,
-            augmentor,
-        })
+    /// Returns [`TrainDataError`] if expected directories are missing, contain invalid UTF-8
+    /// filenames, or yield no matching pairs.
+    pub fn new(
+        root_dir: impl AsRef<Path>,
+        task: Task,
+        split: &DatasetSplit,
+    ) -> Result<Self, TrainDataError> {
+        Self::with_augmentation(root_dir, task, split, AugmentationConfig::default())
     }
 
-    /// Create a new BiRefNet dataset with custom augmentation configuration.
+    /// Discovers paired image/mask samples using an explicit `augmentation_config`.
     ///
-    /// # Arguments
+    /// # Errors
     ///
-    /// * `config` - Model configuration containing dataset paths and task settings
-    /// * `split` - Dataset split ("train", "val", "test")
-    /// * `augmentation_config` - Custom augmentation configuration
-    ///
-    /// # Returns
-    ///
-    /// A new dataset instance or an error if the dataset cannot be loaded.
-    pub fn new_with_augmentation(
-        config: &ModelConfig,
-        split: &str,
+    /// Returns [`TrainDataError`] if expected directories are missing, contain invalid UTF-8
+    /// filenames, or yield no matching pairs.
+    pub fn with_augmentation(
+        root_dir: impl AsRef<Path>,
+        task: Task,
+        split: &DatasetSplit,
         augmentation_config: AugmentationConfig,
-    ) -> DatasetResult<Self> {
-        let items = Self::collect_dataset_items(config, split)?;
-        let is_train = split == "train";
+    ) -> Result<Self, TrainDataError> {
+        let items = Self::collect_dataset_items(root_dir.as_ref(), task, split)?;
         let augmentor = ImageAugmentor::new(augmentation_config);
 
         Ok(Self {
             items,
-            is_train,
+            is_train: split.is_train(),
             augmentor,
         })
     }
 
-    /// Collect image/mask path pairs from the dataset directory.
-    ///
-    /// This function replicates the logic from the original PyTorch dataset that
-    /// finds all image files and their corresponding mask files.
     fn collect_dataset_items(
-        config: &ModelConfig,
-        split: &str,
-    ) -> DatasetResult<Vec<(PathBuf, PathBuf)>> {
-        let mut items = Vec::new();
+        root_dir: &Path,
+        task: Task,
+        split: &DatasetSplit,
+    ) -> Result<Vec<(PathBuf, PathBuf)>, TrainDataError> {
+        let split_root = root_dir.join(task_dir_name(task)).join(split.dir_name());
+        let image_root = split_root.join("im");
+        let mask_root = split_root.join("gt");
 
-        // Determine the dataset directory based on task and split
-        let dataset_root = &config.path.data_root_dir;
-        let task_name = match config.task.task {
-            Task::DIS5K => "DIS5K",
-            Task::COD => "COD",
-            Task::HRSOD => "HRSOD",
-            Task::General => "General",
-            Task::General2k => "General2k",
-            Task::Matting => "Matting",
-        };
-
-        // Map split names to directory names (following DIS5K convention)
-        let split_dir = match split {
-            "train" => "DIS-TR",
-            "val" => "DIS-VD",
-            "test1" => "DIS-TE1",
-            "test2" => "DIS-TE2",
-            "test3" => "DIS-TE3",
-            "test4" => "DIS-TE4",
-            _ => split, // Use as-is for custom splits
-        };
-
-        let image_root = Path::new(dataset_root)
-            .join(task_name)
-            .join(split_dir)
-            .join("im");
-        let mask_root = Path::new(dataset_root)
-            .join(task_name)
-            .join(split_dir)
-            .join("gt");
-
-        // Check if directories exist
         if !image_root.exists() {
-            return Err(DatasetError::ImageDirectoryNotFound { path: image_root });
+            return Err(TrainDataError::not_found(&image_root));
         }
         if !mask_root.exists() {
-            return Err(DatasetError::MaskDirectoryNotFound { path: mask_root });
+            return Err(TrainDataError::not_found(&mask_root));
         }
 
-        // Get valid image extensions from the image crate dynamically
-        let valid_extensions = Self::get_supported_image_extensions();
-
-        // Read image directory and find corresponding masks
-        let image_dir =
-            fs::read_dir(&image_root).map_err(|e| DatasetError::DirectoryReadFailed {
-                path: image_root.clone(),
-                source: e,
-            })?;
-
-        for entry in image_dir {
-            let entry = entry.map_err(|e| DatasetError::DirectoryReadFailed {
-                path: image_root.clone(),
-                source: e,
-            })?;
-
-            let image_path = entry.path();
-            if image_path.is_file() {
-                // Safe handling of file name extraction
-                let file_name = image_path
-                    .file_name()
-                    .ok_or_else(|| DatasetError::NoFileName {
-                        path: image_path.clone(),
-                    })?
-                    .to_str()
-                    .ok_or_else(|| DatasetError::InvalidUtf8Path {
-                        path: image_path.clone(),
-                    })?;
-
-                // Check if file has valid extension
-                if !valid_extensions.iter().any(|ext| file_name.ends_with(ext)) {
-                    continue;
-                }
-
-                // Safe handling of file stem extraction
-                let stem = image_path
+        let valid_extensions = supported_image_extensions();
+        let mut masks_by_stem: BTreeMap<String, PathBuf> = BTreeMap::new();
+        for mask_path in read_dir_entries(&mask_root)? {
+            if mask_path.is_file() && has_supported_extension(&mask_path, &valid_extensions) {
+                let stem = mask_path
                     .file_stem()
-                    .ok_or_else(|| DatasetError::NoFileStem {
-                        path: image_path.clone(),
-                    })?
+                    .ok_or_else(|| TrainDataError::invalid_path(&mask_path, "missing file stem"))?
                     .to_str()
-                    .ok_or_else(|| DatasetError::InvalidUtf8Path {
-                        path: image_path.clone(),
+                    .ok_or_else(|| {
+                        TrainDataError::invalid_path(&mask_path, "non-UTF-8 file stem")
                     })?;
+                masks_by_stem.entry(stem.to_owned()).or_insert(mask_path);
+            }
+        }
 
-                let mut mask_found = false;
+        let mut items = Vec::new();
+        for image_path in read_dir_entries(&image_root)? {
+            if !image_path.is_file() || !has_supported_extension(&image_path, &valid_extensions) {
+                continue;
+            }
 
-                for ext in &valid_extensions {
-                    let mask_path = mask_root.join(format!("{stem}{ext}"));
-                    if mask_path.exists() {
-                        items.push((image_path.clone(), mask_path));
-                        mask_found = true;
-                        break;
-                    }
-                }
+            let stem = image_path
+                .file_stem()
+                .ok_or_else(|| TrainDataError::invalid_path(&image_path, "missing file stem"))?
+                .to_str()
+                .ok_or_else(|| TrainDataError::invalid_path(&image_path, "non-UTF-8 file stem"))?;
 
-                if !mask_found {
-                    eprintln!("Warning: No mask found for image: {}", image_path.display());
-                }
+            if let Some(mask_path) = masks_by_stem.get(stem) {
+                items.push((image_path, mask_path.clone()));
+            } else {
+                tracing::warn!(image = %image_path.display(), "no matching mask found in gt directory");
             }
         }
 
         if items.is_empty() {
-            return Err(DatasetError::NoValidPairs { path: image_root });
+            return Err(TrainDataError::empty_dataset(&image_root));
         }
 
-        println!(
-            "Found {} image/mask pairs in {}",
-            items.len(),
-            image_root.display()
+        items.sort_by(|a, b| a.0.cmp(&b.0));
+        tracing::info!(
+            pairs = items.len(),
+            directory = %image_root.display(),
+            "discovered image/mask dataset pairs"
         );
         Ok(items)
     }
 
-    /// Get supported image extensions from the image crate dynamically.
-    ///
-    /// This method uses the image crate's ImageFormat API to retrieve all supported
-    /// file extensions, avoiding hardcoded magic numbers and ensuring compatibility
-    /// with the image crate's actual capabilities.
-    fn get_supported_image_extensions() -> Vec<String> {
-        let mut extensions = Vec::new();
-
-        // Iterate through all supported image formats
-        for format in ImageFormat::all() {
-            // Get extensions for this format and add them to our list
-            for ext in format.extensions_str() {
-                // Add both with and without leading dot for compatibility
-                extensions.push(format!(".{}", ext));
-                extensions.push(format!(".{}", ext.to_uppercase()));
-            }
-        }
-
-        // Remove duplicates while preserving order
-        extensions.sort();
-        extensions.dedup();
-
-        extensions
-    }
-
-    /// Convert an image to raw float array without normalization.
-    /// Normalization will be applied later in the batcher for backend compatibility.
-    fn image_to_array(&self, img: DynamicImage) -> Vec<f32> {
-        // Convert to RGB and get raw pixel data
-        let rgb_img = img.to_rgb32f();
-
-        // The image crate already provides data in HWC format, so we can use it directly
-        rgb_img.into_raw()
-    }
-
-    /// Convert a mask to normalized float array.
-    fn mask_to_array(&self, mask: DynamicImage) -> Vec<f32> {
-        let mask = mask.to_luma32f();
-        mask.into_raw()
-    }
-
-    /// Apply augmentations to an image and its mask.
-    /// Uses the comprehensive data augmentation system implemented in the augmentation module.
-    fn augment(&self, image: DynamicImage, mask: DynamicImage) -> (DynamicImage, DynamicImage) {
-        self.augmentor.augment(image, mask, self.is_train)
+    fn open_image(path: &Path) -> Result<DynamicImage, burn::data::dataset::DatasetError> {
+        image::open(path).map_err(|source| {
+            burn::data::dataset::DatasetError::new(TrainDataError::image(path, source))
+        })
     }
 }
 
 impl Dataset<BiRefNetItem> for BiRefNetDataset {
-    /// Loads and preprocesses one image/mask pair.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `index >= len()` (Burn's `Dataset` contract); `Err` is reserved for
-    /// files that cannot be read or decoded.
     fn get(&self, index: usize) -> Result<BiRefNetItem, burn::data::dataset::DatasetError> {
         let (image_path, mask_path) = &self.items[index];
-        let open = |path: &PathBuf| {
-            image::open(path).map_err(|source| {
-                burn::data::dataset::DatasetError::new(DatasetError::ImageOpenFailed {
-                    path: path.clone(),
-                    source,
-                })
-            })
-        };
+        let image = Self::open_image(image_path)?;
+        let mask = Self::open_image(mask_path)?;
 
-        let image = open(image_path)?;
-        let mask = open(mask_path)?;
-
-        // Apply data augmentation (full augmentation only during training, resizing only during validation)
-        let (image, mask) = self.augment(image, mask);
-
+        let (image, mask) = self.augmentor.augment(image, mask, self.is_train);
         let height = image.height() as usize;
         let width = image.width() as usize;
 
-        let image_data = self.image_to_array(image);
-        let mask_data = self.mask_to_array(mask);
-
         Ok(BiRefNetItem {
-            image: image_data,
-            mask: mask_data,
+            image: image.to_rgb32f().into_raw(),
+            mask: mask.to_luma32f().into_raw(),
             height,
             width,
         })
@@ -370,71 +293,5 @@ impl Dataset<BiRefNetItem> for BiRefNetDataset {
 
     fn len(&self) -> usize {
         self.items.len()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use burn::data::dataloader::batcher::Batcher;
-
-    use super::*;
-
-    #[test]
-    fn birefnet_batcher_creates_correct_batch_dimensions() {
-        let device = Device::flex();
-        let batcher = BiRefNetBatcher::new();
-
-        let height = 32;
-        let width = 32;
-
-        // Create test items with raw data
-        let item1 = BiRefNetItem {
-            image: vec![0.5f32; height * width * 3], // RGB data
-            mask: vec![1.0f32; height * width],      // Binary mask data
-            height,
-            width,
-        };
-        let item2 = BiRefNetItem {
-            image: vec![0.3f32; height * width * 3], // RGB data
-            mask: vec![0.0f32; height * width],      // Binary mask data
-            height,
-            width,
-        };
-
-        let items = vec![item1, item2];
-        let batch = batcher.batch(items, &device);
-
-        // Check batch dimensions
-        assert_eq!(batch.images.shape().dims(), [2, 3, 32, 32]); // [B, C, H, W]
-        assert_eq!(batch.masks.shape().dims(), [2, 1, 32, 32]); // [B, C, H, W]
-    }
-
-    #[test]
-    fn birefnet_batch_creation_has_correct_tensor_shapes() {
-        let device = Device::flex();
-
-        let images = Tensor::<4>::zeros([4, 3, 64, 64], &device);
-        let masks = Tensor::<4>::zeros([4, 1, 64, 64], &device);
-
-        let batch = BiRefNetBatch { images, masks };
-
-        assert_eq!(batch.images.shape().dims(), [4, 3, 64, 64]);
-        assert_eq!(batch.masks.shape().dims(), [4, 1, 64, 64]);
-    }
-
-    #[test]
-    fn dataset_returns_raw_data() {
-        // Test that BiRefNetItem contains raw data, not tensors
-        let item = BiRefNetItem {
-            image: vec![0.1, 0.2, 0.3],
-            mask: vec![1.0],
-            height: 1,
-            width: 1,
-        };
-
-        assert_eq!(item.image.len(), 3); // RGB pixel
-        assert_eq!(item.mask.len(), 1); // Single mask pixel
-        assert_eq!(item.height, 1);
-        assert_eq!(item.width, 1);
     }
 }

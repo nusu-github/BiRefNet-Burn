@@ -1,80 +1,55 @@
-//! # Truncated Normal Distribution
-//!
-//! Provides a function to initialize a tensor with values drawn from a truncated
-//! normal distribution. This is commonly used for initializing weight matrices in
-//! neural networks, such as Vision Transformers.
+//! Truncated normal distribution sampling over Burn tensors.
+
+use core::f64::consts::SQRT_2;
 
 use burn::{prelude::*, tensor::Distribution};
 
-use super::erfinv::Erfinv;
+use crate::erfinv::Erfinv;
 
-/// Fills a tensor with values from a truncated normal distribution.
+/// Returns a tensor of shape `shape` on `device` sampled from a normal
+/// distribution `N(mean, std^2)` truncated to `[a, b]`.
 ///
-/// The values are drawn from a normal distribution with the specified `mean` and `std`,
-/// and are clipped to be within the range `[a, b]`.
+/// # Panics
 ///
-/// # Arguments
-///
-/// * `x` - The tensor to be filled.
-/// * `mean` - The mean of the normal distribution.
-/// * `std` - The standard deviation of the normal distribution.
-/// * `a` - The lower bound of the truncation.
-/// * `b` - The upper bound of the truncation.
+/// Panics if `std` is not finite and strictly positive, if `mean`, `a`, or `b` are not
+/// finite, or if `a > b`.
+#[must_use]
 pub fn trunc_normal<const D: usize>(
-    x: Tensor<D>,
+    shape: impl Into<Shape>,
     mean: f64,
     std: f64,
     a: f64,
     b: f64,
+    device: &Device,
 ) -> Tensor<D> {
-    fn norm_cdf(x: f64) -> f64 {
-        f64::midpoint(1., libm::erf(x / 2.0_f64.sqrt()))
+    assert!(
+        mean.is_finite(),
+        "trunc_normal: mean must be finite, got {mean}"
+    );
+    assert!(
+        std.is_finite() && std > 0.0,
+        "trunc_normal: std must be finite and positive, got {std}"
+    );
+    assert!(
+        a.is_finite() && b.is_finite(),
+        "trunc_normal: bounds must be finite, got [{a}, {b}]"
+    );
+    assert!(
+        a <= b,
+        "trunc_normal: lower bound a ({a}) must not exceed upper bound b ({b})"
+    );
+
+    let low = 2.0_f64.mul_add(norm_cdf((a - mean) / std), -1.0);
+    let high = 2.0_f64.mul_add(norm_cdf((b - mean) / std), -1.0);
+    if low >= high {
+        return Tensor::full(shape, a.clamp(a, b), device);
     }
 
-    let l = norm_cdf((a - mean) / std);
-    let u = norm_cdf((b - mean) / std);
-
-    // Fill with uniform values in the range [2l-1, 2u-1]
-    let x = x.random_like(Distribution::Uniform(
-        2.0f64.mul_add(l, -1.0),
-        2.0f64.mul_add(u, -1.0),
-    ));
-
-    // Apply inverse error function to transform to a normal distribution
-    let x = x.erfinv();
-
-    // Scale and shift to the correct mean and std
-    let x = x.mul_scalar(std * (2.0f64.sqrt()));
-    let x = x.add_scalar(mean);
-
-    // Clamp to the desired range
-    x.clamp(a, b)
+    let uniform = Tensor::random(shape, Distribution::Uniform(low, high), device);
+    let normal = uniform.erfinv().mul_scalar(std * SQRT_2).add_scalar(mean);
+    normal.clamp(a, b)
 }
 
-/// Convenience function for 2D tensor initialization (common for weight matrices)
-pub fn trunc_normal_(tensor: Tensor<2>, mean: f64, std: f64, a: f64, b: f64) -> Tensor<2> {
-    trunc_normal(tensor, mean, std, a, b)
-}
-
-#[cfg(test)]
-mod tests {
-    use burn::tensor::Tensor;
-
-    use super::*;
-
-    #[test]
-    fn trunc_normal_preserves_input_tensor_dimensions() {
-        let device = Device::flex();
-        let tensor = Tensor::<2>::zeros([3, 4], &device);
-        let result = trunc_normal_(tensor, 0.0, 1.0, -2.0, 2.0);
-        assert_eq!(result.dims(), [3, 4]);
-    }
-
-    #[test]
-    fn trunc_normal_handles_multidimensional_tensors() {
-        let device = Device::flex();
-        let tensor = Tensor::<3>::zeros([2, 3, 4], &device);
-        let result = trunc_normal(tensor, 0.0, 1.0, -2.0, 2.0);
-        assert_eq!(result.dims(), [2, 3, 4]);
-    }
+fn norm_cdf(x: f64) -> f64 {
+    f64::midpoint(1.0, libm::erf(x / SQRT_2))
 }

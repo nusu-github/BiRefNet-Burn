@@ -1,21 +1,16 @@
-//! # Deformable Convolution v2
-//!
-//! This module provides an implementation of Deformable Convolution v2, which can
-//! enhance the model's ability to handle geometric transformations.
+//! Deformable Convolution v2 layer used in deformable ASPP branches.
 
 use burn::{
     module::Param,
     nn::{
-        PaddingConfig2d,
+        Initializer, PaddingConfig2d,
         conv::{Conv2d, Conv2dConfig},
     },
     prelude::*,
     tensor::{activation::sigmoid, module::deform_conv2d, ops::DeformConvOptions},
 };
 
-use crate::error::{BiRefNetError, BiRefNetResult};
-
-/// Configuration for the `DeformableConv2d` module.
+/// Configuration for [`DeformableConv2d`].
 #[derive(Config, Debug)]
 pub struct DeformableConv2dConfig {
     /// Number of input channels.
@@ -31,77 +26,54 @@ pub struct DeformableConv2dConfig {
     /// Padding added to all four sides of the input.
     #[config(default = "1")]
     padding: usize,
-    /// Whether to include a bias term.
+    /// Whether to include a bias term on the main convolution.
     #[config(default = "false")]
     bias: bool,
 }
 
+fn zero_conv_bias(conv: &mut Conv2d) {
+    if let Some(bias) = conv.bias.take() {
+        conv.bias = Some(Param::from_tensor(bias.val().zeros_like()));
+    }
+}
+
 impl DeformableConv2dConfig {
-    /// Initializes a new `DeformableConv2d` module.
-    pub fn init(&self, device: &Device) -> BiRefNetResult<DeformableConv2d> {
+    /// Initializes a [`DeformableConv2d`] module with zero-initialized offsets and modulators.
+    #[must_use]
+    pub fn init(&self, device: &Device) -> DeformableConv2d {
+        let padding =
+            PaddingConfig2d::Explicit(self.padding, self.padding, self.padding, self.padding);
+
         let mut offset_conv = Conv2dConfig::new(
             [self.in_channels, 2 * self.kernel_size * self.kernel_size],
             [self.kernel_size, self.kernel_size],
         )
         .with_stride([self.stride, self.stride])
-        .with_padding(PaddingConfig2d::Explicit(
-            self.padding,
-            self.padding,
-            self.padding,
-            self.padding,
-        ))
+        .with_padding(padding.clone())
+        .with_initializer(Initializer::Zeros)
         .init(device);
-
-        offset_conv.weight = Param::from_tensor(offset_conv.weight.val().zeros_like());
-        offset_conv.bias = Some(Param::from_tensor(
-            offset_conv
-                .bias
-                .ok_or_else(|| BiRefNetError::ModelInitializationFailed {
-                    reason: "Offset conv bias parameter is missing".to_owned(),
-                })?
-                .val()
-                .zeros_like(),
-        ));
+        zero_conv_bias(&mut offset_conv);
 
         let mut modulator_conv = Conv2dConfig::new(
             [self.in_channels, self.kernel_size * self.kernel_size],
             [self.kernel_size, self.kernel_size],
         )
         .with_stride([self.stride, self.stride])
-        .with_padding(PaddingConfig2d::Explicit(
-            self.padding,
-            self.padding,
-            self.padding,
-            self.padding,
-        ))
+        .with_padding(padding.clone())
+        .with_initializer(Initializer::Zeros)
         .init(device);
-
-        modulator_conv.weight = Param::from_tensor(modulator_conv.weight.val().zeros_like());
-        modulator_conv.bias = Some(Param::from_tensor(
-            modulator_conv
-                .bias
-                .ok_or_else(|| BiRefNetError::ModelInitializationFailed {
-                    reason: "Modulator conv bias parameter is missing".to_owned(),
-                })?
-                .val()
-                .zeros_like(),
-        ));
+        zero_conv_bias(&mut modulator_conv);
 
         let regular_conv = Conv2dConfig::new(
             [self.in_channels, self.out_channels],
             [self.kernel_size, self.kernel_size],
         )
         .with_stride([self.stride, self.stride])
-        .with_padding(PaddingConfig2d::Explicit(
-            self.padding,
-            self.padding,
-            self.padding,
-            self.padding,
-        ))
+        .with_padding(padding)
         .with_bias(self.bias)
         .init(device);
 
-        Ok(DeformableConv2d {
+        DeformableConv2d {
             in_channels: self.in_channels,
             out_channels: self.out_channels,
             kernel_size: self.kernel_size,
@@ -111,7 +83,7 @@ impl DeformableConv2dConfig {
             modulator_conv,
             offset_conv,
             regular_conv,
-        })
+        }
     }
 }
 
@@ -130,25 +102,23 @@ pub struct DeformableConv2d {
 }
 
 impl DeformableConv2d {
+    /// Applies deformable convolution over `[B, in_channels, H, W]`.
+    #[must_use]
     pub fn forward(&self, x: Tensor<4>) -> Tensor<4> {
         let offset = self.offset_conv.forward(x.clone());
         let modulator = sigmoid(self.modulator_conv.forward(x.clone())).mul_scalar(2.0);
 
-        // Calculate groups dynamically like PyTorch implementation
         let [_, _, weights_h, weights_w] = self.regular_conv.weight.dims();
         let [_, n_in_channels, _, _] = x.dims();
 
-        // PyTorch calculation: n_offset_grps = offset.shape[1] // (2 * weights_h * weights_w)
         let n_offset_grps = offset.dims()[1] / (2 * weights_h * weights_w);
-
-        // PyTorch calculation: n_weight_grps = n_in_channels // weight.shape[1]
         let n_weight_grps = n_in_channels / self.regular_conv.weight.dims()[1];
 
         deform_conv2d(
             x,
             offset,
             self.regular_conv.weight.val(),
-            Option::from(modulator),
+            Some(modulator),
             self.regular_conv.bias.as_ref().map(Param::val),
             DeformConvOptions {
                 stride: [self.stride, self.stride],

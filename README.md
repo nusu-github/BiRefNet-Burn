@@ -2,10 +2,10 @@
 
 ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)
 ![Rust](https://img.shields.io/badge/rust-1.95%2B-orange.svg)
-![Burn](https://img.shields.io/badge/burn-0.22.0-red.svg)
+![Burn](https://img.shields.io/badge/burn-0.22.1-red.svg)
 [![CI](https://github.com/nusu-github/BiRefNet-Burn/actions/workflows/rust.yml/badge.svg)](https://github.com/nusu-github/BiRefNet-Burn/actions/workflows/rust.yml)
 
-A Rust implementation of the BiRefNet (Bilateral Reference Network) for high-resolution dichotomous image segmentation, built using the Burn deep learning framework. This project provides core model implementation with inference capabilities and foundational training infrastructure.
+A Rust workspace implementing **BiRefNet** (Bilateral Reference Network) for high-resolution dichotomous image segmentation on the [Burn](https://burn.dev) deep learning framework (`0.22.1`, Edition `2024`, Rust `1.95+`).
 
 ## Table of Contents
 
@@ -15,346 +15,155 @@ A Rust implementation of the BiRefNet (Bilateral Reference Network) for high-res
 - [Usage](#usage)
   - [Inference](#inference)
   - [Training](#training)
+  - [Backends](#backends)
   - [Backend Information](#backend-information)
 - [Architecture](#architecture)
-- [Current Limitations](#current-limitations)
+- [Workspace Crates](#workspace-crates)
 - [License](#license)
 - [Acknowledgements](#acknowledgements)
+- [References](#references)
 
 ## Overview
 
-BiRefNet is a state-of-the-art model for high-resolution dichotomous image segmentation, as detailed in the paper "
-Bilateral Reference for High-Resolution Dichotomous Image Segmentation" [1]. This Rust implementation leverages the Burn
-framework to provide enhanced performance, memory safety, and cross-platform deployment capabilities.
+BiRefNet is an encoder-decoder segmentation architecture with bilateral reference pathways introduced in *"Bilateral Reference for High-Resolution Dichotomous Image Segmentation"* [1].
 
 - **Original PyTorch Implementation**: [ZhengPeng7/BiRefNet](https://github.com/ZhengPeng7/BiRefNet)
 - **Burn Framework**: [tracel-ai/burn](https://github.com/tracel-ai/burn)
 
 ## Features
 
-### ✅ Implemented
-
-- **Complete Model Architecture**: Full BiRefNet implementation with bilateral reference mechanism
-- **Multiple Backbone Support**: Swin Transformer v1 (Tiny, Small, Base, Large), PVT v2, ResNet, and VGG architectures
-- **Cross-Platform Inference**: Flex (CPU), WebGPU, Vulkan, Metal, CUDA, ROCm and the CubeCL CPU backend, selected at run time
-- **Basic Inference Pipeline**: Single and batch image processing capabilities
-- **Runtime Model Conversion**: PyTorch / SafeTensors weight loading via `burn::store`, Burnpack (`.bpk`) checkpoints
-- **Dataset Support**: DIS5K dataset loading with comprehensive data augmentation
-- **Data Augmentation**: Full implementation with geometric transforms (flip, rotate, crop) and photometric transforms (color enhancement, pepper noise)
-- **Configuration System**: Type-safe, hierarchical configuration with validation
-- **Multiple Backends**: Several backends compiled into one binary; `--device` picks one, `--precision` sets the float dtype
-- **Comprehensive Loss System**: BCE, IoU, SSIM, MAE, Structure Loss, Contour Loss, Threshold Regularization, Patch IoU, and auxiliary classification losses with PyTorch-optimized weights
-- **Core Evaluation Metrics**: MSE, BIoU, Weighted F-measure, F-measure, and MAE implemented with PyTorch-compatible calculations
-- **Complete Training System**: Full BiRefNet training pipeline with Burn's `SupervisedTraining`, configuration-based setup, checkpoint resume, and AdamW/Adam/SGD optimizers
-
-### 🚧 Partially Implemented
-
-- **Post-processing Pipeline**: Basic threshold and resizing implemented, but advanced morphological operations (Gaussian blur, erosion/dilation, connected components, hole filling) are placeholder implementations
-- **Advanced Evaluation Metrics**: Core metrics (MSE, BIoU, Weighted F-measure, F-measure, MAE) work correctly, but IoU, S-measure, and E-measure calculations contain placeholder implementations
-- **Memory Efficiency**: Basic tensor operations optimization, further improvements needed
-
-### 🔧 Core Components
-
-- **BiRefNet Model**: Main segmentation model with decoder blocks and lateral connections
-- **ASPP Module**: Atrous Spatial Pyramid Pooling for multi-scale feature extraction
-- **Decoder Blocks**: Progressive refinement with attention mechanisms
-- **Comprehensive Loss System**: BCE, IoU, SSIM, MAE, Structure Loss, Contour Loss, Threshold Regularization, Patch IoU, and auxiliary classification losses with PyTorch-optimized weights
-- **Evaluation Metrics**: Core metrics (MSE, BIoU, Weighted F-measure, F-measure, MAE) fully implemented with PyTorch compatibility
-- **Data Pipeline**: Complete dataset loading with comprehensive augmentation (DIS5K dataset support)
-
-### ❌ Not Yet Implemented
-
-- **Advanced Post-processing**: Morphological operations, connected component analysis, hole filling, and Gaussian blur
-- **Complete Evaluation Suite**: Full implementation of IoU, S-measure, and E-measure calculations
-- **Comprehensive Examples**: Code examples and tutorials
-- **Advanced Optimizations**: Production-grade performance tuning
-- **Standalone Converter Tool**: Dedicated CLI tool for batch model conversion
+- **Complete BiRefNet Model**: Encoder, squeeze stage, bilateral multi-scale decoder (`BasicDecBlk`, `ResBlk`, `ASPP`, deformable ASPP), lateral blocks, and optional refinement (`RefUNet`, `Refiner`, `RefinerPVTInChannels4`).
+- **Backbone Networks**: `SwinV1` (`Tiny`, `Small`, `Base`, `Large`), `PVTv2` (`B0`, `B1`, `B2`, `B5`), `ResNet` (`18`, `50`), and `VGG` (`16`, `16-BN`).
+- **Pretrained Weight Loading**: 15 registered pretrained Hugging Face presets with optional Hub downloads (`hub` feature), SafeTensors key remapping, PyTorch import, and native Burnpack (`.bpk`) round-tripping.
+- **Inference & Postprocessing**: High-level `Segmenter` pipeline with ImageNet preprocessing, native Burn spatial resizing, sigmoid probability mapping, Gaussian blur, disk morphology (opening/closing), 4-connected small-component filtering, hole filling, and blur-fusion foreground refinement.
+- **Evaluation Suite**: Full implementations of `MAE`, `MSE`, `F-measure` (adaptive + curves), `Weighted F-measure`, `S-measure`, `E-measure` (adaptive + curve), and `BIoU`, plus `MetricsAggregator` and Burn `Metric` adapters.
+- **Training Pipeline**: `BiRefNetDataset` discovery/batching with self-contained image augmentations (flip, crop, rotate, color enhancement, pepper noise, background synthesis, 32-aligned dynamic sizing), combined `BiRefNetLoss`, and `SupervisedTraining` integration in `birefnet-cli`.
+- **Runtime Backend & Precision Selection**: Compile one or more Burn backends (`flex`, `cpu`, `wgpu`, `vulkan`, `metal`, `cuda`, `rocm`) and choose the active `--device` and `--precision` (`f32`, `f16`, `bf16`) at run time.
 
 ## Installation
 
 ### Prerequisites
 
-- **Rust**: 1.95 or later (required by Burn 0.22; declared as `rust-version` in Cargo)
-- **System Dependencies**: Based on your chosen backend (e.g., GPU drivers for WebGPU)
+- **Rust**: `1.95` or later (declared via `rust-version` in root `Cargo.toml`)
+- **System Dependencies**: Native drivers/SDKs only for optional GPU backends (`wgpu`, `vulkan`, `cuda`, `rocm`)
 
-### Steps
+### Build the Workspace or CLI
 
-1. **Clone the repository**:
+```bash
+git clone https://github.com/nusu-github/BiRefNet-Burn.git
+cd BiRefNet-Burn
 
-   ```bash
-   git clone https://github.com/nusu-github/BiRefNet-Burn.git
-   cd BiRefNet-Burn
-   ```
+# Default CLI binary (`birefnet` from `crates/birefnet-cli`): Flex CPU + Hugging Face Hub
+cargo build --release -p birefnet-cli
 
-2. **Build the project**:
+# Enable GPU backends and training support
+cargo build --release -p birefnet-cli --features wgpu,fusion
+cargo build --release -p birefnet-cli --features cuda,fusion,train
 
-   ```bash
-   # Default build: Flex CPU backend + inference
-   cargo build --release -p birefnet
-
-   # Add GPU backends (the CPU backend stays available)
-   cargo build --release -p birefnet --features wgpu
-   cargo build --release -p birefnet --features cuda,train
-   ```
+# Or install the binary locally
+cargo install --path crates/birefnet-cli
+```
 
 ## Usage
 
 ### Inference
 
-Run inference on single images or directories:
-
 ```bash
-# Single image inference (auto-downloads weights for known model names)
-cargo run --release --bin birefnet -- infer --input path/to/image.jpg --output results/ --model General
+# Single image (auto-downloads pretrained SafeTensors weights for named presets)
+cargo run --release -p birefnet-cli -- infer --input path/to/image.jpg --output results/ --model General
 
-# Batch inference on directory
-cargo run --release --bin birefnet -- infer --input path/to/images/ --output results/ --model General
+# Directory batch inference
+cargo run --release -p birefnet-cli -- infer --input path/to/images/ --output results/ --model General
 
-# List available pretrained models (names resolved to HF Hub)
-cargo run --release --bin birefnet -- infer --list-models
+# List registered pretrained presets without passing -i/-o/-m
+cargo run --release -p birefnet-cli -- infer --list-models
 
-# Using a specific backend (compile it in, then select it at run time)
-cargo run --release --bin birefnet --features wgpu -- --device wgpu infer --input image.jpg --output results/ --model General
+# Skip foreground color refinement
+cargo run --release -p birefnet-cli -- infer --input image.jpg --output results/ --model General --no-refine
 
-# Half precision on a GPU
-cargo run --release --bin birefnet --features cuda -- --device cuda --precision f16 infer --input image.jpg --output results/ --model General
+# Explicit GPU backend and half precision
+cargo run --release -p birefnet-cli --features wgpu,fusion -- --device wgpu --precision f16 infer --input image.jpg --output results/ --model General
 ```
 
-`--model` also accepts a local weight file: PyTorch (`.pt`/`.pth`), SafeTensors (`.safetensors`) or Burnpack (`.bpk`, e.g. the `model.bpk` written by training). Burn 0.22 can no longer read the old recorder formats (`.mpk`, `.bin`).
+`--model` also accepts local checkpoints in Burnpack (`.bpk`), SafeTensors (`.safetensors`), or PyTorch (`.pt`/`.pth`) formats.
 
 ### Training
 
-BiRefNet-Burn provides complete training functionality built on Burn's `SupervisedTraining`:
-
 ```bash
-# Train with configuration file (artifacts go to ./artifacts by default)
-cargo run --release --bin birefnet --features train,cuda -- --device cuda train --config path/to/config.json
+# Train from a JSON configuration (writes checkpoints & logs to ./artifacts)
+cargo run --release -p birefnet-cli --features train,cuda,fusion -- --device cuda train --config path/to/config.json
 
-# Resume after epoch 10 from ./artifacts/checkpoint/{model,optim,scheduler}-10.bpk
-cargo run --release --bin birefnet --features train,cuda -- --device cuda train --config path/to/config.json --resume 10
+# Resume after epoch 10 from ./artifacts/checkpoint/
+cargo run --release -p birefnet-cli --features train,cuda,fusion -- --device cuda train --config path/to/config.json --resume 10
 ```
-
-Implemented training features:
-
-- **Complete Training Pipeline**: `SupervisedTraining` with loss metrics, a TUI/CLI dashboard and a summary table
-- **Configuration-Based Setup**: JSON configuration files for reproducible training (copied to `<artifact-dir>/config.json`)
-- **Optimizer Support**: AdamW, Adam, and SGD optimizers selected by `optimizer.optimizer_type`
-- **Dataset Integration**: DIS5K dataset loading with comprehensive augmentation
-- **Loss Function Integration**: All implemented loss functions available for training
-- **Checkpointing and Resume**: Model, optimizer and scheduler state saved as Burnpack (`.bpk`) every epoch (last 2 plus the best validation loss are kept); `--resume <EPOCH>` continues a run
-- **Model Persistence**: Final weights saved to `<artifact-dir>/model.bpk`, loadable with `infer --model`
 
 ### Backends
 
-Burn 0.22 selects the backend at run time from a `Device` value. Cargo features of the top-level `birefnet` crate only decide which backends are compiled in, so several can live in one binary:
+| Feature  | `--device`         | Notes                                                               |
+| -------- | ------------------ | ------------------------------------------------------------------- |
+| `flex`   | `flex`             | Default pure-Rust CPU backend with SIMD and threads                 |
+| `cpu`    | `cpu`              | CubeCL CPU backend (LLVM JIT; downloads an LLVM bundle at build)    |
+| `wgpu`   | `wgpu`, `wgpu-cpu` | WebGPU backend (Vulkan / Metal / DX12 chosen at run time)           |
+| `vulkan` | `vulkan`           | WebGPU pinned to Vulkan                                             |
+| `metal`  | `metal`            | WebGPU pinned to Metal (macOS)                                      |
+| `cuda`   | `cuda`, `cuda:N`   | NVIDIA CUDA backend                                                 |
+| `rocm`   | `rocm`, `rocm:N`   | AMD ROCm backend                                                    |
 
-| Feature  | `--device`             | Notes                                                                |
-| -------- | ---------------------- | -------------------------------------------------------------------- |
-| `flex`   | `flex`                 | Default. Pure-Rust CPU backend with SIMD and threads                 |
-| `cpu`    | `cpu`                  | CubeCL CPU backend (LLVM JIT); downloads an LLVM bundle at build time |
-| `wgpu`   | `wgpu`, `wgpu-cpu`     | WebGPU; the graphics API (Vulkan/Metal/DX12) is picked at run time   |
-| `vulkan` | `vulkan`               | wgpu pinned to Vulkan                                                |
-| `metal`  | `metal`                | wgpu pinned to Metal (macOS)                                         |
-| `cuda`   | `cuda`, `cuda:N`       | NVIDIA GPUs; needs the CUDA toolkit                                  |
-| `rocm`   | `rocm`, `rocm:N`       | AMD GPUs; needs ROCm/HIP                                             |
-
-- `--device default` (the default) uses Burn's `Device::default()`: the first compiled-in backend in the order CUDA, Metal, ROCm, Vulkan, wgpu, CPU, Flex, unless the `BURN_DEVICE` environment variable names one.
-- The `fusion` feature (on by default) enables kernel fusion and autotuning for the CubeCL backends. Build with `--no-default-features --features inference,<backend>` to turn it off.
-- `--precision f16|bf16` configures the device's default float dtype; support depends on the backend and hardware.
-- Some backends compile kernels on first use; expect a warm-up cost.
+- `--device default` uses `Device::default()`, selecting the highest-priority compiled backend (or `BURN_DEVICE`).
+- `fusion` is opt-in and enables CubeCL kernel fusion and autotuning.
+- `--precision f32|f16|bf16` configures the device float dtype before the first allocation.
 
 ### Backend Information
 
-Show the devices compiled into the binary and the selected one:
-
 ```bash
-cargo run --release --bin birefnet -- info
-cargo run --release --bin birefnet --features wgpu -- --device wgpu info
+cargo run --release -p birefnet-cli -- info
+cargo run --release -p birefnet-cli --features wgpu -- --device wgpu info
 ```
 
 ### Development Commands
 
 ```bash
-# Format code
-cargo fmt --all
-
-# Run linting (GPU features need vendor toolchains; lint them only where available)
-cargo clippy --workspace --all-targets --features birefnet/train,birefnet-model/train -- -D warnings
-
-# Run tests (library tests run on the Flex CPU backend)
-cargo test --workspace --features birefnet/train,birefnet-model/train
-
-# Generate documentation
-cargo doc --workspace --no-deps --open
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --features birefnet/train,birefnet-model/train,birefnet-cli/train,birefnet-util/image-io,birefnet-weights/hub,birefnet-weights/test-util -- -D warnings
+cargo test --workspace --features birefnet/train,birefnet-model/train,birefnet-cli/train,birefnet-util/image-io,birefnet-weights/hub,birefnet-weights/test-util
+cargo doc --workspace --no-deps --features birefnet/train,birefnet-model/train,birefnet-util/image-io,birefnet-weights/hub,birefnet-weights/test-util
 ```
 
 ## Architecture
 
-### Model Components
+- **Library-first separation**: Core crates never depend on CLI crates (`clap`, `anyhow`, `stacker`) or enable a backend directly; only dev/test targets and `birefnet-cli` opt into backends.
+- **Typed library errors**: Each library crate exposes a boxed `Error + Send + Sync + 'static` error type with `is_*` predicates and `Error::source()` chains.
 
-- **Backbone Networks**: Swin Transformer v1, ResNet, VGG with pre-trained weights
-- **Bilateral Reference**: Core mechanism for high-resolution segmentation
-- **Multi-Scale Processing**: Hierarchical feature extraction and refinement
-- **Attention Mechanisms**: Channel and spatial attention for feature enhancement
-- **Progressive Decoding**: Stage-wise refinement with skip connections
+## Workspace Crates
 
-### Supported Configurations
-
-- **Backbones**: SwinV1-T/S/B/L, ResNet variants, VGG architectures
-- **Input Resolutions**: 224×224 to 2048×2048 (configurable)
-- **Multi-Scale Supervision**: Training with multiple output scales
-- **Context Channels**: 0-3 context levels for enhanced feature extraction
-
-### Crate Structure
-
-This project is organized as a workspace with modular crates:
-
-- **`birefnet`**: Main CLI application and unified interface
-- **`birefnet-model`**: Core BiRefNet model implementation and decoder blocks
-- **`birefnet-backbones`**: Backbone networks (Swin Transformer, ResNet, VGG)
-- **`birefnet-loss`**: Loss functions for training (BCE, IoU, Structure Loss, etc.)
-- **`birefnet-metric`**: Evaluation metrics (F-measure, MAE, BIoU, etc.)
-- **`birefnet-train`**: Training infrastructure and dataset handling (basic implementation)
-- **`birefnet-inference`**: Inference engine and post-processing utilities
-- **`birefnet-util`**: Image processing, weight management, and utilities
-- **`birefnet-extra-ops`**: Additional operations extending Burn framework
-
-## Current Limitations
-
-While this project aims to provide a comprehensive Rust implementation of BiRefNet, it's important to note that full feature parity with the original PyTorch version is not always feasible due to the evolving maturity of the Burn deep learning framework and its ecosystem. The following features are not yet fully implemented or integrated:
-
-### 🚧 Missing Features
-
-- **`BiRefNetC2F` Model**: The coarse-to-fine model (`BiRefNetC2F`) from the Python implementation is not yet available.
-- **Advanced Post-processing Operations**: Key post-processing functions are placeholder implementations:
-  - Gaussian blur convolution
-  - Morphological operations (erosion, dilation, opening, closing)
-  - Connected component analysis and filtering
-  - Hole filling using morphological reconstruction
-- **Gradient-based Auxiliary Loss**: Boundary gradient supervision (`out_ref` mode) from the original implementation is not yet implemented.
-- **Complete Evaluation Metrics**: Several advanced metrics contain placeholder implementations:
-  - IoU calculation (returns 0.0)
-  - S-measure and E-measure (not implemented)
-  - Advanced metrics like Human Correction Efforts (HCE) and Mean Boundary Accuracy (MBA)
-  - Note: F-measure and MAE calculations are fully implemented and functional
-- **Numerical Stability for BCE Loss**: The `BCELoss` implementation needs further refinement for full numerical stability, matching PyTorch's behavior.
-- **Multi-GPU Training**: Distributed training across multiple GPUs is not yet supported.
-- **Dynamic Resolution Training**: Training with variable input resolutions is not yet implemented.
-- **Box-Guided Segmentation**: Bounding box guidance for segmentation is not yet available.
-- **Specialized Variants**: Some task-specific optimizations and model variants found in the original implementation are not yet ported.
-
-### 📊 Performance Gaps
-
-- **Optimization**: Further performance tuning is necessary for production deployment.
-- **Memory Usage**: Additional memory optimizations are required for very large-scale inference or training.
-- **Batch Processing**: Further enhancements for highly optimized batch processing are needed.
-
-_Note: While these performance aspects are important for production-grade applications, their full optimization is a secondary goal, as the primary focus is on establishing core functionality and architectural integrity within the Burn framework._
+| Crate                                                 | Role                                                                       |
+| ----------------------------------------------------- | -------------------------------------------------------------------------- |
+| [`birefnet`](crates/birefnet)                         | Pure umbrella library crate + runtime device/precision selection           |
+| [`birefnet-cli`](crates/birefnet-cli)                 | Binary CLI (`birefnet`) for `infer`, `train`, and `info`                   |
+| [`birefnet-model`](crates/birefnet-model)             | `BiRefNet` architecture, decoder, squeeze, ASPP, refinement, and configs   |
+| [`birefnet-backbones`](crates/birefnet-backbones)     | Encoder backbones (`SwinV1`, `PVTv2`, `ResNet`, `VGG`)                     |
+| [`birefnet-weights`](crates/birefnet-weights)         | Model preset catalog, optional Hub fetcher, and Burnpack/SafeTensors/PT IO |
+| [`birefnet-inference`](crates/birefnet-inference)     | High-level `Segmenter`, mask postprocessing, and morphology operations     |
+| [`birefnet-train`](crates/birefnet-train)             | `BiRefNetDataset`, batcher, and self-contained image augmentations         |
+| [`birefnet-loss`](crates/birefnet-loss)               | `BiRefNetLoss`, BCE/IoU/SSIM/Structure/Contour/PatchIoU/MAE/Threshold loss |
+| [`birefnet-metric`](crates/birefnet-metric)           | Segmentation evaluation metrics, Burn `Metric` adapters, and aggregators   |
+| [`birefnet-util`](crates/birefnet-util)               | Pure tensor math, EDT, morphology, foreground refinement, optional codecs  |
+| [`birefnet-extra-ops`](crates/birefnet-extra-ops)     | `DropPath`, `erfinv`, and `trunc_normal` operations for Burn               |
 
 ## License
 
-This project is dual-licensed under both the MIT and Apache-2.0 licenses. You may choose either license when using this
-project.
+Dual-licensed under either of:
 
 - [MIT License](LICENSE-MIT)
 - [Apache-2.0 License](LICENSE-APACHE)
 
-## Project Status
-
-| Component       | Status           | Notes                                         |
-| --------------- | ---------------- | --------------------------------------------- |
-| Core Model      | ✅ Complete      | Full BiRefNet architecture implemented        |
-| Inference       | ✅ Complete      | Single/batch image processing                 |
-| Training        | ✅ Complete      | `SupervisedTraining`, checkpoints and resume  |
-| Conversion      | ✅ Complete      | Runtime PyTorch weight loading implemented    |
-| Datasets        | ✅ Complete      | DIS5K with full augmentation pipeline         |
-| Backbones       | ✅ Complete      | Swin v1, PVT v2, ResNet, VGG implemented      |
-| Post-processing | 🚧 Partial       | Basic ops work, advanced ops are placeholders |
-| Evaluation      | ✅ Core Complete | F-measure, MAE, MSE, BIoU, Weighted F-measure |
-
-## Contributing
-
-We welcome contributions! Please see our contribution guidelines:
-
-1. **Fork** the repository
-2. **Create** a feature branch
-3. **Implement** your changes with tests
-4. **Ensure** all tests pass and code is formatted
-5. **Submit** a pull request
-
-### Development Setup
-
-```bash
-# Clone your fork
-git clone https://github.com/your-username/BiRefNet-Burn.git
-cd BiRefNet-Burn
-
-# Install development dependencies
-cargo install cargo-llvm-cov # For coverage
-cargo install cargo-expand # For macro expansion debugging
-
-# Run development checks
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --features birefnet/train,birefnet-model/train -- -D warnings
-cargo test --workspace --features birefnet/train,birefnet-model/train
-```
-
-## Performance Benchmarks
-
-🚧 In progress
-
 ## Acknowledgements
 
-### Core Contributors
-
-- **Original BiRefNet**: [ZhengPeng7/BiRefNet](https://github.com/ZhengPeng7/BiRefNet) - The groundbreaking research and
-  PyTorch implementation
-- **Burn Framework**: [Tracel.ai Team](https://github.com/tracel-ai/burn) - The modern deep learning framework that
-  makes this project possible
-
-### Research Foundation
-
-This implementation is based on extensive research in computer vision and deep learning:
-
-- **Swin Transformer**: Liu et al., for the hierarchical vision transformer architecture
-- **Image Segmentation**: The broader computer vision community for advances in semantic segmentation
-- **Rust ML Ecosystem**: Contributors to candle, tch, ort, and other Rust ML libraries
-
-### Special Thanks
-
-- The Rust community for feedback and contributions
-- Beta testers who helped identify and resolve issues
-- Documentation reviewers and technical writers
+- [ZhengPeng7/BiRefNet](https://github.com/ZhengPeng7/BiRefNet) for the original PyTorch BiRefNet implementation.
+- [Tracel.ai / Burn](https://github.com/tracel-ai/burn) for the Burn deep learning framework.
 
 ## References
 
-### Primary Paper
-
-- Zheng, P., Gao, D., Fan, D., Liu, L., Laaksonen, J., Ouyang, W., & Sebe, N. (2024). "Bilateral Reference for High-Resolution Dichotomous Image Segmentation". _CAAI Artificial Intelligence Research_, 3, [arXiv:2401.03407](https://arxiv.org/abs/2401.03407)
-
-### Backbone Architectures
-
-- Simonyan, K., & Zisserman, A. (2015). "Very Deep Convolutional Networks for Large-Scale Image Recognition". _International Conference on Learning Representations (ICLR)_. [arXiv:1409.1556](https://arxiv.org/abs/1409.1556)
-- He, K., Zhang, X., Ren, S., & Sun, J. (2016). "Deep Residual Learning for Image Recognition". _Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR)_. [arXiv:1512.03385](https://arxiv.org/abs/1512.03385)
-- Liu, Z., Lin, Y., Cao, Y., et al. (2021). "Swin Transformer: Hierarchical Vision Transformer using Shifted Windows". _ICCV 2021_. [arXiv:2103.14030](https://arxiv.org/abs/2103.14030)
-
-### Implementation Details & Inspirations
-
-Many components and design patterns in BiRefNet-Burn are inspired by or directly adapted from established deep learning libraries and research implementations.
-
-- PyTorch: A widely used open-source machine learning framework. [https://pytorch.org/](https://pytorch.org/)
-- OpenCV: An open-source computer vision and machine learning software library. [https://opencv.org/](https://opencv.org/)
-- timm (PyTorch Image Models): A collection of SOTA image models, often used for backbone implementations. [https://github.com/rwightman/pytorch-image-models](https://github.com/rwightman/pytorch-image-models)
-- Kornia: An open-source computer vision library for PyTorch. [https://kornia.readthedocs.io/](https://kornia.readthedocs.io/)
-
-### Key Dependencies
-
-- Burn Framework Documentation: [https://burn.dev](https://burn.dev)
-
----
-
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/nusu-github/BiRefNet-Burn/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/nusu-github/BiRefNet-Burn/discussions)
-- **Documentation**: Generate locally with `cargo doc --workspace --no-deps --open`
+- Zheng, P., Gao, D., Fan, D., Liu, L., Laaksonen, J., Ouyang, W., & Sebe, N. (2024). *Bilateral Reference for High-Resolution Dichotomous Image Segmentation*. CAAI Artificial Intelligence Research, 3, [arXiv:2401.03407](https://arxiv.org/abs/2401.03407).
+- Liu, Z., Lin, Y., Cao, Y., et al. (2021). *Swin Transformer: Hierarchical Vision Transformer using Shifted Windows*. ICCV 2021, [arXiv:2103.14030](https://arxiv.org/abs/2103.14030).
+- Wang, W., Xie, E., Li, X., et al. (2022). *PVTv2: Improved Baselines with Pyramid Vision Transformer*. Computational Visual Media, 8(3), [arXiv:2106.13797](https://arxiv.org/abs/2106.13797).

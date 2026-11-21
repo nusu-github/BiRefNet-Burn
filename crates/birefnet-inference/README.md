@@ -3,123 +3,57 @@
 [![Crates.io](https://img.shields.io/crates/v/birefnet-inference.svg)](https://crates.io/crates/birefnet-inference)
 [![Documentation](https://docs.rs/birefnet-inference/badge.svg)](https://docs.rs/birefnet-inference)
 
-**Inference engine and post-processing utilities for BiRefNet using the Burn deep learning framework**
-
-## Implemented Features
-
-### ✅ Basic Post-processing
-
-- **Thresholding**: Binary mask generation with configurable thresholds
-- **Tensor to image conversion**: Conversion for saving results
-- **Basic resizing**: Tensor resizing with device-aware operations
-
-### 🚧 Advanced Post-processing (Placeholder Implementations)
-
-- **Gaussian blur**: Function exists but returns input unchanged (needs convolution implementation)
-- **Morphological operations**: Opening and closing operations return input unchanged
-  - `morphological_opening`: Placeholder (needs erosion + dilation)
-  - `morphological_closing`: Placeholder (needs dilation + erosion)
-- **Connected component analysis**: `remove_small_components` returns input unchanged
-- **Hole filling**: `fill_holes` returns input unchanged (needs morphological reconstruction)
+**High-level inference pipeline and mask postprocessing for `BiRefNet` on Burn**
 
 ## Core Components
 
-### Working Functions
+- **`Segmenter` & `SegmenterConfig`**: End-to-end segmentation runner supporting tensor (`[1, 3, H, W]`), `DynamicImage`, and image file inputs (`segment_tensor`, `segment_image`, `segment_file`), with ImageNet normalization, bicubic resizing via native Burn interpolation, sigmoid activation, optional mask postprocessing, and optional multi-pass blur-fusion foreground refinement.
+- **`SegmentationOutput`**: Holds predicted mask `[1, 1, H, W]`, optional refined foreground `[1, 3, H, W]`, original `(height, width)`, and export helpers (`to_rgba_image`, `to_mask_image`).
+- **`InferenceError`**: Typed error with `is_model`, `is_util`, `is_image`, `is_io`, `is_invalid_input`, and `is_tensor_read` predicates.
 
-- **`apply_threshold`**: Binary thresholding with configurable threshold values
-- **`tensor_to_image_data`**: Convert tensors to u8 image data for saving
-- **`resize_tensor`**: Resize tensors to target dimensions
+## Postprocessing Functions
 
-### Placeholder Functions (Return Input Unchanged)
-
-- **`gaussian_blur`**: TODO - Implement separable Gaussian convolution
-- **`morphological_opening`**: TODO - Implement erosion followed by dilation
-- **`morphological_closing`**: TODO - Implement dilation followed by erosion
-- **`remove_small_components`**: TODO - Implement connected component labeling
-- **`fill_holes`**: TODO - Implement flood fill or morphological reconstruction
-
-### Comprehensive Pipeline
-
-- **`postprocess_mask`**: Complete pipeline combining all operations
-  - Works with basic operations (threshold, resize)
-  - Advanced operations are placeholders but don't break the pipeline
+- **`apply_threshold`**: Binary mask thresholding (`mask > threshold`).
+- **`gaussian_blur`**: 2D Gaussian smoothing via `birefnet_util::gaussian_filter_matlab`.
+- **`morphological_opening` / `morphological_closing`**: Disk structuring element morphology via `birefnet-util`.
+- **`remove_small_components`**: 4-connected foreground component area filtering (`< min_size`).
+- **`fill_holes`**: Border-seeded flood fill for enclosed background holes.
+- **`postprocess_mask`**: Sequential pipeline driven by `PostprocessConfig`.
+- **`resize_tensor` / `mask_to_u8`**: Native Burn `interpolate` resizing and 8-bit grayscale export.
 
 ## Usage
 
-```rust
-use birefnet_inference::postprocessing::{
-    apply_threshold, postprocess_mask, tensor_to_image_data
-};
+```rust,no_run
+use birefnet_inference::{PostprocessConfig, Segmenter, SegmenterConfig};
+use birefnet_model::BiRefNet;
+use birefnet_weights::{BiRefNetWeightLoading, ManagedModel};
+use burn::tensor::Device;
 
-// Basic thresholding (works)
-let binary_mask = apply_threshold(mask, 0.5);
+let device = Device::flex();
+let managed = ManagedModel::from_local("custom", "model.bpk", None);
+let model = managed.build_config().init(&device)?.load_weights("model.bpk", &device)?;
 
-// Convert to image data (works)
-let image_data = tensor_to_image_data(mask);
-
-// Comprehensive postprocessing pipeline
-let processed_mask = postprocess_mask(
-    mask,
-    0.5,    // threshold
-    5,      // blur_kernel_size (placeholder)
-    1.0,    // blur_sigma (placeholder)
-    3,      // morphology_kernel_size (placeholder)  
-    100,    // min_component_size (placeholder)
-    true,   // fill_holes_flag (placeholder)
+let segmenter = Segmenter::new(
+    model,
+    SegmenterConfig {
+        postprocess: PostprocessConfig {
+            threshold: Some(0.5),
+            fill_holes: true,
+            ..PostprocessConfig::default()
+        },
+        ..SegmenterConfig::default()
+    },
 );
+
+let output = segmenter.segment_file("input.png", &device)?;
+output.to_rgba_image()?.save("output_mask.png")?;
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
-
-## Post-processing Pipeline
-
-### Working Operations
-
-1. **Threshold**: Converts predictions to binary masks
-2. **Resize**: Adjusts output to target dimensions
-
-### Placeholder Operations (Don't Modify Input)
-
-1. **Gaussian Blur**: Smoothing for noise reduction
-2. **Morphological Opening**: Remove small noise (erosion + dilation)
-3. **Morphological Closing**: Fill small gaps (dilation + erosion)
-4. **Component Filtering**: Remove small connected components
-5. **Hole Filling**: Fill interior holes in masks
-
-## Current Limitations
-
-### Advanced Post-processing Not Implemented
-
-- **Gaussian convolution**: Needs separable kernel implementation
-- **Morphological operations**: Requires structuring element operations
-- **Connected components**: Needs flood fill or union-find algorithm
-- **Hole filling**: Requires morphological reconstruction or border flood fill
-
-### Efficiency Considerations
-
-- Tensor resizing currently converts through image format (inefficient)
-- No GPU-optimized post-processing operations
-- Memory copies could be reduced with direct tensor operations
 
 ## Integration
 
-This crate provides:
-
-- Basic post-processing that works immediately
-- Placeholder structure for advanced operations
-- Integration points with image saving and display
-- Pipeline that doesn't break with placeholder implementations
-
-Works with:
-
-- [`birefnet-model`](../birefnet-model): Model output tensors
-- [`birefnet-util`](../birefnet-util): Image conversion utilities
-
-## Future Work
-
-- Implement proper Gaussian blur with separable convolution
-- Add morphological operations with configurable structuring elements
-- Implement connected component analysis and filtering
-- Add hole filling with morphological reconstruction
-- Optimize tensor operations for GPU backends
+- [`birefnet-model`](../birefnet-model): `BiRefNet` model forward pass
+- [`birefnet-util`](../birefnet-util): Image normalization, codec I/O (`image-io`), morphology, filters, and foreground refinement
 
 ## License
 

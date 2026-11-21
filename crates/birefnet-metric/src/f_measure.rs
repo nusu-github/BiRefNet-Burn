@@ -1,15 +1,10 @@
-//! F-measure metric implementation for BiRefNet.
-//!
-//! This module implements the F-measure metric used in BiRefNet
-//! for evaluating segmentation performance, including both adaptive
-//! and changeable F-measure calculations as per the original Python implementation.
+//! F-measure evaluation metric for `BiRefNet`.
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
-use burn::tensor::TensorReadError;
 use burn::{
     prelude::*,
-    tensor::Tensor,
+    tensor::TensorReadError,
     train::metric::{
         Metric, MetricAttributes, MetricMetadata, Numeric, NumericAttributes, NumericEntry,
         SerializedEntry,
@@ -17,20 +12,46 @@ use burn::{
     },
 };
 
-use super::input::FMeasureInput;
+use crate::{
+    common::{extract_sample_3d, prepare_data, usize_to_f64},
+    input::FMeasureInput,
+};
 
-// --- F-measure Metric ---
-
-/// Configuration for the F-measure metric.
+/// Configuration for [`FMeasureMetric`].
 #[derive(Config, Debug)]
 pub struct FMeasureMetricConfig {
-    /// Beta parameter for F-measure (default: 0.3 as in Python implementation).
+    /// Display name for the metric.
+    #[config(default = "String::from(\"F-measure\")")]
+    pub name: String,
+    /// Beta squared weight (`F_beta`, default `0.3`).
     #[config(default = 0.3)]
     pub beta: f64,
 }
 
-/// F-measure metric.
-#[derive(Default, Clone)]
+impl Default for FMeasureMetricConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FMeasureMetricConfig {
+    /// Initializes an [`FMeasureMetric`] from this configuration.
+    #[must_use]
+    pub fn init(&self) -> FMeasureMetric {
+        FMeasureMetric {
+            state: NumericMetricState::default(),
+            beta: self.beta,
+            name: Arc::new(self.name.clone()),
+            adaptive_fms: Vec::new(),
+            precision_curves: Vec::new(),
+            recall_curves: Vec::new(),
+            changeable_fms: Vec::new(),
+        }
+    }
+}
+
+/// Adaptive and threshold-curve F-measure metric.
+#[derive(Clone)]
 pub struct FMeasureMetric {
     state: NumericMetricState,
     beta: f64,
@@ -41,39 +62,64 @@ pub struct FMeasureMetric {
     changeable_fms: Vec<Vec<f64>>,
 }
 
+impl fmt::Debug for FMeasureMetric {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FMeasureMetric")
+            .field("name", &self.name)
+            .field("beta", &self.beta)
+            .field("adaptive_fms", &self.adaptive_fms)
+            .field("precision_curves_len", &self.precision_curves.len())
+            .field("recall_curves_len", &self.recall_curves.len())
+            .field("changeable_fms_len", &self.changeable_fms.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for FMeasureMetric {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Borrowed slice tuple of `(precision_curves, recall_curves, changeable_fm_curves)`.
+pub type FMeasureCurves<'a> = (&'a [Vec<f64>], &'a [Vec<f64>], &'a [Vec<f64>]);
+
 impl FMeasureMetric {
-    /// Creates a new F-measure metric with default beta=0.3.
+    /// Creates a new [`FMeasureMetric`] with default `beta = 0.3`.
+    #[must_use]
     pub fn new() -> Self {
-        Self {
-            state: NumericMetricState::default(),
-            beta: 0.3,
-            name: Arc::new("F-measure".to_owned()),
-            adaptive_fms: Vec::new(),
-            precision_curves: Vec::new(),
-            recall_curves: Vec::new(),
-            changeable_fms: Vec::new(),
-        }
+        FMeasureMetricConfig::new().init()
     }
 
-    /// Creates a new F-measure metric with custom beta parameter.
+    /// Creates a new [`FMeasureMetric`] from `config`.
+    #[must_use]
+    pub fn with_config(config: &FMeasureMetricConfig) -> Self {
+        config.init()
+    }
+
+    /// Creates a new [`FMeasureMetric`] with a custom `beta` parameter.
+    #[must_use]
     pub fn with_beta(beta: f64) -> Self {
-        Self {
-            state: NumericMetricState::default(),
-            beta,
-            name: Arc::new("F-measure".to_owned()),
-            adaptive_fms: Vec::new(),
-            precision_curves: Vec::new(),
-            recall_curves: Vec::new(),
-            changeable_fms: Vec::new(),
-        }
+        FMeasureMetricConfig::new().with_beta(beta).init()
     }
 
-    /// Calculates the current average adaptive F-measure.
-    fn adaptive_fm_value(&self) -> f64 {
+    /// Returns the mean adaptive F-measure across all recorded samples.
+    #[must_use]
+    pub fn adaptive_fm(&self) -> f64 {
         if self.adaptive_fms.is_empty() {
             return 0.0;
         }
-        self.adaptive_fms.iter().sum::<f64>() / self.adaptive_fms.len() as f64
+        self.adaptive_fms.iter().sum::<f64>() / usize_to_f64(self.adaptive_fms.len())
+    }
+
+    /// Returns stored per-sample precision, recall, and changeable F-measure curves.
+    #[must_use]
+    pub fn curves(&self) -> FMeasureCurves<'_> {
+        (
+            &self.precision_curves,
+            &self.recall_curves,
+            &self.changeable_fms,
+        )
     }
 }
 
@@ -81,7 +127,7 @@ impl Metric for FMeasureMetric {
     type Input = FMeasureInput;
 
     fn name(&self) -> Arc<String> {
-        self.name.clone()
+        Arc::clone(&self.name)
     }
 
     fn update(
@@ -90,42 +136,35 @@ impl Metric for FMeasureMetric {
         _metadata: &MetricMetadata,
     ) -> Result<SerializedEntry, TensorReadError> {
         let [batch_size, ..] = item.predictions.dims();
+        if batch_size > 0 {
+            let mut batch_adaptive_sum = 0.0;
+            for b in 0..batch_size {
+                let pred = extract_sample_3d(&item.predictions, b);
+                let gt = extract_sample_3d(&item.targets, b);
 
-        // Process each item in the batch
-        for b in 0..batch_size {
-            let pred: Tensor<3> = item
-                .predictions
-                .clone()
-                .slice(s![b..=b, .., .., ..])
-                .squeeze_dim::<3>(0);
-            let gt: Tensor<3> = item
-                .targets
-                .clone()
-                .slice(s![b..=b, .., .., ..])
-                .squeeze_dim::<3>(0);
+                let adaptive_fm = calculate_adaptive_fm(pred.clone(), gt.clone(), self.beta);
+                self.adaptive_fms.push(adaptive_fm);
+                batch_adaptive_sum += adaptive_fm;
 
-            // Calculate adaptive F-measure
-            let adaptive_fm = calculate_adaptive_fm(pred.clone(), gt.clone(), self.beta);
-            self.adaptive_fms.push(adaptive_fm);
+                let (precisions, recalls, changeable_fm) = calculate_pr_curves(pred, gt, self.beta);
+                self.precision_curves.push(precisions);
+                self.recall_curves.push(recalls);
+                self.changeable_fms.push(changeable_fm);
+            }
 
-            // Calculate precision-recall curves and changeable F-measure
-            let (precisions, recalls, changeable_fm) = calculate_pr_curves(pred, gt, self.beta);
-            self.precision_curves.push(precisions);
-            self.recall_curves.push(recalls);
-            self.changeable_fms.push(changeable_fm);
+            let batch_avg = batch_adaptive_sum / usize_to_f64(batch_size);
+            self.state.update(batch_avg, batch_size);
         }
 
-        let adaptive_value = self.adaptive_fm_value();
-        self.state.update(adaptive_value, batch_size);
         Ok(self
             .state
-            .compute_update(FormatOptions::new(self.name()).precision(5)))
+            .compute_update(FormatOptions::new(Arc::clone(&self.name)).precision(5)))
     }
 
     fn compute(&mut self) -> Result<SerializedEntry, TensorReadError> {
         Ok(self
             .state
-            .compute_final(FormatOptions::new(self.name()).precision(5)))
+            .compute_final(FormatOptions::new(Arc::clone(&self.name)).precision(5)))
     }
 
     fn attributes(&self) -> MetricAttributes {
@@ -147,7 +186,7 @@ impl Metric for FMeasureMetric {
 
 impl Numeric for FMeasureMetric {
     fn value(&self) -> Option<NumericEntry> {
-        Some(NumericEntry::Value(self.adaptive_fm_value()))
+        Some(self.state.current_value())
     }
 
     fn running_value(&self) -> Option<NumericEntry> {
@@ -159,28 +198,16 @@ impl Numeric for FMeasureMetric {
     }
 }
 
-/// Calculates adaptive F-measure for a single prediction-target pair.
-///
-/// Implements adaptive F-measure calculation from Python BiRefNet:
-/// 1. Calculate adaptive threshold as min(2 * mean(pred), 1.0)
-/// 2. Binarize prediction using adaptive threshold
-/// 3. Calculate precision and recall on foreground regions
-/// 4. Calculate F-measure using beta parameter
 fn calculate_adaptive_fm<const D: usize>(
     predictions: Tensor<D>,
     targets: Tensor<D>,
     beta: f64,
 ) -> f64 {
-    // Prepare data following Python _prepare_data function
     let (pred, gt) = prepare_data(predictions, targets);
 
-    // Calculate adaptive threshold: min(2 * pred.mean(), 1.0)
     let adaptive_threshold = (2.0 * pred.clone().mean().into_scalar::<f64>()).min(1.0);
-
-    // Binarize prediction using adaptive threshold
     let binary_pred = pred.greater_equal_elem(adaptive_threshold);
 
-    // Calculate area intersection (true positives on foreground regions)
     let gt_bool = gt.greater_elem(0.5);
     let intersection_count = binary_pred
         .clone()
@@ -193,40 +220,29 @@ fn calculate_adaptive_fm<const D: usize>(
         return 0.0;
     }
 
-    // Calculate precision and recall
     let pred_positive_count = binary_pred.int().sum().into_scalar::<f64>().max(1.0);
     let gt_positive_count = gt_bool.int().sum().into_scalar::<f64>().max(1.0);
 
     let precision = intersection_count / pred_positive_count;
     let recall = intersection_count / gt_positive_count;
 
-    // Calculate F-measure with beta weighting: (1 + beta) * precision * recall / (beta * precision + recall)
     (1.0 + beta) * precision * recall / beta.mul_add(precision, recall)
 }
 
-/// Calculates precision-recall curves and changeable F-measure.
-///
-/// Implements the histogram-based PR calculation from Python BiRefNet:
-/// - Create histograms for foreground and background pixels across 256 thresholds
-/// - Calculate cumulative true positives and false positives
-/// - Compute precision, recall, and F-measure curves
 fn calculate_pr_curves<const D: usize>(
     predictions: Tensor<D>,
     targets: Tensor<D>,
     beta: f64,
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-    // Prepare data following Python _prepare_data function
     let (pred, gt) = prepare_data(predictions, targets);
-
-    // Convert predictions to uint8 range for histogram calculation
     let pred_u8 = (pred * 255.0).clamp(0.0, 255.0);
     let gt_bool = gt.greater_elem(0.5);
+    let gt_positives = gt_bool.clone().int().sum().into_scalar::<f64>().max(1.0);
 
     let mut precisions = Vec::with_capacity(256);
     let mut recalls = Vec::with_capacity(256);
     let mut changeable_fms = Vec::with_capacity(256);
 
-    // Calculate metrics for each threshold (from 255 down to 0)
     for threshold in (0..256).rev() {
         let pred_thresh = pred_u8.clone().greater_equal_elem(f64::from(threshold));
 
@@ -237,12 +253,9 @@ fn calculate_pr_curves<const D: usize>(
             .sum()
             .into_scalar::<f64>();
         let pred_positives = pred_thresh.int().sum().into_scalar::<f64>().max(1.0);
-        let gt_positives = gt_bool.clone().int().sum().into_scalar::<f64>().max(1.0);
 
         let precision = tp / pred_positives;
         let recall = tp / gt_positives;
-
-        // Calculate F-measure with beta parameter
         let f_measure = if precision + recall > 0.0 {
             (1.0 + beta) * precision * recall / beta.mul_add(precision, recall)
         } else {
@@ -257,33 +270,8 @@ fn calculate_pr_curves<const D: usize>(
     (precisions, recalls, changeable_fms)
 }
 
-/// Prepares prediction and ground truth data following Python _prepare_data logic.
-fn prepare_data<const D: usize>(pred: Tensor<D>, gt: Tensor<D>) -> (Tensor<D>, Tensor<D>) {
-    // gt = gt > 128 (binary ground truth)
-    let gt_binary = gt.greater_elem(128).float();
-
-    // pred = pred / 255 (normalize predictions to [0, 1])
-    let pred_norm = pred.div_scalar(255.0);
-
-    // if pred.max() != pred.min(): pred = (pred - pred.min()) / (pred.max() - pred.min())
-    let pred_min = pred_norm.clone().min();
-    let pred_max = pred_norm.clone().max();
-    let range = pred_max - pred_min.clone();
-
-    let pred_final = if range.clone().greater_elem(1e-8).into_scalar::<bool>() {
-        // Normalize to [0, 1] if there's variation
-        let pred_min_scalar = pred_min.into_scalar::<f64>();
-        let range_scalar = range.into_scalar::<f64>();
-        (pred_norm - pred_min_scalar) / range_scalar
-    } else {
-        // Use as-is if all values are the same
-        pred_norm
-    };
-
-    (pred_final, gt_binary)
-}
-
-/// Public function for external use.
+/// Computes adaptive F-measure for a single 2D `[H, W]` prediction-target pair.
+#[must_use]
 pub fn calculate_f_measure(predictions: Tensor<2>, targets: Tensor<2>, beta: f64) -> f64 {
     calculate_adaptive_fm(predictions, targets, beta)
 }

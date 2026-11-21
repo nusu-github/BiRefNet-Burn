@@ -1,15 +1,11 @@
-//! BIoU (Boundary IoU) metric implementation for BiRefNet.
-//!
-//! This module implements the Boundary Intersection over Union metric used in BiRefNet
-//! for evaluating boundary-focused segmentation performance.
+//! Boundary Intersection over Union (`BIoU`) metric for `BiRefNet`.
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use birefnet_util::{StructuringElement, erosion};
-use burn::tensor::TensorReadError;
 use burn::{
     prelude::*,
-    tensor::Tensor,
+    tensor::TensorReadError,
     train::metric::{
         Metric, MetricAttributes, MetricMetadata, Numeric, NumericAttributes, NumericEntry,
         SerializedEntry,
@@ -17,43 +13,75 @@ use burn::{
     },
 };
 
-use super::input::BIoUInput;
+use crate::{
+    common::{extract_sample_3d, prepare_data, usize_to_f64},
+    input::BIoUInput,
+};
 
-// --- BIoU Metric ---
-
-/// Configuration for the BIoU metric.
+/// Configuration for [`BIoUMetric`].
 #[derive(Config, Debug)]
 pub struct BIoUMetricConfig {
-    /// Dilation ratio for boundary extraction (default: 0.02).
+    /// Display name for the metric.
+    #[config(default = "String::from(\"BIoU\")")]
+    pub name: String,
+    /// Boundary width fraction relative to image diagonal (`0.02` by default).
     #[config(default = 0.02)]
     pub dilation_ratio: f64,
 }
 
-/// BIoU metric.
-#[derive(Default, Clone)]
+impl Default for BIoUMetricConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BIoUMetricConfig {
+    /// Initializes a [`BIoUMetric`] from this configuration.
+    #[must_use]
+    pub fn init(&self) -> BIoUMetric {
+        BIoUMetric {
+            state: NumericMetricState::default(),
+            dilation_ratio: self.dilation_ratio,
+            name: Arc::new(self.name.clone()),
+        }
+    }
+}
+
+/// Boundary Intersection over Union (`BIoU`) metric.
+#[derive(Clone)]
 pub struct BIoUMetric {
     state: NumericMetricState,
     dilation_ratio: f64,
     name: Arc<String>,
 }
 
+impl fmt::Debug for BIoUMetric {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BIoUMetric")
+            .field("name", &self.name)
+            .field("dilation_ratio", &self.dilation_ratio)
+            .field("value", &self.value())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for BIoUMetric {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BIoUMetric {
-    /// Creates a new BIoU metric.
+    /// Creates a new [`BIoUMetric`] with default `dilation_ratio = 0.02`.
+    #[must_use]
     pub fn new() -> Self {
-        Self {
-            state: NumericMetricState::default(),
-            dilation_ratio: 0.02,
-            name: Arc::new("BIoU".to_owned()),
-        }
+        BIoUMetricConfig::new().init()
     }
 
-    /// Creates a new BIoU metric with custom configuration.
-    pub fn with_config(config: BIoUMetricConfig) -> Self {
-        Self {
-            state: NumericMetricState::default(),
-            dilation_ratio: config.dilation_ratio,
-            name: Arc::new("BIoU".to_owned()),
-        }
+    /// Creates a new [`BIoUMetric`] from `config`.
+    #[must_use]
+    pub fn with_config(config: &BIoUMetricConfig) -> Self {
+        config.init()
     }
 }
 
@@ -61,7 +89,7 @@ impl Metric for BIoUMetric {
     type Input = BIoUInput;
 
     fn name(&self) -> Arc<String> {
-        self.name.clone()
+        Arc::clone(&self.name)
     }
 
     fn update(
@@ -70,39 +98,26 @@ impl Metric for BIoUMetric {
         _metadata: &MetricMetadata,
     ) -> Result<SerializedEntry, TensorReadError> {
         let [batch_size, ..] = item.predictions.dims();
-
-        let mut total_biou_curves = Vec::new();
-
-        // Process each item in the batch
-        for b in 0..batch_size {
-            let pred: Tensor<3> = item
-                .predictions
-                .clone()
-                .slice(s![b..=b, .., .., ..])
-                .squeeze_dim::<3>(0);
-            let gt: Tensor<3> = item
-                .targets
-                .clone()
-                .slice(s![b..=b, .., .., ..])
-                .squeeze_dim::<3>(0);
-
-            let biou_curve = calculate_biou_curve(pred, gt, self.dilation_ratio);
-            total_biou_curves.push(biou_curve);
+        if batch_size > 0 {
+            let mut total_biou_curves = Vec::with_capacity(batch_size);
+            for b in 0..batch_size {
+                let pred = extract_sample_3d(&item.predictions, b);
+                let gt = extract_sample_3d(&item.targets, b);
+                total_biou_curves.push(calculate_biou_curve(pred, gt, self.dilation_ratio));
+            }
+            let avg_biou = average_biou_curves(&total_biou_curves);
+            self.state.update(avg_biou, batch_size);
         }
 
-        // Average the curves across the batch
-        let avg_biou = average_biou_curves(total_biou_curves);
-
-        self.state.update(avg_biou, batch_size);
         Ok(self
             .state
-            .compute_update(FormatOptions::new(self.name()).precision(5)))
+            .compute_update(FormatOptions::new(Arc::clone(&self.name)).precision(5)))
     }
 
     fn compute(&mut self) -> Result<SerializedEntry, TensorReadError> {
         Ok(self
             .state
-            .compute_final(FormatOptions::new(self.name()).precision(5)))
+            .compute_final(FormatOptions::new(Arc::clone(&self.name)).precision(5)))
     }
 
     fn attributes(&self) -> MetricAttributes {
@@ -132,157 +147,95 @@ impl Numeric for BIoUMetric {
     }
 }
 
-/// Calculates BIoU curve for a single prediction-target pair.
-///
-/// Implements the boundary IoU calculation from Python BiRefNet:
-/// 1. Apply _prepare_data to normalize inputs
-/// 2. Extract boundaries using mask_to_boundary
-/// 3. Calculate IoU curves across thresholds
-///
-/// # Arguments
-/// * `predictions` - Predictions with shape `[channels, height, width]` or `[height, width]`.
-/// * `targets` - Ground truth with shape `[channels, height, width]` or `[height, width]`.
-/// * `dilation_ratio` - Dilation ratio for boundary extraction.
-///
-/// # Returns
-/// Vector of IoU values across thresholds (256 values).
 fn calculate_biou_curve(
     predictions: Tensor<3>,
     targets: Tensor<3>,
     dilation_ratio: f64,
 ) -> Vec<f64> {
-    // Prepare data following Python _prepare_data function
     let (pred, gt) = prepare_data(predictions, targets);
 
-    // Convert predictions to boundary representation
-    let pred_boundary = mask_to_boundary(pred.mul_scalar(255.0), dilation_ratio);
-    let gt_boundary = mask_to_boundary(gt.mul_scalar(255.0), dilation_ratio);
+    let pred_boundary = mask_to_boundary(pred, dilation_ratio);
+    let gt_boundary = mask_to_boundary(gt, dilation_ratio);
 
-    // Calculate BIoU curves across 256 thresholds
     calculate_biou_histogram_curves(pred_boundary, gt_boundary)
 }
 
-/// Prepares prediction and ground truth data following Python _prepare_data logic.
-fn prepare_data(pred: Tensor<3>, gt: Tensor<3>) -> (Tensor<3>, Tensor<3>) {
-    // gt = gt > 128 (binary ground truth)
-    let gt_binary = gt.greater_elem(128).float();
-
-    // pred = pred / 255 (normalize predictions to [0, 1])
-    let pred_norm = pred.div_scalar(255.0);
-
-    // if pred.max() != pred.min(): pred = (pred - pred.min()) / (pred.max() - pred.min())
-    let pred_min = pred_norm.clone().min();
-    let pred_max = pred_norm.clone().max();
-    let range = pred_max - pred_min.clone();
-
-    let pred_final = if range.clone().greater_elem(1e-8).into_scalar::<bool>() {
-        // Normalize to [0, 1] if there's variation
-        let pred_min_scalar = pred_min.into_scalar::<f64>();
-        let range_scalar = range.into_scalar::<f64>();
-        (pred_norm - pred_min_scalar) / range_scalar
-    } else {
-        // Use as-is if all values are the same
-        pred_norm
-    };
-
-    (pred_final, gt_binary)
-}
-
-/// Extracts boundary from mask using morphological operations.
-///
-/// Implements mask_to_boundary function from Python BiRefNet:
-/// 1. Calculate dilation based on image diagonal and dilation_ratio
-/// 2. Apply erosion to get inner mask
-/// 3. Subtract to get boundary
 fn mask_to_boundary(mask: Tensor<3>, dilation_ratio: f64) -> Tensor<3> {
     let [_c, h, w] = mask.dims();
     let device = mask.device();
 
-    // Calculate dilation based on image diagonal
-    let img_diag = (h as f64).hypot(w as f64);
-    let dilation = (dilation_ratio * img_diag).round() as usize;
-    let dilation = dilation.max(1);
+    let img_diag = usize_to_f64(h).hypot(usize_to_f64(w));
+    let dilation_f64 = (dilation_ratio.max(0.0) * img_diag).round();
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "dilation_f64 is non-negative and clamped to [1.0, img_diag]"
+    )]
+    let dilation = (dilation_f64.clamp(1.0, img_diag.max(1.0)) as usize).max(1);
 
-    // Convert to 4D tensor for morphology operations [batch, channel, height, width]
     let mask_4d = mask.clone().unsqueeze_dim(0);
-
-    // Create disk structuring element
     let disk_kernel = StructuringElement::disk(dilation, &device);
+    let eroded = erosion(mask_4d, &disk_kernel).squeeze_dim::<3>(0);
 
-    // Apply erosion
-    let eroded_4d = erosion(mask_4d, &disk_kernel);
-
-    // Convert back to 3D
-    let eroded = eroded_4d.squeeze_dim::<3>(0);
-
-    // Boundary = original - eroded
     mask - eroded
 }
 
-/// Calculates BIoU histogram curves across 256 thresholds.
-///
-/// Implements the histogram-based curve calculation from Python BIoUMeasure:
-/// - Create 256 threshold bins from 0 to 255
-/// - Calculate true positives and false positives for each threshold
-/// - Compute IoU = TP / (T + FP) where T is total ground truth positives
 fn calculate_biou_histogram_curves(pred_boundary: Tensor<3>, gt_boundary: Tensor<3>) -> Vec<f64> {
-    // Convert to uint8 range for histogram calculation
     let pred_u8 = pred_boundary.mul_scalar(255.0).clamp(0.0, 255.0);
-    let gt_binary = gt_boundary.greater_elem(128);
+    let gt_binary = gt_boundary.greater_elem(0.5);
+    let gt_total = gt_binary.clone().int().sum().into_scalar::<f64>();
+    let gt_not = gt_binary.clone().bool_not();
 
-    // Calculate histograms for 256 bins (0-255)
-    let mut ious = Vec::with_capacity(256);
-
-    for threshold in 0..256 {
+    let mut ious = Vec::with_capacity(255);
+    for threshold in 0..255 {
         let pred_thresh = pred_u8.clone().greater_elem(f64::from(threshold));
-        let tp = pred_thresh.clone().bool_and(gt_binary.clone()).int().sum();
-        let fp = pred_thresh
-            .bool_and(gt_binary.clone().bool_not())
+        let tp = pred_thresh
+            .clone()
+            .bool_and(gt_binary.clone())
             .int()
-            .sum();
-        let t = gt_binary.clone().int().sum();
+            .sum()
+            .into_scalar::<f64>();
+        let fp = pred_thresh
+            .bool_and(gt_not.clone())
+            .int()
+            .sum()
+            .into_scalar::<f64>();
 
-        let tp_val = tp.into_scalar::<f64>();
-        let fp_val = fp.into_scalar::<f64>();
-        let t_val = t.into_scalar::<f64>().max(1.0); // Avoid division by zero
-
-        let iou = tp_val / (t_val + fp_val);
-        ious.push(iou);
+        let denom = (gt_total + fp).max(1.0);
+        ious.push(tp / denom);
     }
 
     ious
 }
 
-/// Averages BIoU curves across a batch.
-fn average_biou_curves(curves: Vec<Vec<f64>>) -> f64 {
+fn average_biou_curves(curves: &[Vec<f64>]) -> f64 {
     if curves.is_empty() {
         return 0.0;
     }
 
     let curve_len = curves[0].len();
-    let mut avg_curve = vec![0.0; curve_len];
+    if curve_len == 0 {
+        return 0.0;
+    }
 
-    for curve in &curves {
-        for (i, &val) in curve.iter().enumerate() {
-            avg_curve[i] += val;
+    let mut avg_curve = vec![0.0; curve_len];
+    for curve in curves {
+        for (idx, &val) in curve.iter().enumerate() {
+            avg_curve[idx] += val;
         }
     }
 
-    let batch_size = curves.len() as f64;
-    for val in &mut avg_curve {
-        *val /= batch_size;
-    }
-
-    // Return the mean of the averaged curve
-    avg_curve.iter().sum::<f64>() / curve_len as f64
+    let batch_size = usize_to_f64(curves.len());
+    avg_curve.iter().map(|val| val / batch_size).sum::<f64>() / usize_to_f64(curve_len)
 }
 
-/// Public function for external use.
+/// Computes mean Boundary IoU across 255 thresholds for a single 2D `[H, W]` pair.
+#[must_use]
 pub fn calculate_biou(predictions: Tensor<2>, targets: Tensor<2>, dilation_ratio: f64) -> f64 {
-    // Convert 2D to 3D for internal processing
-    let pred_3d = predictions.unsqueeze_dim(0);
-    let gt_3d = targets.unsqueeze_dim(0);
-
-    let curve = calculate_biou_curve(pred_3d, gt_3d, dilation_ratio);
-    curve.iter().sum::<f64>() / curve.len() as f64
+    let curve = calculate_biou_curve(
+        predictions.unsqueeze_dim(0),
+        targets.unsqueeze_dim(0),
+        dilation_ratio,
+    );
+    curve.iter().sum::<f64>() / usize_to_f64(curve.len())
 }

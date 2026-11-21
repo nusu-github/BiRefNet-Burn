@@ -1,7 +1,4 @@
-//! Atrous Spatial Pyramid Pooling (ASPP) modules for BiRefNet.
-//!
-//! This module provides standard and deformable ASPP implementations that capture
-//! multi-scale contextual information for semantic segmentation tasks.
+//! Atrous Spatial Pyramid Pooling (`ASPP`) and deformable `ASPP` modules for `BiRefNet`.
 
 use burn::{
     nn::{
@@ -14,26 +11,24 @@ use burn::{
 
 use super::{DeformableConv2d, decoder_blocks::NormLayer, utils::intelligent_interpolate};
 use crate::{
-    config::InterpolationStrategy, error::BiRefNetResult,
+    config::InterpolationStrategy, error::ModelError,
     models::modules::deform_conv::DeformableConv2dConfig,
 };
 
-/// Configuration for the individual ASPP module branch.
 #[derive(Config, Debug)]
-pub struct _ASPPModuleConfig {
+struct AsppBranchConfig {
     in_channels: usize,
     planes: usize,
     kernel_size: usize,
     padding: usize,
     dilation: usize,
-    /// Batch size for conditional BatchNorm usage.
     #[config(default = "4")]
     batch_size: usize,
 }
 
-impl _ASPPModuleConfig {
-    /// Creates a new `_ASPPModule` following Burn conventions.
-    pub fn init(&self, device: &Device) -> _ASPPModule {
+impl AsppBranchConfig {
+    #[must_use]
+    fn init(&self, device: &Device) -> AsppBranch {
         let atrous_conv = Conv2dConfig::new(
             [self.in_channels, self.planes],
             [self.kernel_size, self.kernel_size],
@@ -52,7 +47,7 @@ impl _ASPPModuleConfig {
         let bn = NormLayer::new(self.planes, self.batch_size, device);
         let relu = Relu::new();
 
-        _ASPPModule {
+        AsppBranch {
             atrous_conv,
             bn,
             relu,
@@ -60,70 +55,34 @@ impl _ASPPModuleConfig {
     }
 }
 
-/// ASPP module branch sequential block matching PyTorch _ASPPModule structure.
-///
-/// Corresponds to PyTorch's _ASPPModule:
-/// ```python
-/// self.atrous_conv = nn.Conv2d(in_channels, planes, kernel_size, stride=1, padding=padding, dilation=dilation, bias=False)
-/// self.bn = nn.BatchNorm2d(planes) if config.batch_size > 1 else nn.Identity()
-/// self.relu = nn.ReLU(inplace=True)
-/// ```
-///
-/// # Shapes
-///   - input: `[batch_size, in_channels, height, width]`  
-///   - output: `[batch_size, planes, height, width]`
 #[derive(Module, Debug)]
-pub struct _ASPPModule {
-    /// Component 0: Conv2d with atrous/dilation
+struct AsppBranch {
     atrous_conv: Conv2d,
-    /// Component 1: BatchNorm2d or Identity (conditional)
     bn: NormLayer,
-    /// Component 2: ReLU(inplace=True)
     relu: Relu,
 }
 
-impl _ASPPModule {
-    /// Sequential forward pass matching PyTorch _ASPPModule.
-    pub fn forward(&self, x: Tensor<4>) -> Tensor<4> {
-        // Component 0: Atrous convolution
+impl AsppBranch {
+    #[must_use]
+    fn forward(&self, x: Tensor<4>) -> Tensor<4> {
         let x = self.atrous_conv.forward(x);
-        // Component 1: Conditional normalization
         let x = self.bn.forward(x);
-        // Component 2: ReLU activation
         self.relu.forward(x)
     }
 }
 
-/// Global average pooling sequential block matching PyTorch nn.Sequential structure.
-///
-/// Corresponds to PyTorch's:
-/// ```python
-/// nn.Sequential(
-///     nn.AdaptiveAvgPool2d((1, 1)),
-///     nn.Conv2d(in_channels, inter_channels, 1, stride=1, bias=False),
-///     nn.BatchNorm2d(inter_channels) if config.batch_size > 1 else nn.Identity(),
-///     nn.ReLU(inplace=True)
-/// )
-/// ```
+/// Global average pooling branch matching the `ASPP` sequential block layout.
 #[derive(Module, Debug)]
-pub struct GlobalAvgPool {
-    /// Component 0: AdaptiveAvgPool2d((1, 1))
+struct GlobalAvgPool {
     pool: AdaptiveAvgPool2d,
-    /// Component 1: Conv2d(in_channels, inter_channels, 1)
     conv: Conv2d,
-    /// Component 2: BatchNorm2d or Identity
     bn: NormLayer,
-    /// Component 3: ReLU(inplace=True)
     relu: Relu,
 }
 
 impl GlobalAvgPool {
-    pub fn new(
-        in_channels: usize,
-        out_channels: usize,
-        batch_size: usize,
-        device: &Device,
-    ) -> Self {
+    #[must_use]
+    fn new(in_channels: usize, out_channels: usize, batch_size: usize, device: &Device) -> Self {
         let pool = AdaptiveAvgPool2dConfig::new([1, 1]).init();
         let conv = Conv2dConfig::new([in_channels, out_channels], [1, 1])
             .with_stride([1, 1])
@@ -140,7 +99,8 @@ impl GlobalAvgPool {
         }
     }
 
-    pub fn forward(&self, x: Tensor<4>) -> Tensor<4> {
+    #[must_use]
+    fn forward(&self, x: Tensor<4>) -> Tensor<4> {
         let x = self.pool.forward(x);
         let x = self.conv.forward(x);
         let x = self.bn.forward(x);
@@ -148,19 +108,19 @@ impl GlobalAvgPool {
     }
 }
 
-/// Configuration for the main ASPP module.
+/// Configuration for [`ASPP`].
 #[derive(Config, Debug)]
 pub struct ASPPConfig {
     /// Number of input channels.
     #[config(default = "64")]
     in_channels: usize,
-    /// Number of output channels. Defaults to `in_channels`.
+    /// Number of output channels; defaults to `in_channels`.
     #[config(default = "None")]
     out_channels: Option<usize>,
-    /// The output stride of the backbone.
+    /// Output stride of the encoder (`8` or `16`).
     #[config(default = "16")]
     output_stride: usize,
-    /// Batch size for conditional BatchNorm usage.
+    /// Batch size for conditional `BatchNorm` usage.
     #[config(default = "4")]
     batch_size: usize,
     /// Interpolation strategy for tensor resizing operations.
@@ -168,27 +128,29 @@ pub struct ASPPConfig {
 }
 
 impl ASPPConfig {
-    /// Initializes a new `ASPP` module.
-    pub fn init(&self, device: &Device) -> ASPP {
+    /// Initializes a new [`ASPP`] module.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError`] if `output_stride` is neither `8` nor `16`.
+    pub fn init(&self, device: &Device) -> Result<ASPP, ModelError> {
         let out_channels = self.out_channels.unwrap_or(self.in_channels);
-        let in_channelster = 256; // Equivalent to PyTorch's self.in_channelster = 256 // self.down_scale
+        let in_channelster = 256;
 
-        // Determine dilations based on output_stride
-        let dilations = if self.output_stride == 16 {
-            [1, 6, 12, 18]
-        } else if self.output_stride == 8 {
-            [1, 12, 24, 36]
-        } else {
-            panic!(
-                "Unsupported output_stride: {}. Only 8 and 16 are supported.",
-                self.output_stride
-            );
+        let dilations = match self.output_stride {
+            16 => [1, 6, 12, 18],
+            8 => [1, 12, 24, 36],
+            other => {
+                return Err(ModelError::invalid_config(format!(
+                    "unsupported ASPP output_stride {other}; expected 8 or 16"
+                )));
+            }
         };
 
-        let aspp1 = _ASPPModuleConfig::new(self.in_channels, in_channelster, 1, 0, dilations[0])
+        let aspp1 = AsppBranchConfig::new(self.in_channels, in_channelster, 1, 0, dilations[0])
             .with_batch_size(self.batch_size)
             .init(device);
-        let aspp2 = _ASPPModuleConfig::new(
+        let aspp2 = AsppBranchConfig::new(
             self.in_channels,
             in_channelster,
             3,
@@ -197,7 +159,7 @@ impl ASPPConfig {
         )
         .with_batch_size(self.batch_size)
         .init(device);
-        let aspp3 = _ASPPModuleConfig::new(
+        let aspp3 = AsppBranchConfig::new(
             self.in_channels,
             in_channelster,
             3,
@@ -206,7 +168,7 @@ impl ASPPConfig {
         )
         .with_batch_size(self.batch_size)
         .init(device);
-        let aspp4 = _ASPPModuleConfig::new(
+        let aspp4 = AsppBranchConfig::new(
             self.in_channels,
             in_channelster,
             3,
@@ -216,11 +178,9 @@ impl ASPPConfig {
         .with_batch_size(self.batch_size)
         .init(device);
 
-        // Global average pooling sequential branch
         let global_avg_pool =
             GlobalAvgPool::new(self.in_channels, in_channelster, self.batch_size, device);
 
-        // Final convolution
         let conv1 = Conv2dConfig::new([in_channelster * 5, out_channels], [1, 1])
             .with_bias(false)
             .init(device);
@@ -228,9 +188,7 @@ impl ASPPConfig {
         let relu = Relu::new();
         let dropout = DropoutConfig::new(0.5).init();
 
-        let interpolation_strategy = self.interpolation_strategy.clone();
-
-        ASPP {
+        Ok(ASPP {
             aspp1,
             aspp2,
             aspp3,
@@ -240,65 +198,53 @@ impl ASPPConfig {
             bn1,
             relu,
             dropout,
-            interpolation_strategy,
-        }
+            interpolation_strategy: self.interpolation_strategy,
+        })
     }
 }
 
-/// Atrous Spatial Pyramid Pooling (ASPP) module matching PyTorch structure.
-///
-/// Contains 4 parallel ASPP branches (aspp1-4) + 1 global avg pool branch,
-/// followed by feature fusion and final processing.
+/// Atrous Spatial Pyramid Pooling (`ASPP`) module.
 ///
 /// # Shapes
-///   - input: `[batch_size, in_channels, height, width]`
-///   - output: `[batch_size, out_channels, height, width]`
+/// - input: `[batch_size, in_channels, height, width]`
+/// - output: `[batch_size, out_channels, height, width]`
 #[derive(Module, Debug)]
+#[expect(
+    clippy::upper_case_acronyms,
+    reason = "established deep-learning acronym matching BiRefNet public API"
+)]
 pub struct ASPP {
-    aspp1: _ASPPModule,
-    aspp2: _ASPPModule,
-    aspp3: _ASPPModule,
-    aspp4: _ASPPModule,
-    /// Branch 5: Global average pooling sequential block (nn.Sequential in PyTorch)
+    aspp1: AsppBranch,
+    aspp2: AsppBranch,
+    aspp3: AsppBranch,
+    aspp4: AsppBranch,
     global_avg_pool: GlobalAvgPool,
     conv1: Conv2d,
     bn1: NormLayer,
     relu: Relu,
     dropout: Dropout,
-    /// Interpolation strategy for tensor resizing operations.
     #[module(skip)]
     interpolation_strategy: InterpolationStrategy,
 }
 
 impl ASPP {
-    /// Forward pass through the ASPP module.
+    /// Computes multi-scale atrous spatial pyramid features.
     ///
     /// # Shapes
-    /// * `x` - Input tensor: `[batch_size, channels, height, width]`
-    /// * Returns - Multi-scale feature tensor: `[batch_size, out_channels, height, width]`
-    ///
-    /// # Arguments
-    /// * `x` - Input feature map from the backbone encoder
-    ///
-    /// # Returns
-    /// Enhanced feature map combining multiple atrous convolution scales and global context
+    /// - `x`: `[batch_size, in_channels, height, width]`
+    /// - returns: `[batch_size, out_channels, height, width]`
+    #[must_use]
     pub fn forward(&self, x: Tensor<4>) -> Tensor<4> {
         let x1 = self.aspp1.forward(x.clone());
         let x2 = self.aspp2.forward(x.clone());
         let x3 = self.aspp3.forward(x.clone());
         let x4 = self.aspp4.forward(x.clone());
 
-        // Global average pooling sequential branch
         let x5 = self.global_avg_pool.forward(x);
-
-        // Interpolate to match x1 size using intelligent interpolation
         let [_, _, d3, d4] = x1.dims();
-        let x5 = intelligent_interpolate(x5, [d3, d4], &self.interpolation_strategy);
+        let x5 = intelligent_interpolate(x5, [d3, d4], self.interpolation_strategy);
 
-        // Concatenate all branches
         let x = Tensor::cat(vec![x1, x2, x3, x4, x5], 1);
-
-        // Final convolution
         let x = self.conv1.forward(x);
         let x = self.bn1.forward(x);
         let x = self.relu.forward(x);
@@ -307,84 +253,64 @@ impl ASPP {
     }
 }
 
-/// Configuration for the deformable ASPP module branch.
 #[derive(Config, Debug)]
-pub struct _ASPPModuleDeformableConfig {
+struct AsppDeformableBranchConfig {
     in_channels: usize,
     planes: usize,
     kernel_size: usize,
     padding: usize,
-    /// Batch size for conditional BatchNorm usage.
     #[config(default = "4")]
     batch_size: usize,
 }
 
-impl _ASPPModuleDeformableConfig {
-    /// Creates a new `_ASPPModuleDeformable` following Burn conventions.
-    pub fn init(&self, device: &Device) -> BiRefNetResult<_ASPPModuleDeformable> {
+impl AsppDeformableBranchConfig {
+    #[must_use]
+    fn init(&self, device: &Device) -> AsppDeformableBranch {
         let atrous_conv = DeformableConv2dConfig::new(self.in_channels, self.planes)
             .with_kernel_size(self.kernel_size)
             .with_stride(1)
             .with_padding(self.padding)
             .with_bias(false)
-            .init(device)?;
+            .init(device);
         let bn = NormLayer::new(self.planes, self.batch_size, device);
         let relu = Relu::new();
-        Ok(_ASPPModuleDeformable {
+        AsppDeformableBranch {
             atrous_conv,
             bn,
             relu,
-        })
+        }
     }
 }
 
-/// Deformable ASPP module branch sequential block matching PyTorch _ASPPModuleDeformable structure.
-///
-/// Corresponds to PyTorch's _ASPPModuleDeformable:
-/// ```python
-/// self.atrous_conv = DeformableConv2d(in_channels, planes, kernel_size, stride=1, padding=padding, bias=False)
-/// self.bn = nn.BatchNorm2d(planes) if config.batch_size > 1 else nn.Identity()
-/// self.relu = nn.ReLU(inplace=True)
-/// ```
-///
-/// # Shapes
-///   - input: `[batch_size, in_channels, height, width]`  
-///   - output: `[batch_size, planes, height, width]`
 #[derive(Module, Debug)]
-pub struct _ASPPModuleDeformable {
-    /// Component 0: DeformableConv2d
+struct AsppDeformableBranch {
     atrous_conv: DeformableConv2d,
-    /// Component 1: BatchNorm2d or Identity (conditional)
     bn: NormLayer,
-    /// Component 2: ReLU(inplace=True)
     relu: Relu,
 }
 
-impl _ASPPModuleDeformable {
-    /// Sequential forward pass matching PyTorch _ASPPModuleDeformable.
-    pub fn forward(&self, x: Tensor<4>) -> Tensor<4> {
-        // Component 0: Deformable convolution
+impl AsppDeformableBranch {
+    #[must_use]
+    fn forward(&self, x: Tensor<4>) -> Tensor<4> {
         let x = self.atrous_conv.forward(x);
-        // Component 1: Conditional normalization
         let x = self.bn.forward(x);
-        // Component 2: ReLU activation
         self.relu.forward(x)
     }
 }
 
-/// Configuration for the `ASPPDeformable` module.
+/// Configuration for [`ASPPDeformable`].
 #[derive(Config, Debug)]
 pub struct ASPPDeformableConfig {
     /// Number of input channels.
     #[config(default = "64")]
     in_channels: usize,
-    /// Number of output channels. Defaults to `in_channels`.
+    /// Number of output channels; defaults to `in_channels`.
     #[config(default = "None")]
     out_channels: Option<usize>,
-    /// Kernel sizes for the parallel deformable convolution blocks.
+    /// Kernel sizes for the parallel deformable convolution branches.
     #[config(default = "[1, 3, 7]")]
     parallel_block_sizes: [usize; 3],
-    /// Batch size for conditional BatchNorm usage.
+    /// Batch size for conditional `BatchNorm` usage.
     #[config(default = "4")]
     batch_size: usize,
     /// Interpolation strategy for tensor resizing operations.
@@ -392,19 +318,20 @@ pub struct ASPPDeformableConfig {
 }
 
 impl ASPPDeformableConfig {
-    /// Initializes a new `ASPPDeformable` module.
-    pub fn init(&self, device: &Device) -> BiRefNetResult<ASPPDeformable> {
+    /// Initializes a new [`ASPPDeformable`] module.
+    #[must_use]
+    pub fn init(&self, device: &Device) -> ASPPDeformable {
         let out_channels = self.out_channels.unwrap_or(self.in_channels);
         let in_channelster = 256;
 
-        let aspp1 = _ASPPModuleDeformableConfig::new(self.in_channels, in_channelster, 1, 0)
+        let aspp1 = AsppDeformableBranchConfig::new(self.in_channels, in_channelster, 1, 0)
             .with_batch_size(self.batch_size)
-            .init(device)?;
+            .init(device);
         let aspp_deforms = self
             .parallel_block_sizes
             .iter()
             .map(|&conv_size| {
-                _ASPPModuleDeformableConfig::new(
+                AsppDeformableBranchConfig::new(
                     self.in_channels,
                     in_channelster,
                     conv_size,
@@ -413,7 +340,7 @@ impl ASPPDeformableConfig {
                 .with_batch_size(self.batch_size)
                 .init(device)
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect();
 
         let global_avg_pool =
             GlobalAvgPool::new(self.in_channels, in_channelster, self.batch_size, device);
@@ -430,9 +357,7 @@ impl ASPPDeformableConfig {
         let relu = Relu::new();
         let dropout = DropoutConfig::new(0.5).init();
 
-        let interpolation_strategy = self.interpolation_strategy.clone();
-
-        Ok(ASPPDeformable {
+        ASPPDeformable {
             aspp1,
             aspp_deforms,
             global_avg_pool,
@@ -440,32 +365,32 @@ impl ASPPDeformableConfig {
             bn1,
             relu,
             dropout,
-            interpolation_strategy,
-        })
+            interpolation_strategy: self.interpolation_strategy,
+        }
     }
 }
 
-/// ASPP module with Deformable Convolutions matching PyTorch structure.
+/// Atrous Spatial Pyramid Pooling (`ASPP`) module with deformable convolutions.
 ///
 /// # Shapes
-///   - input: `[batch_size, in_channels, height, width]`
-///   - output: `[batch_size, out_channels, height, width]`
+/// - input: `[batch_size, in_channels, height, width]`
+/// - output: `[batch_size, out_channels, height, width]`
 #[derive(Module, Debug)]
 pub struct ASPPDeformable {
-    aspp1: _ASPPModuleDeformable,
-    aspp_deforms: Vec<_ASPPModuleDeformable>,
-    /// Global average pooling sequential block (nn.Sequential in PyTorch)
+    aspp1: AsppDeformableBranch,
+    aspp_deforms: Vec<AsppDeformableBranch>,
     global_avg_pool: GlobalAvgPool,
     conv1: Conv2d,
     bn1: NormLayer,
     relu: Relu,
     dropout: Dropout,
-    /// Interpolation strategy for tensor resizing operations.
     #[module(skip)]
     interpolation_strategy: InterpolationStrategy,
 }
 
 impl ASPPDeformable {
+    /// Applies multi-scale deformable `ASPP` branches and fuses them via `1x1` convolution.
+    #[must_use]
     pub fn forward(&self, x: Tensor<4>) -> Tensor<4> {
         let x1 = self.aspp1.forward(x.clone());
         let x_aspp_deforms = self
@@ -475,11 +400,12 @@ impl ASPPDeformable {
             .collect::<Vec<_>>();
         let x5 = self.global_avg_pool.forward(x);
         let [_, _, d3, d4] = x1.dims();
-        let x5 = intelligent_interpolate(x5, [d3, d4], &self.interpolation_strategy);
-        let mut x_ = vec![x1];
-        x_.extend(x_aspp_deforms);
-        x_.push(x5);
-        let x = Tensor::cat(x_, 1);
+        let x5 = intelligent_interpolate(x5, [d3, d4], self.interpolation_strategy);
+        let mut branches = Vec::with_capacity(2 + x_aspp_deforms.len());
+        branches.push(x1);
+        branches.extend(x_aspp_deforms);
+        branches.push(x5);
+        let x = Tensor::cat(branches, 1);
 
         let x = self.conv1.forward(x);
         let x = self.bn1.forward(x);

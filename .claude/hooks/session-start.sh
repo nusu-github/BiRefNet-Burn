@@ -34,7 +34,7 @@ if [ -n "$LLVM_VERSION" ] && [ "$(uname -m)" = "x86_64" ]; then
   for f in linux-x64.checksums.json linux-x64.tar.xz; do
     [ -s "$cache/tracel-llvm-${LLVM_VERSION}-$f" ] || \
       curl -fsSL --retry 3 -o "$cache/tracel-llvm-${LLVM_VERSION}-$f" "$base/$f" || \
-      echo "warning: could not prefetch $f; `cpu` backend builds may fail" >&2
+      echo "warning: could not prefetch $f; 'cpu' backend builds may fail" >&2
   done
 fi
 

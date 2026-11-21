@@ -1,302 +1,185 @@
-//! Improved Image processing utilities with better error handling and performance
+//! Image file/byte I/O, decoding, encoding, and tensor conversion helpers.
 
-use std::path::Path;
+use std::{
+    fs::File,
+    io::{BufRead, BufReader, Cursor, Seek},
+    path::Path,
+};
 
 use burn::tensor::{Device, Tensor, TensorData};
 use image::{
-    DynamicImage, GenericImageView, ImageBuffer, ImageFormat, Luma, Rgb, Rgba,
+    DynamicImage, GenericImageView, ImageBuffer, ImageFormat, ImageReader, Luma, Rgb, Rgba,
     buffer::ConvertBuffer, imageops::FilterType,
 };
-use thiserror::Error;
 
-/// ImageError covers all possible errors in image processing operations
-#[derive(Debug, Error)]
-pub enum ImageError {
-    #[error("failed to open image at '{path}': {source}")]
-    ImageLoadError {
-        path: String,
-        #[source]
-        source: image::ImageError,
-    },
+use crate::{error::UtilError, normalize::apply_imagenet_normalization};
 
-    #[error("failed to convert tensor to data: {reason}")]
-    TensorConversionError { reason: String },
-
-    #[error("failed to create image buffer: {reason}")]
-    BufferCreationError { reason: String },
-
-    #[error("batch size mismatch: expected 1, got {actual}")]
-    InvalidBatchSize { actual: usize },
-
-    #[error(
-        "unsupported image format: is_mask={is_mask}, channels={channels}. Expected: (true, 1), (false, 3), or (false, 4)"
-    )]
-    UnsupportedImageFormat { is_mask: bool, channels: usize },
-
-    #[error(
-        "dimension mismatch between image and mask: image={}x{}, mask={}x{}",
-        image_height,
-        image_width,
-        mask_height,
-        mask_width
-    )]
-    DimensionMismatch {
-        image_height: usize,
-        image_width: usize,
-        mask_height: usize,
-        mask_width: usize,
-    },
-
-    #[error("batch size mismatch between tensors: image={image_batch}, mask={mask_batch}")]
-    BatchSizeMismatch {
-        image_batch: usize,
-        mask_batch: usize,
-    },
-
-    #[error("invalid channel count: expected 3 for image, got {actual}")]
-    InvalidImageChannels { actual: usize },
-
-    #[error("invalid channel count: expected 1 for mask, got {actual}")]
-    InvalidMaskChannels { actual: usize },
-
-    #[error("data length mismatch: expected {expected}, got {actual}")]
-    DataLengthMismatch { expected: usize, actual: usize },
-
-    #[error("unsupported channel count: {channels} (supported: 1, 3, 4)")]
-    UnsupportedChannelCount { channels: usize },
-
-    #[error("empty path list provided for batch processing")]
-    EmptyPathList,
-
-    #[error(
-        "image {index} has dimensions {actual_height}x{actual_width}, expected {expected_height}x{expected_width}"
-    )]
-    InconsistentImageDimensions {
-        index: usize,
-        actual_height: usize,
-        actual_width: usize,
-        expected_height: usize,
-        expected_width: usize,
-    },
-
-    #[error("failed to load image {index} at '{path}': {source}")]
-    BatchLoadError {
-        index: usize,
-        path: String,
-        #[source]
-        source: Box<ImageError>,
-    },
-}
-
-/// Result type alias for ImageError
-pub type ImageResult<T> = Result<T, ImageError>;
-
-/// ImageNet normalization constants: Mean
-pub const IMAGENET_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
-/// ImageNet normalization constants: Std
-pub const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
-
-/// Load image from file and convert to tensor with improved error handling
+/// Loads and decodes an image file on disk into `[1, 3, H, W]` normalized to `[0.0, 1.0]`.
 ///
-/// # Arguments
-/// * `path` - Path to the image file
-/// * `device` - Device to create tensor on
+/// # Errors
 ///
-/// # Returns
-/// Tensor of shape [1, 3, height, width] with values in range [0, 1]
-pub fn load_image<P: AsRef<Path>>(path: P, device: &Device) -> ImageResult<Tensor<4>> {
-    let path_str = path.as_ref().display().to_string();
-    let img = image::open(&path).map_err(|source| ImageError::ImageLoadError {
-        path: path_str,
-        source,
-    })?;
-
+/// Returns [`UtilError`] if opening or decoding `path` fails.
+pub fn load_image(path: impl AsRef<Path>, device: &Device) -> Result<Tensor<4>, UtilError> {
+    let path_ref = path.as_ref();
+    let file =
+        File::open(path_ref).map_err(|err| UtilError::io(Some(path_ref.to_path_buf()), err))?;
+    let reader = BufReader::new(file);
+    let guessed = ImageReader::new(reader)
+        .with_guessed_format()
+        .map_err(|err| UtilError::io(Some(path_ref.to_path_buf()), err))?;
+    let img = guessed
+        .decode()
+        .map_err(|err| UtilError::image(Some(path_ref.to_path_buf()), err))?;
     dynamic_image_to_tensor(img, device)
 }
 
-/// Convert DynamicImage to tensor
-pub fn dynamic_image_to_tensor(img: DynamicImage, device: &Device) -> ImageResult<Tensor<4>> {
-    let (width, height) = img.dimensions();
-
-    // Use efficient direct f64 conversion for all formats
-    // Always convert to RGB32F for consistent float handling
-    let rgb_img = img.into_rgb32f();
-    let buf = rgb_img.into_raw();
-
-    let data = TensorData::new(buf, [height as usize, width as usize, 3]);
-    let tensor = Tensor::from_data(data, device);
-
-    // Permute to [channels, height, width] and add batch dimension
-    Ok(tensor.permute([2, 0, 1]).unsqueeze::<4>())
+/// Decodes an image from any seekable buffered reader into `[1, 3, H, W]` in `[0.0, 1.0]`.
+///
+/// If `format` is `None`, the format is guessed from stream magic bytes.
+///
+/// # Errors
+///
+/// Returns [`UtilError`] if reading or decoding the stream fails.
+pub fn load_image_from_reader<R: BufRead + Seek>(
+    reader: R,
+    format: Option<ImageFormat>,
+    device: &Device,
+) -> Result<Tensor<4>, UtilError> {
+    let image_reader = match format {
+        Some(fmt) => ImageReader::with_format(reader, fmt),
+        None => ImageReader::new(reader).with_guessed_format()?,
+    };
+    let img = image_reader.decode()?;
+    dynamic_image_to_tensor(img, device)
 }
 
-/// Convert tensor to DynamicImage with improved type safety
+/// Decodes encoded image bytes in memory into `[1, 3, H, W]` in `[0.0, 1.0]`.
 ///
-/// # Arguments
-/// * `tensor` - Tensor of shape [batch, channels, height, width]
-/// * `is_mask` - Whether the tensor is a mask (single channel)
-pub fn tensor_to_dynamic_image(tensor: Tensor<4>, is_mask: bool) -> ImageResult<DynamicImage> {
+/// # Errors
+///
+/// Returns [`UtilError`] if format guessing or decoding fails.
+pub fn decode_image_bytes(bytes: &[u8], device: &Device) -> Result<Tensor<4>, UtilError> {
+    load_image_from_reader(Cursor::new(bytes), None, device)
+}
+
+/// Converts a [`DynamicImage`] into an RGB float tensor `[1, 3, H, W]` with values in `[0.0, 1.0]`.
+///
+/// # Errors
+///
+/// Currently infallible; returns [`Result`] for symmetry with decoding APIs.
+pub fn dynamic_image_to_tensor(img: DynamicImage, device: &Device) -> Result<Tensor<4>, UtilError> {
+    let (width, height) = img.dimensions();
+    let raw = img.into_rgb32f().into_raw();
+    let data = TensorData::new(raw, [height as usize, width as usize, 3]);
+    Ok(Tensor::from_data(data, device)
+        .permute([2, 0, 1])
+        .unsqueeze::<4>())
+}
+
+/// Converts a `[1, C, H, W]` tensor (`C = 1` if `is_mask`, else `C = 3 | 4`) into a [`DynamicImage`].
+///
+/// # Errors
+///
+/// Returns [`UtilError`] if `batch != 1`, channel count disagrees with `is_mask`, or host extraction fails.
+pub fn tensor_to_dynamic_image(
+    tensor: Tensor<4>,
+    is_mask: bool,
+) -> Result<DynamicImage, UtilError> {
     let [batch, channels, height, width] = tensor.dims();
-
     if batch != 1 {
-        return Err(ImageError::InvalidBatchSize { actual: batch });
+        return Err(UtilError::invalid_dimensions(format!(
+            "tensor_to_dynamic_image expects batch size 1, got {batch}"
+        )));
+    }
+    if !matches!((is_mask, channels), (true, 1) | (false, 3 | 4)) {
+        return Err(UtilError::invalid_input(format!(
+            "unsupported channel count {channels} for is_mask={is_mask}"
+        )));
     }
 
-    // Validate channel count early
-    match (is_mask, channels) {
-        (true, 1) | (false, 3 | 4) => {}
-        _ => {
-            return Err(ImageError::UnsupportedImageFormat { is_mask, channels });
-        }
-    }
-
-    // Remove batch dimension (a plain `squeeze` would also drop a single mask channel)
-    // and permute to HWC
-    let tensor = tensor.squeeze_dim::<3>(0).permute([1, 2, 0]);
-
-    // Read back as f32 whatever the device float dtype is
-    let data = tensor.into_data().try_into_vec_as::<f32>().map_err(|e| {
-        ImageError::TensorConversionError {
-            reason: format!("{:#?}", e),
-        }
+    let width_u32 = u32::try_from(width).map_err(|_err| {
+        UtilError::invalid_dimensions(format!("image width {width} exceeds u32::MAX"))
+    })?;
+    let height_u32 = u32::try_from(height).map_err(|_err| {
+        UtilError::invalid_dimensions(format!("image height {height} exceeds u32::MAX"))
     })?;
 
-    // Create f64 ImageBuffer first, then convert to u8 using ConvertBuffer trait
-    let img = match (is_mask, channels) {
+    let hwc = tensor.squeeze_dim::<3>(0).permute([1, 2, 0]);
+    let data = hwc.into_data().try_into_vec_as::<f32>().map_err(|err| {
+        UtilError::invalid_input(format!("failed to read tensor as f32: {err:?}"))
+    })?;
+
+    match (is_mask, channels) {
         (true, 1) => {
-            let f64_buffer =
-                ImageBuffer::<Luma<f32>, _>::from_raw(width as u32, height as u32, data)
-                    .ok_or_else(|| ImageError::BufferCreationError {
-                        reason: "Failed to create grayscale f32 image buffer".to_string(),
-                    })?;
-            let u8_buffer: ImageBuffer<Luma<u8>, Vec<u8>> = f64_buffer.convert();
-            DynamicImage::ImageLuma8(u8_buffer)
+            let f32_buf = ImageBuffer::<Luma<f32>, _>::from_raw(width_u32, height_u32, data)
+                .ok_or_else(|| {
+                    UtilError::invalid_dimensions(
+                        "failed to construct Luma<f32> buffer from tensor",
+                    )
+                })?;
+            let u8_buf: ImageBuffer<Luma<u8>, Vec<u8>> = f32_buf.convert();
+            Ok(DynamicImage::ImageLuma8(u8_buf))
         }
         (false, 3) => {
-            let f64_buffer =
-                ImageBuffer::<Rgb<f32>, _>::from_raw(width as u32, height as u32, data)
-                    .ok_or_else(|| ImageError::BufferCreationError {
-                        reason: "Failed to create RGB f32 image buffer".to_string(),
-                    })?;
-            let u8_buffer: ImageBuffer<Rgb<u8>, Vec<u8>> = f64_buffer.convert();
-            DynamicImage::ImageRgb8(u8_buffer)
+            let f32_buf = ImageBuffer::<Rgb<f32>, _>::from_raw(width_u32, height_u32, data)
+                .ok_or_else(|| {
+                    UtilError::invalid_dimensions("failed to construct Rgb<f32> buffer from tensor")
+                })?;
+            let u8_buf: ImageBuffer<Rgb<u8>, Vec<u8>> = f32_buf.convert();
+            Ok(DynamicImage::ImageRgb8(u8_buf))
         }
         (false, 4) => {
-            let f64_buffer =
-                ImageBuffer::<Rgba<f32>, _>::from_raw(width as u32, height as u32, data)
-                    .ok_or_else(|| ImageError::BufferCreationError {
-                        reason: "Failed to create RGBA f32 image buffer".to_string(),
-                    })?;
-            let u8_buffer: ImageBuffer<Rgba<u8>, Vec<u8>> = f64_buffer.convert();
-            DynamicImage::ImageRgba8(u8_buffer)
+            let f32_buf = ImageBuffer::<Rgba<f32>, _>::from_raw(width_u32, height_u32, data)
+                .ok_or_else(|| {
+                    UtilError::invalid_dimensions(
+                        "failed to construct Rgba<f32> buffer from tensor",
+                    )
+                })?;
+            let u8_buf: ImageBuffer<Rgba<u8>, Vec<u8>> = f32_buf.convert();
+            Ok(DynamicImage::ImageRgba8(u8_buf))
         }
-        _ => unreachable!("Already validated above"),
-    };
-
-    Ok(img)
+        _ => unreachable!("channel/mask combination already validated"),
+    }
 }
 
-/// Apply segmentation mask to image with improved validation
+/// Loads an image file, resizes it to `(width, height)`, and converts to `[1, 3, H, W]` in `[0.0, 1.0]`.
 ///
-/// # Arguments
-/// * `image` - Original image tensor [batch, 3, height, width]
-/// * `mask` - Segmentation mask tensor [batch, 1, height, width]
+/// # Errors
 ///
-/// # Returns
-/// RGBA image tensor [batch, 4, height, width] with alpha channel from mask
-pub fn apply_mask(image: Tensor<4>, mask: Tensor<4>) -> ImageResult<Tensor<4>> {
-    let image_dims = image.dims();
-    let mask_dims = mask.dims();
-    let [batch, channels, height, width] = image_dims;
-    let [mask_batch, mask_channels, mask_height, mask_width] = mask_dims;
-
-    // Comprehensive dimension validation
-    if batch != mask_batch {
-        return Err(ImageError::BatchSizeMismatch {
-            image_batch: batch,
-            mask_batch,
-        });
-    }
-    if height != mask_height || width != mask_width {
-        return Err(ImageError::DimensionMismatch {
-            image_height: height,
-            image_width: width,
-            mask_height,
-            mask_width,
-        });
-    }
-    if channels != 3 {
-        return Err(ImageError::InvalidImageChannels { actual: channels });
-    }
-    if mask_channels != 1 {
-        return Err(ImageError::InvalidMaskChannels {
-            actual: mask_channels,
-        });
-    }
-
-    // Concatenate image and mask to create RGBA
-    Ok(Tensor::cat(vec![image, mask], 1))
-}
-
-/// Resize image with improved error handling and performance
-///
-/// # Arguments
-/// * `path` - Path to input image
-/// * `target_size` - Target size (width, height)
-/// * `filter` - Resize filter type
-/// * `device` - Device to create tensor on
-///
-/// # Returns
-/// Resized tensor of shape [1, 3, height, width]
-pub fn resize_image_file<P: AsRef<Path>>(
-    path: P,
+/// Returns [`UtilError`] if file reading or image decoding fails.
+pub fn resize_image_file(
+    path: impl AsRef<Path>,
     target_size: (u32, u32),
     filter: FilterType,
     device: &Device,
-) -> ImageResult<Tensor<4>> {
-    let path_str = path.as_ref().display().to_string();
-    let img = image::open(&path).map_err(|source| ImageError::ImageLoadError {
-        path: path_str,
-        source,
-    })?;
-
+) -> Result<Tensor<4>, UtilError> {
+    let path_ref = path.as_ref();
+    let img =
+        image::open(path_ref).map_err(|err| UtilError::image(Some(path_ref.to_path_buf()), err))?;
     let resized = img.resize_exact(target_size.0, target_size.1, filter);
     dynamic_image_to_tensor(resized, device)
 }
 
-/// Create tensor from raw pixel data with validation and optimized conversion
+/// Converts interleaved `u8` pixel data `[H, W, C]` (`C` in `1 | 3 | 4`) to `[1, C, H, W]` in `[0.0, 1.0]`.
 ///
-/// # Arguments
-/// * `data` - Raw pixel data (RGB or RGBA, u8 values 0-255)
-/// * `width` - Image width
-/// * `height` - Image height
-/// * `channels` - Number of channels (3 for RGB, 4 for RGBA)
-/// * `device` - Device to create tensor on
+/// # Errors
 ///
-/// # Returns
-/// Tensor of shape [1, channels, height, width] with values normalized to [0,1]
+/// Returns [`UtilError`] on dimension overflow, buffer length mismatch, or unsupported channel count.
 pub fn from_raw_pixels(
     data: Vec<u8>,
     width: u32,
     height: u32,
     channels: usize,
     device: &Device,
-) -> ImageResult<Tensor<4>> {
+) -> Result<Tensor<4>, UtilError> {
     from_raw_pixels_with_normalization(data, width, height, channels, device, true)
 }
 
-/// Create tensor from raw pixel data with optional normalization
+/// Converts interleaved `u8` pixels `[H, W, C]` (`C` in `1 | 3 | 4`) to `[1, C, H, W]`, optionally dividing by `255.0`.
 ///
-/// # Arguments
-/// * `data` - Raw pixel data (width * height * channels bytes)
-/// * `width` - Image width
-/// * `height` - Image height
-/// * `channels` - Number of channels (1, 3, or 4)
-/// * `device` - Device to create tensor on
-/// * `normalize` - Whether to normalize u8 values to [0,1] range
+/// # Errors
 ///
-/// # Returns
-/// Tensor of shape [1, channels, height, width]
+/// Returns [`UtilError`] on dimension overflow, buffer length mismatch, or unsupported channel count.
 pub fn from_raw_pixels_with_normalization(
     data: Vec<u8>,
     width: u32,
@@ -304,484 +187,151 @@ pub fn from_raw_pixels_with_normalization(
     channels: usize,
     device: &Device,
     normalize: bool,
-) -> ImageResult<Tensor<4>> {
-    let expected_len = (width * height) as usize * channels;
-    if data.len() != expected_len {
-        return Err(ImageError::DataLengthMismatch {
-            expected: expected_len,
-            actual: data.len(),
-        });
-    }
+) -> Result<Tensor<4>, UtilError> {
+    const INV_255: f32 = 1.0 / 255.0;
 
     if !matches!(channels, 1 | 3 | 4) {
-        return Err(ImageError::UnsupportedChannelCount { channels });
+        return Err(UtilError::invalid_input(format!(
+            "unsupported channel count {channels}; expected 1, 3, or 4"
+        )));
     }
 
-    // More efficient conversion using iterator adaptors
-    let normalized_data: Vec<f64> = if normalize {
-        // Use const to avoid repeated division
-        const INV_255: f64 = 1.0 / 255.0;
-        data.into_iter()
-            .map(|byte| f64::from(byte) * INV_255)
-            .collect()
-    } else {
-        data.into_iter().map(f64::from).collect()
-    };
-
-    // `from_data` converts to the device's default float dtype
-    let tensor_data = TensorData::new(normalized_data, [height as usize, width as usize, channels]);
-
-    let tensor = Tensor::from_data(tensor_data, device);
-    Ok(tensor.permute([2, 0, 1]).unsqueeze::<4>())
-}
-
-/// Batch process multiple images efficiently
-///
-/// # Arguments
-/// * `paths` - Vector of image paths
-/// * `device` - Device to create tensors on
-///
-/// # Returns
-/// Tensor of shape [batch_size, 3, height, width]
-pub fn load_image_batch<P: AsRef<Path> + Send + Sync>(
-    paths: &[P],
-    device: &Device,
-) -> ImageResult<Tensor<4>> {
-    if paths.is_empty() {
-        return Err(ImageError::EmptyPathList);
-    }
-
-    // Load first image to get expected dimensions
-    let first_tensor = load_image(&paths[0], device).map_err(|e| ImageError::BatchLoadError {
-        index: 0,
-        path: paths[0].as_ref().display().to_string(),
-        source: Box::new(e),
-    })?;
-    let [_, _, expected_height, expected_width] = first_tensor.dims();
-
-    let mut tensors = Vec::with_capacity(paths.len());
-    tensors.push(first_tensor.squeeze_dim::<3>(0));
-
-    // Process remaining images
-    for (i, path) in paths.iter().enumerate().skip(1) {
-        let tensor = load_image(path, device).map_err(|e| ImageError::BatchLoadError {
-            index: i,
-            path: path.as_ref().display().to_string(),
-            source: Box::new(e),
+    let width_usize = usize::try_from(width)
+        .map_err(|_err| UtilError::invalid_dimensions("width exceeds addressable usize range"))?;
+    let height_usize = usize::try_from(height)
+        .map_err(|_err| UtilError::invalid_dimensions("height exceeds addressable usize range"))?;
+    let expected_len = width_usize
+        .checked_mul(height_usize)
+        .and_then(|pixels| pixels.checked_mul(channels))
+        .ok_or_else(|| {
+            UtilError::invalid_dimensions(format!(
+                "pixel buffer dimensions {width}x{height}x{channels} overflow usize"
+            ))
         })?;
 
-        let [_, _, height, width] = tensor.dims();
-        if height != expected_height || width != expected_width {
-            return Err(ImageError::InconsistentImageDimensions {
-                index: i,
-                actual_height: height,
-                actual_width: width,
-                expected_height,
-                expected_width,
-            });
-        }
-
-        tensors.push(tensor.squeeze_dim::<3>(0));
+    if data.len() != expected_len {
+        return Err(UtilError::invalid_dimensions(format!(
+            "pixel buffer length {} does not match expected {expected_len}",
+            data.len()
+        )));
     }
 
-    Ok(Tensor::stack(tensors, 0))
+    let floats: Vec<f32> = if normalize {
+        data.into_iter()
+            .map(|byte| f32::from(byte) * INV_255)
+            .collect()
+    } else {
+        data.into_iter().map(f32::from).collect()
+    };
+
+    let tensor_data = TensorData::new(floats, [height_usize, width_usize, channels]);
+    Ok(Tensor::from_data(tensor_data, device)
+        .permute([2, 0, 1])
+        .unsqueeze::<4>())
 }
 
-/// Apply ImageNet normalization to a tensor
+/// Loads all image paths into a single `[B, 3, H, W]` batch in `[0.0, 1.0]`.
 ///
-/// # Arguments
-/// * `tensor` - Input tensor of shape [batch, 3, height, width] with values in [0, 1]
+/// # Errors
 ///
-/// # Returns
-/// Tensor with ImageNet normalization applied: (pixel - mean) / std
-pub fn apply_imagenet_normalization(tensor: Tensor<4>) -> ImageResult<Tensor<4>> {
-    let [_, channels, ..] = tensor.dims();
-
-    if channels != 3 {
-        return Err(ImageError::InvalidImageChannels { actual: channels });
-    }
-
-    let device = tensor.device();
-
-    // Create mean and std tensors with shape [1, 3, 1, 1] for broadcasting
-    let mean_tensor = Tensor::<4>::from_data(
-        TensorData::new(IMAGENET_MEAN.to_vec(), [1, 3, 1, 1]),
-        &device,
-    );
-    let std_tensor = Tensor::<4>::from_data(
-        TensorData::new(IMAGENET_STD.to_vec(), [1, 3, 1, 1]),
-        &device,
-    );
-
-    // Apply normalization: (tensor - mean) / std
-    let normalized = tensor.sub(mean_tensor).div(std_tensor);
-
-    Ok(normalized)
-}
-
-/// Load image from file and convert to tensor with ImageNet normalization
-///
-/// # Arguments
-/// * `path` - Path to the image file
-/// * `device` - Device to create tensor on
-///
-/// # Returns
-/// Tensor of shape [1, 3, height, width] with ImageNet normalization applied
-pub fn load_image_with_imagenet_normalization<P: AsRef<Path>>(
-    path: P,
+/// Returns [`UtilError`] if `paths` is empty, any file fails to load, or spatial sizes differ across images.
+pub fn load_image_batch<P: AsRef<Path>>(
+    paths: &[P],
     device: &Device,
-) -> ImageResult<Tensor<4>> {
-    // First load image with standard [0, 1] normalization
-    let tensor = load_image(path, device)?;
+) -> Result<Tensor<4>, UtilError> {
+    if paths.is_empty() {
+        return Err(UtilError::invalid_input(
+            "cannot load batch from an empty path list",
+        ));
+    }
 
-    // Then apply ImageNet normalization
-    apply_imagenet_normalization(tensor)
+    let first = load_image(&paths[0], device)?;
+    let [_, _, expected_h, expected_w] = first.dims();
+
+    let mut items = Vec::with_capacity(paths.len());
+    items.push(first.squeeze_dim::<3>(0));
+
+    for (idx, path) in paths.iter().enumerate().skip(1) {
+        let tensor = load_image(path, device)?;
+        let [_, _, height, width] = tensor.dims();
+        if height != expected_h || width != expected_w {
+            return Err(UtilError::invalid_dimensions(format!(
+                "image[{idx}] has size {height}x{width}, expected {expected_h}x{expected_w}"
+            )));
+        }
+        items.push(tensor.squeeze_dim::<3>(0));
+    }
+
+    Ok(Tensor::stack(items, 0))
 }
 
-/// Convert DynamicImage to tensor with ImageNet normalization
+/// Loads an image file and applies ImageNet channel normalization `(x - mean) / std`.
 ///
-/// # Arguments
-/// * `img` - Input image
-/// * `device` - Device to create tensor on
+/// # Errors
 ///
-/// # Returns
-/// Tensor of shape [1, 3, height, width] with ImageNet normalization applied
+/// Returns [`UtilError`] if loading or decoding fails.
+pub fn load_image_with_imagenet_normalization(
+    path: impl AsRef<Path>,
+    device: &Device,
+) -> Result<Tensor<4>, UtilError> {
+    apply_imagenet_normalization(load_image(path, device)?)
+}
+
+/// Converts a [`DynamicImage`] to `[1, 3, H, W]` and applies ImageNet channel normalization.
+///
+/// # Errors
+///
+/// Returns [`UtilError`] if conversion or normalization fails.
 pub fn dynamic_image_to_tensor_with_imagenet_normalization(
     img: DynamicImage,
     device: &Device,
-) -> ImageResult<Tensor<4>> {
-    // First convert to standard [0, 1] tensor
-    let tensor = dynamic_image_to_tensor(img, device)?;
-
-    // Then apply ImageNet normalization
-    apply_imagenet_normalization(tensor)
+) -> Result<Tensor<4>, UtilError> {
+    apply_imagenet_normalization(dynamic_image_to_tensor(img, device)?)
 }
 
-/// Batch process multiple images with ImageNet normalization
+/// Loads a batch of equally sized images and applies ImageNet channel normalization.
 ///
-/// # Arguments
-/// * `paths` - Vector of image paths
-/// * `device` - Device to create tensors on
+/// # Errors
 ///
-/// # Returns
-/// Tensor of shape [batch_size, 3, height, width] with ImageNet normalization applied
-pub fn load_image_batch_with_imagenet_normalization<P: AsRef<Path> + Send + Sync>(
+/// Returns [`UtilError`] if `paths` is empty, loading fails, or dimensions differ across the batch.
+pub fn load_image_batch_with_imagenet_normalization<P: AsRef<Path>>(
     paths: &[P],
     device: &Device,
-) -> ImageResult<Tensor<4>> {
-    // First load batch with standard [0, 1] normalization
-    let tensor = load_image_batch(paths, device)?;
-
-    // Then apply ImageNet normalization
-    apply_imagenet_normalization(tensor)
+) -> Result<Tensor<4>, UtilError> {
+    apply_imagenet_normalization(load_image_batch(paths, device)?)
 }
 
-/// Check if a file extension is supported by the image crate
-///
-/// # Arguments
-/// * `extension` - File extension to check (with or without leading dot)
-///
-/// # Returns
-/// * `bool` - true if the extension is supported for reading
+/// Returns `true` if `extension` (with or without leading `.`) is enabled for decoding in this build.
+#[must_use]
 pub fn is_extension_supported(extension: &str) -> bool {
     let ext = extension.trim_start_matches('.');
-    ImageFormat::from_extension(ext).is_some()
+    ImageFormat::from_extension(ext)
+        .as_ref()
+        .is_some_and(ImageFormat::reading_enabled)
 }
 
-/// Check if a file path has a supported image format extension
-///
-/// # Arguments
-/// * `path` - Path to check
-///
-/// # Returns
-/// * `bool` - true if the file extension is supported
-pub fn is_supported_image_format<P: AsRef<Path>>(path: P) -> bool {
+/// Returns `true` if `path` has a file extension enabled for decoding in this build.
+#[must_use]
+pub fn is_supported_image_format(path: impl AsRef<Path>) -> bool {
     path.as_ref()
         .extension()
         .and_then(|ext| ext.to_str())
-        .map(is_extension_supported)
-        .unwrap_or(false)
+        .is_some_and(is_extension_supported)
 }
 
-/// Get a list of commonly supported image extensions
-///
-/// This returns extensions that are typically supported by the image crate.
-/// For definitive support checking, use `is_extension_supported()`.
-///
-/// # Returns
-/// * `Vec<&'static str>` - Vector of supported file extensions
-pub fn get_common_image_extensions() -> Vec<&'static str> {
-    const COMMON_EXTENSIONS: &[&str] = &[
-        "jpg", "jpeg", "png", "gif", "bmp", "ico", "tiff", "tif", "webp", "pnm", "pbm", "pgm",
-        "ppm", "pam", "dds", "tga", "hdr", "exr", "ff", "qoi", "avif",
-    ];
-
-    COMMON_EXTENSIONS
-        .iter()
-        .filter(|&ext| is_extension_supported(ext))
-        .copied()
+/// Returns file extensions associated with image formats enabled for reading in this build.
+#[must_use]
+pub fn common_image_extensions() -> Vec<&'static str> {
+    ImageFormat::all()
+        .filter(ImageFormat::reading_enabled)
+        .flat_map(|fmt| fmt.extensions_str().iter().copied())
         .collect()
 }
 
-/// Get all supported image formats from the image crate
-///
-/// # Returns
-/// * `Vec<ImageFormat>` - Vector of all supported ImageFormat variants
-pub fn get_supported_formats() -> Vec<ImageFormat> {
-    // Note: ImageFormat::all() method may not be available in all versions
-    // This is a fallback implementation that tests common formats
-    let formats_to_test = [
-        ImageFormat::Png,
-        ImageFormat::Jpeg,
-        ImageFormat::Gif,
-        ImageFormat::WebP,
-        ImageFormat::Bmp,
-        ImageFormat::Ico,
-        ImageFormat::Tiff,
-        ImageFormat::Tga,
-        ImageFormat::Dds,
-        ImageFormat::Hdr,
-        ImageFormat::Farbfeld,
-        ImageFormat::Avif,
-        ImageFormat::Qoi,
-    ];
-
-    formats_to_test
-        .into_iter()
-        .filter(|format| format.reading_enabled())
+/// Returns every [`ImageFormat`] enabled for reading in this build.
+#[must_use]
+pub fn supported_formats() -> Vec<ImageFormat> {
+    ImageFormat::all()
+        .filter(ImageFormat::reading_enabled)
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-
-    use super::*;
-
-    #[test]
-    fn from_raw_pixels_invalid_data_returns_error() {
-        let device = Device::flex();
-
-        // Test invalid data length
-        let result = from_raw_pixels(
-            vec![255_u8; 10], // Invalid length
-            2,
-            2,
-            3, // 2x2 RGB should need 12 bytes
-            &device,
-        );
-        assert!(matches!(
-            result.unwrap_err(),
-            ImageError::DataLengthMismatch { .. }
-        ));
-
-        // Test invalid channel count
-        let result = from_raw_pixels(
-            vec![255_u8; 8],
-            2,
-            2,
-            2, // Invalid channel count
-            &device,
-        );
-        assert!(matches!(
-            result.unwrap_err(),
-            ImageError::UnsupportedChannelCount { .. }
-        ));
-    }
-
-    #[test]
-    fn apply_mask_mismatched_dimensions_returns_error() {
-        let device = Device::flex();
-
-        // Create test tensors with mismatched dimensions
-        let image = Tensor::<4>::zeros([1, 3, 10, 10], &device);
-        let mask = Tensor::<4>::zeros([1, 1, 5, 5], &device); // Wrong size
-
-        let result = apply_mask(image, mask);
-        assert!(matches!(
-            result.unwrap_err(),
-            ImageError::DimensionMismatch { .. }
-        ));
-    }
-
-    #[test]
-    fn from_raw_pixels_with_normalization_works_correctly() {
-        let device = Device::flex();
-
-        // Test with normalization
-        let data = vec![0_u8, 127, 255]; // Should become [0.0, ~0.5, 1.0]
-        let result = from_raw_pixels_with_normalization(data, 1, 1, 3, &device, true);
-        assert!(result.is_ok());
-
-        // Test without normalization
-        let data = vec![0_u8, 127, 255]; // Should remain [0.0, 127.0, 255.0]
-        let result = from_raw_pixels_with_normalization(data, 1, 1, 3, &device, false);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn apply_mask_creates_rgba_tensor() {
-        let device = Device::flex();
-
-        let image = Tensor::<4>::zeros([1, 3, 10, 10], &device);
-        let mask = Tensor::<4>::ones([1, 1, 10, 10], &device);
-
-        let result = apply_mask(image, mask);
-        assert!(result.is_ok());
-
-        let rgba_tensor = result.unwrap();
-        let [batch, channels, height, width] = rgba_tensor.dims();
-        assert_eq!(batch, 1);
-        assert_eq!(channels, 4); // RGB + Alpha
-        assert_eq!(height, 10);
-        assert_eq!(width, 10);
-    }
-
-    #[test]
-    fn load_image_batch_empty_paths_returns_error() {
-        let device = Device::flex();
-        let empty_paths: Vec<&str> = vec![];
-
-        let result = load_image_batch::<_>(&empty_paths, &device);
-        assert!(matches!(result.unwrap_err(), ImageError::EmptyPathList));
-    }
-
-    #[test]
-    fn apply_imagenet_normalization_works_correctly() {
-        let device = Device::flex();
-
-        // Create a test tensor with shape [1, 3, 2, 2]
-        // Channel 0: ImageNet mean for R (0.485), then 1.0, 0.0, 0.5
-        // Channel 1: ImageNet mean for G (0.456), then 1.0, 0.0, 0.5
-        // Channel 2: ImageNet mean for B (0.406), then 1.0, 0.0, 0.5
-        let test_data: Vec<f32> = vec![
-            // Channel 0 (Red): should use mean=0.485, std=0.229
-            0.485, 1.0, 0.0, 0.5, // Channel 1 (Green): should use mean=0.456, std=0.224
-            0.456, 1.0, 0.0, 0.5, // Channel 2 (Blue): should use mean=0.406, std=0.225
-            0.406, 1.0, 0.0, 0.5,
-        ];
-
-        let tensor_data = TensorData::new(test_data, [1, 3, 2, 2]);
-        let tensor = Tensor::<4>::from_data(tensor_data, &device);
-
-        let normalized = apply_imagenet_normalization(tensor).unwrap();
-        let result_data = normalized.into_data().try_to_vec_as::<f32>().unwrap();
-
-        // Check that normalization was applied correctly for each channel
-        // Channel 0 (Red): mean=0.485, std=0.229
-        assert!((result_data[0] - 0.0).abs() < 1e-6); // (0.485 - 0.485) / 0.229 ≈ 0
-        assert!((result_data[1] - 2.2489).abs() < 1e-3); // (1.0 - 0.485) / 0.229 ≈ 2.2489
-        assert!((result_data[2] - (-2.1179)).abs() < 1e-3); // (0.0 - 0.485) / 0.229 ≈ -2.1179
-        assert!((result_data[3] - 0.0655).abs() < 1e-3); // (0.5 - 0.485) / 0.229 ≈ 0.0655
-
-        // Channel 1 (Green): mean=0.456, std=0.224
-        assert!((result_data[4] - 0.0).abs() < 1e-6); // (0.456 - 0.456) / 0.224 ≈ 0
-        assert!((result_data[5] - 2.4286).abs() < 1e-3); // (1.0 - 0.456) / 0.224 ≈ 2.4286
-        assert!((result_data[6] - (-2.0357)).abs() < 1e-3); // (0.0 - 0.456) / 0.224 ≈ -2.0357
-        assert!((result_data[7] - 0.1964).abs() < 1e-3); // (0.5 - 0.456) / 0.224 ≈ 0.1964
-
-        // Channel 2 (Blue): mean=0.406, std=0.225
-        assert!((result_data[8] - 0.0).abs() < 1e-6); // (0.406 - 0.406) / 0.225 ≈ 0
-        assert!((result_data[9] - 2.6400).abs() < 1e-3); // (1.0 - 0.406) / 0.225 ≈ 2.6400
-        assert!((result_data[10] - (-1.8044)).abs() < 1e-3); // (0.0 - 0.406) / 0.225 ≈ -1.8044
-        assert!((result_data[11] - 0.4178).abs() < 1e-3); // (0.5 - 0.406) / 0.225 ≈ 0.4178
-    }
-
-    #[test]
-    fn imagenet_normalization_constants_are_correct() {
-        // Verify that ImageNet constants match PyTorch values
-        assert_eq!(IMAGENET_MEAN, [0.485, 0.456, 0.406]);
-        assert_eq!(IMAGENET_STD, [0.229, 0.224, 0.225]);
-    }
-
-    #[test]
-    fn apply_imagenet_normalization_invalid_channels_returns_error() {
-        let device = Device::flex();
-
-        // Create tensor with wrong number of channels (4 instead of 3)
-        let tensor = Tensor::<4>::zeros([1, 4, 10, 10], &device);
-
-        let result = apply_imagenet_normalization(tensor);
-        assert!(matches!(
-            result.unwrap_err(),
-            ImageError::InvalidImageChannels { actual: 4 }
-        ));
-    }
-
-    #[test]
-    fn is_extension_supported_works_correctly() {
-        // Test common supported extensions
-        assert!(is_extension_supported("png"));
-        assert!(is_extension_supported("jpg"));
-        assert!(is_extension_supported("jpeg"));
-        assert!(is_extension_supported("gif"));
-
-        // Test with leading dot
-        assert!(is_extension_supported(".png"));
-        assert!(is_extension_supported(".jpg"));
-
-        // Test unsupported extensions
-        assert!(!is_extension_supported("txt"));
-        assert!(!is_extension_supported("pdf"));
-        assert!(!is_extension_supported("doc"));
-    }
-
-    #[test]
-    fn is_supported_image_format_works_correctly() {
-        // Test supported formats
-        assert!(is_supported_image_format("test.png"));
-        assert!(is_supported_image_format("test.jpg"));
-        assert!(is_supported_image_format("test.jpeg"));
-        assert!(is_supported_image_format("test.gif"));
-
-        // Test case insensitive
-        assert!(is_supported_image_format("test.PNG"));
-        assert!(is_supported_image_format("test.JPG"));
-
-        // Test unsupported formats
-        assert!(!is_supported_image_format("test.txt"));
-        assert!(!is_supported_image_format("test.pdf"));
-
-        // Test no extension
-        assert!(!is_supported_image_format("test"));
-
-        // Test complex paths
-        assert!(is_supported_image_format("/path/to/image.png"));
-        assert!(is_supported_image_format("./relative/path/image.jpg"));
-    }
-
-    #[test]
-    fn get_common_image_extensions_returns_valid_extensions() {
-        let extensions = get_common_image_extensions();
-
-        // Should contain at least some common formats
-        assert!(!extensions.is_empty());
-        assert!(extensions.contains(&"png"));
-        assert!(extensions.contains(&"jpg") || extensions.contains(&"jpeg"));
-
-        // All returned extensions should be supported
-        for ext in &extensions {
-            assert!(
-                is_extension_supported(ext),
-                "Extension '{}' should be supported",
-                ext
-            );
-        }
-    }
-
-    #[test]
-    fn get_supported_formats_returns_valid_formats() {
-        let formats = get_supported_formats();
-
-        // Should contain at least some formats
-        assert!(!formats.is_empty());
-
-        // All returned formats should have reading enabled
-        for format in &formats {
-            assert!(
-                format.reading_enabled(),
-                "Format {:?} should have reading enabled",
-                format
-            );
-        }
-    }
 }

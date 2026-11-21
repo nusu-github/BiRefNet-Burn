@@ -1,15 +1,10 @@
-//! Enhanced-alignment Measure (E-measure) metric for BiRefNet.
-//!
-//! E-measure evaluates the alignment between prediction and ground truth,
-//! considering both local and global similarities.
+//! Enhanced-alignment Measure (`EMeasure`) evaluation metric for `BiRefNet`.
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
-use burn::tensor::TensorReadError;
 use burn::{
-    config::Config,
     prelude::*,
-    tensor::{Bool, Tensor},
+    tensor::TensorReadError,
     train::metric::{
         Metric, MetricAttributes, MetricMetadata, Numeric, NumericAttributes, NumericEntry,
         SerializedEntry,
@@ -17,41 +12,47 @@ use burn::{
     },
 };
 
-/// Configuration for the E-measure metric.
-#[derive(Config, Debug)]
+use crate::{
+    common::{extract_sample_2d, prepare_data, usize_to_f64},
+    input::EMeasureInput,
+};
+
+/// Configuration for [`EMeasureMetric`].
+#[derive(Config, Debug, Default)]
 pub struct EMeasureMetricConfig {
-    /// Name of the metric (default: "E-measure").
+    /// Display name for the metric.
     #[config(default = "String::from(\"E_measure\")")]
-    name: String,
+    pub name: String,
 }
 
-/// E-measure metric input.
-#[derive(Debug, Clone)]
-pub struct EMeasureInput {
-    /// Predictions with shape `[batch_size, height, width]`.
-    pub predictions: Tensor<3>,
-    /// Ground truth with shape `[batch_size, height, width]`.
-    pub targets: Tensor<3>,
-}
-
-impl EMeasureInput {
-    /// Creates a new E-measure input.
-    pub const fn new(predictions: Tensor<3>, targets: Tensor<3>) -> Self {
-        Self {
-            predictions,
-            targets,
+impl EMeasureMetricConfig {
+    /// Initializes an [`EMeasureMetric`] from this configuration.
+    #[must_use]
+    pub fn init(&self) -> EMeasureMetric {
+        EMeasureMetric {
+            state: EMeasureState::default(),
+            numeric_state: NumericMetricState::default(),
+            name: Arc::new(self.name.clone()),
         }
     }
 }
 
-/// E-measure metric state.
-#[derive(Default, Clone)]
+/// Accumulated sample-level E-measure results across evaluation batches.
+#[derive(Debug, Default, Clone)]
 pub struct EMeasureState {
     adaptive_ems: Vec<f64>,
     changeable_ems: Vec<Vec<f64>>,
 }
 
-/// E-measure metric.
+impl EMeasureState {
+    /// Returns `(mean_adaptive_em, mean_changeable_em_curve)` over accumulated samples.
+    #[must_use]
+    pub fn results(&self) -> (f64, Vec<f64>) {
+        e_measure_results(self)
+    }
+}
+
+/// Enhanced-alignment Measure (`EMeasure`) metric combining adaptive and thresholded curves.
 #[derive(Clone)]
 pub struct EMeasureMetric {
     state: EMeasureState,
@@ -59,29 +60,39 @@ pub struct EMeasureMetric {
     name: Arc<String>,
 }
 
+impl fmt::Debug for EMeasureMetric {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EMeasureMetric")
+            .field("name", &self.name)
+            .field("state", &self.state)
+            .field("value", &self.value())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Default for EMeasureMetric {
     fn default() -> Self {
-        Self {
-            state: EMeasureState::default(),
-            numeric_state: NumericMetricState::default(),
-            name: Arc::new("E_measure".to_owned()),
-        }
+        Self::new()
     }
 }
 
 impl EMeasureMetric {
-    /// Creates a new E-measure metric.
+    /// Creates a new [`EMeasureMetric`] with default name `"E_measure"`.
+    #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        EMeasureMetricConfig::new().init()
     }
 
-    /// Creates a new E-measure metric with custom configuration.
-    pub fn with_config(config: EMeasureMetricConfig) -> Self {
-        Self {
-            state: EMeasureState::default(),
-            numeric_state: NumericMetricState::default(),
-            name: Arc::new(config.name),
-        }
+    /// Creates a new [`EMeasureMetric`] from `config`.
+    #[must_use]
+    pub fn with_config(config: &EMeasureMetricConfig) -> Self {
+        config.init()
+    }
+
+    /// Returns a reference to the accumulated [`EMeasureState`].
+    #[must_use]
+    pub const fn state(&self) -> &EMeasureState {
+        &self.state
     }
 }
 
@@ -89,48 +100,40 @@ impl Metric for EMeasureMetric {
     type Input = EMeasureInput;
 
     fn name(&self) -> Arc<String> {
-        self.name.clone()
+        Arc::clone(&self.name)
     }
 
     fn update(
         &mut self,
-        input: &Self::Input,
+        item: &Self::Input,
         _metadata: &MetricMetadata,
     ) -> Result<SerializedEntry, TensorReadError> {
-        let [batch_size, ..] = input.predictions.dims();
+        let [batch_size, ..] = item.predictions.dims();
+        if batch_size > 0 {
+            let mut batch_adaptive_sum = 0.0;
+            for b in 0..batch_size {
+                let pred = extract_sample_2d(&item.predictions, b);
+                let gt = extract_sample_2d(&item.targets, b);
 
-        for b in 0..batch_size {
-            let pred = input
-                .predictions
-                .clone()
-                .slice(s![b..=b, .., ..])
-                .squeeze_dims::<2>(&[0, 1]);
-            let gt = input
-                .targets
-                .clone()
-                .slice(s![b..=b, .., ..])
-                .squeeze_dims::<2>(&[0, 1]);
+                let (adaptive_em, changeable_em) = calculate_e_measure(pred, gt);
+                self.state.adaptive_ems.push(adaptive_em);
+                self.state.changeable_ems.push(changeable_em);
+                batch_adaptive_sum += adaptive_em;
+            }
 
-            let (adaptive_em, changeable_em) = calculate_e_measure(pred, gt);
-            self.state.adaptive_ems.push(adaptive_em);
-            self.state
-                .changeable_ems
-                .push(changeable_em.into_iter().collect());
+            let batch_avg = batch_adaptive_sum / usize_to_f64(batch_size);
+            self.numeric_state.update(batch_avg, batch_size);
         }
 
-        // Update numeric state with adaptive E-measure
-        let avg_adaptive_em =
-            self.state.adaptive_ems.iter().sum::<f64>() / self.state.adaptive_ems.len() as f64;
-        self.numeric_state.update(avg_adaptive_em, batch_size);
         Ok(self
             .numeric_state
-            .compute_update(FormatOptions::new(self.name.clone()).precision(5)))
+            .compute_update(FormatOptions::new(Arc::clone(&self.name)).precision(5)))
     }
 
     fn compute(&mut self) -> Result<SerializedEntry, TensorReadError> {
         Ok(self
             .numeric_state
-            .compute_final(FormatOptions::new(self.name.clone()).precision(5)))
+            .compute_final(FormatOptions::new(Arc::clone(&self.name)).precision(5)))
     }
 
     fn attributes(&self) -> MetricAttributes {
@@ -149,9 +152,7 @@ impl Metric for EMeasureMetric {
 
 impl Numeric for EMeasureMetric {
     fn value(&self) -> Option<NumericEntry> {
-        // Use the dedicated function to get E-measure results
-        let (adaptive_em, _changeable_ems) = get_e_measure_results(&self.state);
-        Some(NumericEntry::Value(adaptive_em))
+        Some(self.numeric_state.current_value())
     }
 
     fn running_value(&self) -> Option<NumericEntry> {
@@ -163,93 +164,43 @@ impl Numeric for EMeasureMetric {
     }
 }
 
-/// Calculates E-measure for a single prediction-target pair.
-///
-/// # Arguments
-/// * `predictions` - Predictions with shape `[height, width]`.
-/// * `targets` - Ground truth with shape `[height, width]`.
-///
-/// # Returns
-/// A tuple of (adaptive_em, changeable_em_curve).
+/// Calculates `(adaptive_em, changeable_em_curve)` for a 2D `[H, W]` pair.
+#[must_use]
 pub fn calculate_e_measure(predictions: Tensor<2>, targets: Tensor<2>) -> (f64, Vec<f64>) {
-    // Prepare data
-    let gt = targets.div_scalar(255.0).greater_equal_elem(0.5);
-
-    // Normalize predictions if needed
-    let min_val = predictions.clone().min();
-    let max_val = predictions.clone().max();
-    let range = max_val - min_val.clone();
-    let epsilon = 1e-8;
-
-    let pred = if range.clone().greater_elem(epsilon).into_scalar::<bool>() {
-        let min_scalar = min_val.into_scalar::<f64>();
-        let range_scalar = range.into_scalar::<f64>();
-        predictions.sub_scalar(min_scalar).div_scalar(range_scalar)
-    } else {
-        predictions
-    };
+    let (pred, gt_float) = prepare_data(predictions, targets);
+    let gt = gt_float.greater_elem(0.5);
 
     let [height, width] = gt.dims();
-
-    let gt_size = (height * width) as f64;
+    let gt_size = usize_to_f64(height * width);
     let gt_fg_numel = gt.clone().float().sum().into_scalar::<f64>();
 
-    // Calculate adaptive E-measure
-    let adaptive_threshold = get_adaptive_threshold(pred.clone());
-
-    let adaptive_em: f64 = calculate_em_with_threshold(
+    let adaptive_threshold = (2.0 * pred.clone().mean().into_scalar::<f64>()).min(1.0);
+    let adaptive_em = calculate_em_with_threshold(
         pred.clone(),
         gt.clone(),
         adaptive_threshold,
         gt_fg_numel,
         gt_size,
     );
-
-    // Calculate changeable E-measure curve
-    let changeable_em = calculate_em_with_cumsumhistogram(pred, gt, gt_fg_numel, gt_size);
+    let changeable_em = calculate_em_with_threshold_curve(pred, &gt, gt_fg_numel, gt_size);
 
     (adaptive_em, changeable_em)
 }
 
-fn get_adaptive_threshold(pred: Tensor<2>) -> f64 {
-    let mean_val = pred.mean().into_scalar::<f64>();
-    (2.0 * mean_val).min(1.0)
-}
-
-fn calculate_em_with_threshold(
-    pred: Tensor<2>,
-    gt: Tensor<2, Bool>,
-    threshold: f64,
-    gt_fg_numel: f64,
-    gt_size: f64,
-) -> f64 {
-    let binarized_pred = pred.greater_equal_elem(threshold);
-
-    let fg_fg_numel: f64 = binarized_pred
-        .clone()
-        .bool_and(gt.clone())
-        .float()
-        .sum()
-        .into_scalar::<f64>();
-    let fg_bg_numel: f64 = binarized_pred
-        .bool_and(gt.bool_not())
-        .float()
-        .sum()
-        .into_scalar::<f64>();
-
-    let fg_numel = fg_fg_numel + fg_bg_numel;
-    let bg_numel = gt_size - fg_numel;
+fn enhanced_alignment_score(tp_count: f64, fp_count: f64, gt_fg_numel: f64, gt_size: f64) -> f64 {
+    let predicted_positive = tp_count + fp_count;
+    let predicted_negative = gt_size - predicted_positive;
 
     let enhanced_matrix_sum = if gt_fg_numel == 0.0 {
-        bg_numel
-    } else if gt_fg_numel == gt_size {
-        fg_numel
+        predicted_negative
+    } else if (gt_fg_numel - gt_size).abs() <= f64::EPSILON {
+        predicted_positive
     } else {
         let (parts_numel, combinations) = generate_parts_numel_combinations(
-            fg_fg_numel,
-            fg_bg_numel,
-            fg_numel,
-            bg_numel,
+            tp_count,
+            fp_count,
+            predicted_positive,
+            predicted_negative,
             gt_fg_numel,
             gt_size,
         );
@@ -267,119 +218,115 @@ fn calculate_em_with_threshold(
     enhanced_matrix_sum / (gt_size - 1.0 + 1e-8)
 }
 
-fn calculate_em_with_cumsumhistogram(
+fn calculate_em_with_threshold(
     pred: Tensor<2>,
     gt: Tensor<2, Bool>,
+    threshold: f64,
+    gt_fg_numel: f64,
+    gt_size: f64,
+) -> f64 {
+    let binarized_pred = pred.greater_equal_elem(threshold);
+    let tp_count = binarized_pred
+        .clone()
+        .bool_and(gt.clone())
+        .float()
+        .sum()
+        .into_scalar::<f64>();
+    let fp_count = binarized_pred
+        .bool_and(gt.bool_not())
+        .float()
+        .sum()
+        .into_scalar::<f64>();
+
+    enhanced_alignment_score(tp_count, fp_count, gt_fg_numel, gt_size)
+}
+
+fn calculate_em_with_threshold_curve(
+    pred: Tensor<2>,
+    gt: &Tensor<2, Bool>,
     gt_fg_numel: f64,
     gt_size: f64,
 ) -> Vec<f64> {
-    // Scale predictions to 0-255 range
-    let pred_scaled = (pred * 255.0).int();
+    let pred_scaled = (pred * 255.0).clamp(0.0, 255.0);
+    let gt_not = gt.clone().bool_not();
 
-    // Create histogram bins
-    let num_bins = 256;
-    let mut changeable_ems = vec![0.0; num_bins];
-
-    // For each threshold
-    for (threshold, changeable_em) in changeable_ems.iter_mut().enumerate() {
-        let binarized_pred = pred_scaled.clone().greater_equal_elem(threshold as i32);
-
-        let fg_fg_numel: f64 = binarized_pred
+    let mut changeable_ems = Vec::with_capacity(256);
+    for threshold in 0..256 {
+        let binarized_pred = pred_scaled.clone().greater_equal_elem(f64::from(threshold));
+        let tp_count = binarized_pred
             .clone()
             .bool_and(gt.clone())
             .float()
             .sum()
             .into_scalar::<f64>();
-        let fg_bg_numel: f64 = binarized_pred
-            .bool_and(gt.clone().bool_not())
+        let fp_count = binarized_pred
+            .bool_and(gt_not.clone())
             .float()
             .sum()
             .into_scalar::<f64>();
 
-        let fg_numel = fg_fg_numel + fg_bg_numel;
-        let bg_numel = gt_size - fg_numel;
-
-        let enhanced_matrix_sum = if gt_fg_numel == 0.0 {
-            bg_numel
-        } else if gt_fg_numel == gt_size {
-            fg_numel
-        } else {
-            let (parts_numel, combinations) = generate_parts_numel_combinations(
-                fg_fg_numel,
-                fg_bg_numel,
-                fg_numel,
-                bg_numel,
-                gt_fg_numel,
-                gt_size,
-            );
-
-            let mut results_parts = 0.0;
-            for (part_numel, (pred_val, gt_val)) in parts_numel.iter().zip(combinations.iter()) {
-                let align_matrix_value =
-                    2.0 * (pred_val * gt_val) / (pred_val * pred_val + gt_val * gt_val + 1e-8);
-                let enhanced_matrix_value = (align_matrix_value + 1.0).powi(2) / 4.0;
-                results_parts += enhanced_matrix_value * part_numel;
-            }
-            results_parts
-        };
-
-        *changeable_em = enhanced_matrix_sum / (gt_size - 1.0 + 1e-8);
+        changeable_ems.push(enhanced_alignment_score(
+            tp_count,
+            fp_count,
+            gt_fg_numel,
+            gt_size,
+        ));
     }
 
     changeable_ems
 }
 
 fn generate_parts_numel_combinations(
-    fg_fg_numel: f64,
-    fg_bg_numel: f64,
-    pred_fg_numel: f64,
-    pred_bg_numel: f64,
+    true_positives: f64,
+    false_positives: f64,
+    pred_positive: f64,
+    pred_negative: f64,
     gt_fg_numel: f64,
     gt_size: f64,
-) -> (Vec<f64>, Vec<(f64, f64)>) {
-    let bg_fg_numel = gt_fg_numel - fg_fg_numel;
-    let bg_bg_numel = pred_bg_numel - bg_fg_numel;
+) -> ([f64; 4], [(f64, f64); 4]) {
+    let missed_fg = gt_fg_numel - true_positives;
+    let true_bg = pred_negative - missed_fg;
 
-    let parts_numel = vec![fg_fg_numel, fg_bg_numel, bg_fg_numel, bg_bg_numel];
+    let ordered_parts = [true_positives, false_positives, missed_fg, true_bg];
 
-    let mean_pred_value = pred_fg_numel / gt_size;
+    let mean_pred_value = pred_positive / gt_size;
     let mean_gt_value = gt_fg_numel / gt_size;
 
-    let demeaned_pred_fg_value = 1.0 - mean_pred_value;
-    let demeaned_pred_bg_value = 0.0 - mean_pred_value;
-    let demeaned_gt_fg_value = 1.0 - mean_gt_value;
-    let demeaned_gt_bg_value = 0.0 - mean_gt_value;
+    let pred_hi = 1.0 - mean_pred_value;
+    let pred_lo = -mean_pred_value;
+    let target_hi = 1.0 - mean_gt_value;
+    let target_lo = -mean_gt_value;
 
-    let combinations = vec![
-        (demeaned_pred_fg_value, demeaned_gt_fg_value),
-        (demeaned_pred_fg_value, demeaned_gt_bg_value),
-        (demeaned_pred_bg_value, demeaned_gt_fg_value),
-        (demeaned_pred_bg_value, demeaned_gt_bg_value),
+    let combinations = [
+        (pred_hi, target_hi),
+        (pred_hi, target_lo),
+        (pred_lo, target_hi),
+        (pred_lo, target_lo),
     ];
 
-    (parts_numel, combinations)
+    (ordered_parts, combinations)
 }
 
-/// Gets the E-measure results.
-pub fn get_e_measure_results(state: &EMeasureState) -> (f64, Vec<f64>) {
-    let adaptive_em = state.adaptive_ems.iter().sum::<f64>() / state.adaptive_ems.len() as f64;
+/// Computes `(mean_adaptive_em, mean_changeable_em_curve)` from `state`.
+#[must_use]
+pub fn e_measure_results(state: &EMeasureState) -> (f64, Vec<f64>) {
+    if state.adaptive_ems.is_empty() {
+        return (0.0, vec![0.0; 256]);
+    }
 
-    // Average changeable EMs across all samples
-    let num_bins = if state.changeable_ems.is_empty() {
-        256
-    } else {
-        state.changeable_ems[0].len()
-    };
+    let sample_count = usize_to_f64(state.adaptive_ems.len());
+    let adaptive_em = state.adaptive_ems.iter().sum::<f64>() / sample_count;
+
+    let num_bins = state.changeable_ems.first().map_or(256, Vec::len);
     let mut avg_changeable_em = vec![0.0; num_bins];
-
     for changeable in &state.changeable_ems {
-        for (i, &val) in changeable.iter().enumerate() {
-            avg_changeable_em[i] += val;
+        for (idx, &val) in changeable.iter().enumerate() {
+            avg_changeable_em[idx] += val;
         }
     }
 
     for val in &mut avg_changeable_em {
-        *val /= state.changeable_ems.len() as f64;
+        *val /= sample_count;
     }
 
     (adaptive_em, avg_changeable_em)

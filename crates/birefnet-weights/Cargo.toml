@@ -1,0 +1,29 @@
+[package]
+name = "birefnet-weights"
+version.workspace = true
+categories.workspace = true
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+rust-version.workspace = true
+description = "Pretrained BiRefNet weight loading, Hugging Face Hub downloads, and SafeTensors key remapping."
+
+[features]
+default = []
+hub = ["dep:hf-hub"]
+test-util = []
+
+[dependencies]
+birefnet-model.workspace = true
+burn = { workspace = true, features = ["pytorch", "safetensors"] }
+hf-hub = { workspace = true, optional = true, features = ["blocking", "rustls-tls"] }
+tracing.workspace = true
+
+[dev-dependencies]
+burn = { workspace = true, features = ["flex"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

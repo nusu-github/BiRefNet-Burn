@@ -1,47 +1,61 @@
-//! SSIM (Structural Similarity Index) loss implementation.
-//!
-//! Computes the structural similarity index between two images and returns
-//! the SSIM loss (1 - SSIM). The SSIM metric measures the similarity between
-//! two images based on luminance, contrast, and structure.
-//!
-//! The loss is computed as:
-//! ```text
-//! SSIM = (2*μ₁*μ₂ + C₁)(2*σ₁₂ + C₂) / ((μ₁² + μ₂² + C₁)(σ₁² + σ₂² + C₂))
-//! Loss = 1 - (1 + SSIM) / 2
-//! ```
+//! Structural Similarity Index (SSIM) perceptual segmentation loss.
 
 use burn::{
-    config::Config,
-    module::{Content, DisplaySettings, Module, ModuleDisplay, Param},
-    nn::{PaddingConfig2d, conv::Conv2dConfig, loss::Reduction},
-    tensor::Device,
-    tensor::Tensor,
+    module::{Content, DisplaySettings, ModuleDisplay},
+    nn::loss::Reduction,
+    prelude::*,
+    tensor::{module::conv2d, ops::ConvOptions},
 };
 
-/// Configuration for creating an [SSIM loss](SSIMLoss).
-#[derive(Config, Debug)]
+use crate::ops::{assert_same_shape, reduce_loss, usize_to_f64, usize_to_i32};
+
+/// Configuration for [`SSIMLoss`].
+#[derive(Config, Debug, PartialEq)]
 pub struct SSIMLossConfig {
-    /// Size of the Gaussian window for SSIM computation. Default: 11
+    /// Positive odd side length of the 2D Gaussian smoothing kernel.
     #[config(default = 11)]
     pub window_size: usize,
-
-    /// Sigma parameter for Gaussian window. Default: 1.5
+    /// Gaussian standard deviation in pixels.
     #[config(default = 1.5)]
     pub sigma: f64,
-
-    /// First stability constant (luminance). Default: 0.01²
+    /// Luminance stability constant (`0.01^2`).
     #[config(default = 0.0001)]
     pub c1: f64,
-
-    /// Second stability constant (contrast). Default: 0.03²
+    /// Contrast stability constant (`0.03^2`).
     #[config(default = 0.0009)]
     pub c2: f64,
 }
 
 impl SSIMLossConfig {
-    /// Initialize [SSIM loss](SSIMLoss).
+    /// Initializes an [`SSIMLoss`] module.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `window_size` is even or zero, or if `sigma`, `c1`, or `c2` are not finite and
+    /// strictly positive.
+    #[must_use]
     pub fn init(&self) -> SSIMLoss {
-        self.assertions();
+        assert!(
+            self.window_size > 0 && self.window_size % 2 == 1,
+            "SSIMLoss window_size must be positive and odd, got {}",
+            self.window_size
+        );
+        assert!(
+            self.sigma.is_finite() && self.sigma > 0.0,
+            "SSIMLoss sigma must be finite and positive, got {}",
+            self.sigma
+        );
+        assert!(
+            self.c1.is_finite() && self.c1 > 0.0,
+            "SSIMLoss c1 must be finite and positive, got {}",
+            self.c1
+        );
+        assert!(
+            self.c2.is_finite() && self.c2 > 0.0,
+            "SSIMLoss c2 must be finite and positive, got {}",
+            self.c2
+        );
+
         SSIMLoss {
             window_size: self.window_size,
             sigma: self.sigma,
@@ -49,47 +63,16 @@ impl SSIMLossConfig {
             c2: self.c2,
         }
     }
-
-    fn assertions(&self) {
-        assert!(
-            self.window_size > 0 && self.window_size % 2 == 1,
-            "Window size for SSIMLoss must be positive and odd, got {}",
-            self.window_size
-        );
-        assert!(
-            self.sigma > 0.0,
-            "Sigma for SSIMLoss must be positive, got {}",
-            self.sigma
-        );
-        assert!(
-            self.c1 > 0.0,
-            "C1 for SSIMLoss must be positive, got {}",
-            self.c1
-        );
-        assert!(
-            self.c2 > 0.0,
-            "C2 for SSIMLoss must be positive, got {}",
-            self.c2
-        );
-    }
 }
 
-/// SSIM (Structural Similarity Index) loss.
-///
-/// Computes the structural similarity between two images and returns
-/// the corresponding loss value. Uses a Gaussian window for local
-/// similarity computation and includes stability constants.
+/// Structural Similarity Index (SSIM) loss mapped to `1 - (1 + SSIM) / 2` in `[0, 1]`.
 #[derive(Module, Debug)]
 #[module(custom_display)]
 pub struct SSIMLoss {
-    /// Size of the Gaussian window.
-    pub window_size: usize,
-    /// Sigma parameter for Gaussian window.
-    pub sigma: f64,
-    /// First stability constant (luminance).
-    pub c1: f64,
-    /// Second stability constant (contrast).
-    pub c2: f64,
+    window_size: usize,
+    sigma: f64,
+    c1: f64,
+    c2: f64,
 }
 
 impl Default for SSIMLoss {
@@ -116,18 +99,14 @@ impl ModuleDisplay for SSIMLoss {
 }
 
 impl SSIMLoss {
-    /// Create a new SSIM loss with default configuration.
+    /// Creates an [`SSIMLoss`] with default `11x11` Gaussian window (`sigma = 1.5`).
+    #[must_use]
     pub fn new() -> Self {
         SSIMLossConfig::new().init()
     }
 
-    /// Compute the criterion on the input tensor with reduction.
-    ///
-    /// # Shapes
-    ///
-    /// - predictions: `[batch_size, channels, height, width]`
-    /// - targets: `[batch_size, channels, height, width]`
-    /// - output: `[1]`
+    /// Computes reduced SSIM loss `[1]` from probability maps and targets in `[0, 1]`.
+    #[must_use]
     pub fn forward(
         &self,
         predictions: Tensor<4>,
@@ -135,329 +114,79 @@ impl SSIMLoss {
         reduction: Reduction,
     ) -> Tensor<1> {
         let loss = self.forward_no_reduction(predictions, targets);
-        crate::reduce_loss(loss, reduction)
+        reduce_loss(loss, reduction)
     }
 
-    /// Compute the criterion on the input tensor without reduction.
+    /// Computes per-sample SSIM loss `[batch_size]` in `[0, 1]`.
     ///
-    /// # Shapes
+    /// # Panics
     ///
-    /// - predictions: `[batch_size, channels, height, width]`
-    /// - targets: `[batch_size, channels, height, width]`
-    /// - output: `[batch_size]`
+    /// Panics if `predictions` and `targets` have different shapes.
+    #[must_use]
     pub fn forward_no_reduction(&self, predictions: Tensor<4>, targets: Tensor<4>) -> Tensor<1> {
-        self.assertions(&predictions, &targets);
+        assert_same_shape(&predictions, &targets);
 
         let [_, channels, ..] = predictions.dims();
         let device = predictions.device();
-
-        // Create Gaussian window
         let window = self.create_window(channels, &device);
+        let ssim_values = self.compute_ssim_batch(predictions, targets, &window);
 
-        // SSIM constants (use f64 directly)
-        let c1 = self.c1;
-        let c2 = self.c2;
-
-        // Calculate SSIM for the entire batch
-        let ssim_values = self.compute_ssim_batch(predictions, targets, window, c1, c2);
-
-        // Convert to loss: 1 - (1 + ssim) / 2
-        let ones = Tensor::ones_like(&ssim_values);
-
-        ones - (ssim_values + 1.0) / 2.0
+        ssim_values.ones_like() - (ssim_values + 1.0) / 2.0
     }
 
-    /// Create Gaussian window for SSIM calculation.
     fn create_window(&self, channels: usize, device: &Device) -> Tensor<4> {
-        let window_size = self.window_size as i32;
-        let mean = window_size / 2;
+        let half = usize_to_f64(self.window_size / 2);
+        let two_sigma_sq = 2.0 * self.sigma * self.sigma;
 
-        // Create 1D Gaussian window
-        let mut gauss_1d = vec![0.0; self.window_size];
-        let mut sum = 0.0;
-        for (i, val) in gauss_1d.iter_mut().enumerate() {
-            let x = i as i32 - mean;
-            *val = (f64::from(-(x * x)) / (2.0 * self.sigma * self.sigma)).exp();
-            sum += *val;
-        }
-
-        // Normalize
+        let mut gauss_1d: Vec<f64> = (0..self.window_size)
+            .map(|idx| {
+                let offset = usize_to_f64(idx) - half;
+                (-(offset * offset) / two_sigma_sq).exp()
+            })
+            .collect();
+        let sum: f64 = gauss_1d.iter().sum();
         for val in &mut gauss_1d {
             *val /= sum;
         }
 
-        // Convert to tensor and create 2D window
         let window_1d = Tensor::<1>::from_floats(gauss_1d.as_slice(), device);
-        let window_1d = window_1d.unsqueeze::<2>();
-        let window_2d = window_1d.clone().matmul(window_1d.transpose());
+        let col = window_1d.clone().unsqueeze_dim::<2>(1);
+        let row = window_1d.unsqueeze_dim::<2>(0);
+        let window_2d = col.matmul(row);
 
-        // Expand to match channels: [channels, 1, window_size, window_size]
-        window_2d
-            .unsqueeze::<4>()
-            .unsqueeze::<4>()
-            .repeat(&[channels, 1, 1, 1])
+        window_2d.unsqueeze::<4>().repeat(&[channels, 1, 1, 1])
     }
 
-    /// Compute SSIM for batch of images.
     fn compute_ssim_batch(
         &self,
         img1: Tensor<4>,
         img2: Tensor<4>,
-        window: Tensor<4>,
-        c1: f64,
-        c2: f64,
+        window: &Tensor<4>,
     ) -> Tensor<1> {
         let [batch_size, channels, ..] = img1.dims();
-        let device = img1.device();
         let padding = self.window_size / 2;
+        let conv_opts = ConvOptions::new([1, 1], [padding, padding], [1, 1], channels);
 
-        // Create convolution layer with Gaussian window
-        let mut conv =
-            Conv2dConfig::new([channels, channels], [self.window_size, self.window_size])
-                .with_padding(PaddingConfig2d::Explicit(
-                    padding, padding, padding, padding,
-                ))
-                .with_groups(channels)
-                .with_bias(false)
-                .init(&device);
-        conv.weight = Param::from_tensor(window);
+        let blur = |tensor: Tensor<4>| conv2d(tensor, window.clone(), None, conv_opts.clone());
 
-        // Calculate local means
-        let mu1 = conv.forward(img1.clone());
-        let mu2 = conv.forward(img2.clone());
-
+        let mu1 = blur(img1.clone());
+        let mu2 = blur(img2.clone());
         let mu1_sq = mu1.clone().powi_scalar(2);
         let mu2_sq = mu2.clone().powi_scalar(2);
         let mu1_mu2 = mu1 * mu2;
 
-        // Calculate local variances and covariance
-        let sigma1_sq = conv.forward(img1.clone().powi_scalar(2)) - mu1_sq.clone();
-        let sigma2_sq = conv.forward(img2.clone().powi_scalar(2)) - mu2_sq.clone();
-        let sigma12 = conv.forward(img1 * img2) - mu1_mu2.clone();
+        let sigma1_sq = blur(img1.clone().powi_scalar(2)) - mu1_sq.clone();
+        let sigma2_sq = blur(img2.clone().powi_scalar(2)) - mu2_sq.clone();
+        let sigma12 = blur(img1 * img2) - mu1_mu2.clone();
 
-        // SSIM calculation using add_scalar
-        let ssim_n =
-            (mu1_mu2.mul_scalar(2.0).add_scalar(c1)) * (sigma12.mul_scalar(2.0).add_scalar(c2));
-        let ssim_d = (mu1_sq + mu2_sq + c1) * (sigma1_sq + sigma2_sq + c2);
-        let ssim_map = ssim_n / ssim_d;
+        let ssim_num = (mu1_mu2.mul_scalar(2.0).add_scalar(self.c1))
+            * (sigma12.mul_scalar(2.0).add_scalar(self.c2));
+        let ssim_den = (mu1_sq + mu2_sq + self.c1) * (sigma1_sq + sigma2_sq + self.c2);
+        let ssim_map = ssim_num / ssim_den;
 
-        // Average over spatial and channel dimensions for each batch element
-        // [B, C, H, W] -> [B, 1] -> [B]
         ssim_map
-            .reshape([batch_size as i32, -1])
+            .reshape([usize_to_i32(batch_size), -1])
             .mean_dim(1)
             .squeeze_dim::<1>(1)
-    }
-
-    fn assertions(&self, predictions: &Tensor<4>, targets: &Tensor<4>) {
-        let pred_dims = predictions.dims();
-        let target_dims = targets.dims();
-        assert_eq!(
-            pred_dims, target_dims,
-            "Shape of predictions ({pred_dims:?}) must match targets ({target_dims:?})"
-        );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use burn::tensor::TensorData;
-
-    use super::*;
-
-    #[test]
-    fn ssim_loss_forward_identical_images_returns_low_loss() {
-        let device = Device::flex();
-        let loss = SSIMLoss::new();
-
-        // Identical images should have SSIM ≈ 1, loss ≈ 0
-        let img1 = Tensor::<4>::from_data(TensorData::from([[[[0.5, 0.6], [0.7, 0.8]]]]), &device);
-        let img2 = img1.clone();
-
-        let result_mean = loss.forward(img1.clone(), img2.clone(), Reduction::Mean);
-        let result_no_reduction = loss.forward_no_reduction(img1, img2);
-
-        // Should be very low loss for identical images
-        assert!(result_mean.clone().into_scalar::<f64>() >= 0.0);
-        assert!(result_mean.into_scalar::<f64>() < 1.0);
-
-        assert_eq!(result_no_reduction.dims(), [1]); // batch_size = 1
-        assert!(result_no_reduction.into_scalar::<f64>() >= 0.0);
-    }
-
-    #[test]
-    fn ssim_loss_forward_different_images_returns_higher_loss() {
-        let device = Device::flex();
-        let loss = SSIMLoss::new();
-
-        // Very different images
-        let img1 = Tensor::<4>::from_data(TensorData::from([[[[1.0, 1.0], [1.0, 1.0]]]]), &device);
-        let img2 = Tensor::<4>::from_data(TensorData::from([[[[0.0, 0.0], [0.0, 0.0]]]]), &device);
-
-        let result_mean = loss.forward(img1.clone(), img2.clone(), Reduction::Mean);
-        let result_sum = loss.forward(img1.clone(), img2.clone(), Reduction::Sum);
-        let result_no_reduction = loss.forward_no_reduction(img1, img2);
-
-        // Should be higher loss for different images
-        assert!(result_mean.clone().into_scalar::<f64>() > 0.0);
-        assert!(result_sum.into_scalar::<f64>() >= result_mean.into_scalar::<f64>());
-        assert_eq!(result_no_reduction.dims(), [1]);
-    }
-
-    #[test]
-    fn ssim_loss_forward_batch_images_validates_range_and_shapes() {
-        let device = Device::flex();
-        let loss = SSIMLoss::new();
-
-        // Batch of 2 images
-        let img1 = Tensor::<4>::from_data(
-            TensorData::from([
-                [[[0.8, 0.2], [0.3, 0.9]]],    // Sample 1
-                [[[0.1, 0.95], [0.85, 0.05]]], // Sample 2
-            ]),
-            &device,
-        );
-        let img2 = Tensor::<4>::from_data(
-            TensorData::from([
-                [[[0.7, 0.3], [0.4, 0.8]]],    // Sample 1 (similar)
-                [[[0.9, 0.05], [0.15, 0.95]]], // Sample 2 (different)
-            ]),
-            &device,
-        );
-
-        let result_mean = loss.forward(img1.clone(), img2.clone(), Reduction::Mean);
-        let result_no_reduction = loss.forward_no_reduction(img1, img2);
-
-        // Check shapes
-        assert_eq!(result_mean.dims(), [1]);
-        assert_eq!(result_no_reduction.dims(), [2]); // batch_size = 2
-
-        // All values should be finite and in [0, 1] range
-        assert!(result_mean.into_scalar::<f64>().is_finite());
-        for i in 0..2 {
-            let sample_loss = result_no_reduction
-                .clone()
-                .select(0, Tensor::from_data([i], &device))
-                .into_scalar::<f64>();
-            assert!(
-                (0.0..=1.0).contains(&sample_loss),
-                "Sample {i} loss should be in [0,1], got {sample_loss}"
-            );
-        }
-    }
-
-    #[test]
-    fn ssim_loss_forward_multichannel_images_works() {
-        let device = Device::flex();
-        let loss = SSIMLoss::new();
-
-        // RGB images (3 channels)
-        let img1 = Tensor::<4>::from_data(
-            TensorData::from([[
-                [[0.8, 0.2], [0.3, 0.9]], // R channel
-                [[0.1, 0.7], [0.6, 0.4]], // G channel
-                [[0.5, 0.5], [0.2, 0.8]], // B channel
-            ]]),
-            &device,
-        );
-        let img2 = Tensor::<4>::from_data(
-            TensorData::from([[
-                [[0.7, 0.3], [0.4, 0.8]], // R channel
-                [[0.2, 0.6], [0.7, 0.3]], // G channel
-                [[0.4, 0.6], [0.3, 0.7]], // B channel
-            ]]),
-            &device,
-        );
-
-        let result = loss.forward(img1, img2, Reduction::Mean);
-
-        // Should handle multi-channel input
-        assert!(result.clone().into_scalar::<f64>().is_finite());
-        assert!(result.clone().into_scalar::<f64>() >= 0.0);
-        assert!(result.into_scalar::<f64>() <= 1.0);
-    }
-
-    #[test]
-    fn ssim_loss_with_custom_window_size_and_constants_works() {
-        let device = Device::flex();
-        let config = SSIMLossConfig::new()
-            .with_window_size(5)
-            .with_sigma(1.0)
-            .with_c1(0.0001)
-            .with_c2(0.0009);
-        let loss = config.init();
-
-        let img1 = Tensor::<4>::from_data(TensorData::from([[[[0.5, 0.6], [0.7, 0.8]]]]), &device);
-        let img2 = Tensor::<4>::from_data(TensorData::from([[[[0.4, 0.7], [0.6, 0.9]]]]), &device);
-
-        let result = loss.forward(img1, img2, Reduction::Mean);
-
-        // Should work with custom parameters
-        assert!(result.clone().into_scalar::<f64>().is_finite());
-        assert!(result.into_scalar::<f64>() >= 0.0);
-    }
-
-    #[test]
-    fn ssim_loss_auto_reduction_equals_mean_reduction() {
-        let device = Device::flex();
-        let loss = SSIMLoss::new();
-
-        let img1 = Tensor::<4>::from_data(TensorData::from([[[[0.3, 0.7], [0.8, 0.2]]]]), &device);
-        let img2 = Tensor::<4>::from_data(TensorData::from([[[[0.4, 0.6], [0.7, 0.3]]]]), &device);
-
-        let result_auto = loss.forward(img1.clone(), img2.clone(), Reduction::Auto);
-        let result_mean = loss.forward(img1, img2, Reduction::Mean);
-
-        let auto_val = result_auto.into_scalar::<f64>();
-        let mean_val = result_mean.into_scalar::<f64>();
-
-        assert!((auto_val - mean_val).abs() < 1e-6, "Auto should equal Mean");
-    }
-
-    #[test]
-    #[should_panic = "Window size for SSIMLoss must be positive and odd"]
-    fn ssim_loss_config_even_window_size_panics() {
-        let _loss = SSIMLossConfig::new().with_window_size(10).init();
-    }
-
-    #[test]
-    #[should_panic = "Sigma for SSIMLoss must be positive"]
-    fn ssim_loss_config_negative_sigma_panics() {
-        let _loss = SSIMLossConfig::new().with_sigma(-1.0).init();
-    }
-
-    #[test]
-    #[should_panic = "C1 for SSIMLoss must be positive"]
-    fn ssim_loss_config_negative_c1_panics() {
-        let _loss = SSIMLossConfig::new().with_c1(-0.01).init();
-    }
-
-    #[test]
-    #[should_panic = "Shape of predictions"]
-    fn ssim_loss_forward_mismatched_shapes_panics() {
-        let device = Device::flex();
-        let loss = SSIMLoss::new();
-
-        let img1 = Tensor::<4>::from_data(TensorData::from([[[[1.0, 2.0]]]]), &device);
-        let img2 = Tensor::<4>::from_data(TensorData::from([[[[1.0, 2.0], [3.0, 4.0]]]]), &device);
-
-        let _result = loss.forward_no_reduction(img1, img2);
-    }
-
-    #[test]
-    fn ssim_loss_display_shows_configuration_parameters() {
-        let config = SSIMLossConfig::new()
-            .with_window_size(7)
-            .with_sigma(2.0)
-            .with_c1(0.001)
-            .with_c2(0.002);
-        let loss = config.init();
-
-        let display_str = format!("{loss}");
-        assert!(display_str.contains("SSIMLoss"));
-        assert!(display_str.contains("window_size: 7"));
-        assert!(display_str.contains("sigma: 2"));
-        assert!(display_str.contains("c1: 0.001"));
-        assert!(display_str.contains("c2: 0.002"));
     }
 }

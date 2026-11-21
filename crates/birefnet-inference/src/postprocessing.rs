@@ -1,211 +1,284 @@
-//! Post-processing utilities for BiRefNet examples.
-//!
-//! This module provides common post-processing operations for
-//! segmentation masks and images.
+//! Mask postprocessing, morphology, connected components, and tensor resizing helpers.
 
-use anyhow::{Context, Result};
-use birefnet_util::{dynamic_image_to_tensor, tensor_to_dynamic_image};
-use burn::tensor::{Device, Tensor};
-use image::{self, imageops::FilterType};
+use std::collections::VecDeque;
 
-/// Apply threshold to create binary mask.
-///
-/// # Arguments
-/// * `mask` - Input mask tensor with shape [N, 1, H, W]
-/// * `threshold` - Threshold value (0.0 to 1.0)
-///
-/// # Returns
-/// Binary mask tensor
+use birefnet_util::{StructuringElement, closing, gaussian_filter_matlab, opening};
+use burn::tensor::{
+    Shape, Tensor, TensorData,
+    module::interpolate,
+    ops::{InterpolateMode, InterpolateOptions},
+};
+use image::GrayImage;
+
+use crate::error::InferenceError;
+
+/// Configuration for [`postprocess_mask`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PostprocessConfig {
+    /// Optional binarization threshold in `[0.0, 1.0]`.
+    pub threshold: Option<f64>,
+    /// Optional Gaussian smoothing `(kernel_size, sigma)`.
+    pub blur_kernel: Option<(usize, f64)>,
+    /// Optional morphological opening disk radius in pixels.
+    pub opening_radius: Option<usize>,
+    /// Optional morphological closing disk radius in pixels.
+    pub closing_radius: Option<usize>,
+    /// Optional minimum 4-connected foreground component area in pixels.
+    pub min_component_size: Option<usize>,
+    /// Whether to fill enclosed interior holes inside foreground regions.
+    pub fill_holes: bool,
+}
+
+/// Applies element-wise thresholding (`mask > threshold`) producing `0.0` / `1.0`.
+#[must_use]
 pub fn apply_threshold(mask: Tensor<4>, threshold: f64) -> Tensor<4> {
     mask.greater_elem(threshold).float()
 }
 
-/// Apply Gaussian blur to soften mask edges.
+/// Smooths a mask `[B, C, H, W]` with a 2D Gaussian kernel (`sigma > 0`, `kernel_size > 1`).
 ///
-/// # Arguments
-/// * `mask` - Input mask tensor with shape [N, 1, H, W]
-/// * `kernel_size` - Size of the Gaussian kernel (odd number)
-/// * `sigma` - Standard deviation of the Gaussian kernel
-///
-/// # Returns
-/// Blurred mask tensor
-pub fn gaussian_blur(mask: Tensor<4>, kernel_size: usize, _sigma: f64) -> Tensor<4> {
-    // TODO: Implement proper Gaussian blur using separable convolution
-    // Current: Placeholder returning input mask unchanged
-    // Should implement: Separable Gaussian kernel with proper convolution
-    // for accurate image smoothing as used in post-processing pipeline
-    // In a real implementation, you would use proper Gaussian convolution
-
-    // Create a simple averaging filter as approximation
-    let _kernel: Tensor<4> = Tensor::ones([1, 1, kernel_size, kernel_size], &mask.device())
-        / (kernel_size * kernel_size) as f64;
-
-    // Apply convolution (simplified)
-    mask // Placeholder - proper convolution would be implemented here
+/// Even `kernel_size` values are rounded up to the next odd integer. Returns `mask` unchanged
+/// if `kernel_size <= 1` or `sigma <= 0.0` (or non-finite).
+#[must_use]
+pub fn gaussian_blur(mask: Tensor<4>, kernel_size: usize, sigma: f64) -> Tensor<4> {
+    if kernel_size <= 1 || sigma <= 0.0 || !sigma.is_finite() {
+        return mask;
+    }
+    let odd_size = kernel_size | 1;
+    gaussian_filter_matlab(mask, (odd_size, odd_size), sigma)
 }
 
-/// Morphological opening operation (erosion followed by dilation).
-///
-/// # Arguments
-/// * `mask` - Input binary mask tensor with shape [N, 1, H, W]
-/// * `kernel_size` - Size of the structuring element
-///
-/// # Returns
-/// Processed mask tensor
-pub const fn morphological_opening(mask: Tensor<4>, _kernel_size: usize) -> Tensor<4> {
-    // TODO: Implement proper morphological opening (erosion + dilation)
-    // Current: Placeholder returning input unchanged
-    // Should implement: Proper structuring element operations for noise removal
-    mask
+/// Applies morphological opening with a circular disk structuring element of `radius`.
+#[must_use]
+pub fn morphological_opening(mask: Tensor<4>, radius: usize) -> Tensor<4> {
+    if radius == 0 {
+        return mask;
+    }
+    let device = mask.device();
+    let kernel = StructuringElement::disk(radius, &device);
+    opening(mask, &kernel)
 }
 
-/// Morphological closing operation (dilation followed by erosion).
-///
-/// # Arguments
-/// * `mask` - Input binary mask tensor with shape [N, 1, H, W]
-/// * `kernel_size` - Size of the structuring element
-///
-/// # Returns
-/// Processed mask tensor
-pub const fn morphological_closing(mask: Tensor<4>, _kernel_size: usize) -> Tensor<4> {
-    // TODO: Implement proper morphological closing (dilation + erosion)
-    // Current: Placeholder returning input unchanged
-    // Should implement: Proper structuring element operations for gap filling
-    mask
+/// Applies morphological closing with a circular disk structuring element of `radius`.
+#[must_use]
+pub fn morphological_closing(mask: Tensor<4>, radius: usize) -> Tensor<4> {
+    if radius == 0 {
+        return mask;
+    }
+    let device = mask.device();
+    let kernel = StructuringElement::disk(radius, &device);
+    closing(mask, &kernel)
 }
 
-/// Remove small connected components from binary mask.
-///
-/// # Arguments
-/// * `mask` - Input binary mask tensor with shape [N, 1, H, W]
-/// * `min_size` - Minimum size of components to keep
-///
-/// # Returns
-/// Cleaned mask tensor
-pub const fn remove_small_components(mask: Tensor<4>, _min_size: usize) -> Tensor<4> {
-    // TODO: Implement connected component analysis and filtering
-    // Current: Placeholder returning input unchanged
-    // Should implement: Flood fill or union-find for component labeling and size filtering
-    mask
+fn push_neighbors_4(pos: usize, width: usize, height: usize, enqueue: &mut impl FnMut(usize)) {
+    let x = pos % width;
+    let y = pos / width;
+    if y > 0 {
+        enqueue(pos - width);
+    }
+    if y + 1 < height {
+        enqueue(pos + width);
+    }
+    if x > 0 {
+        enqueue(pos - 1);
+    }
+    if x + 1 < width {
+        enqueue(pos + 1);
+    }
 }
 
-/// Fill holes in binary mask.
-///
-/// # Arguments
-/// * `mask` - Input binary mask tensor with shape [N, 1, H, W]
-///
-/// # Returns
-/// Mask with holes filled
-pub const fn fill_holes(mask: Tensor<4>) -> Tensor<4> {
-    // TODO: Implement hole filling using morphological reconstruction
-    // Current: Placeholder returning input unchanged
-    // Should implement: Flood fill from border or morphological reconstruction
-    mask
+/// Removes 4-connected foreground (`>= 0.5`) components strictly smaller than `min_size` pixels.
+#[must_use]
+pub fn remove_small_components(mask: Tensor<4>, min_size: usize) -> Tensor<4> {
+    if min_size <= 1 {
+        return mask;
+    }
+
+    let [batch, channels, height, width] = mask.dims();
+    if height == 0 || width == 0 {
+        return mask;
+    }
+
+    let device = mask.device();
+    let plane_len = height * width;
+    let mut values: Vec<f32> = mask.to_data().iter::<f32>().collect();
+    let mut visited = vec![false; plane_len];
+    let mut queue = VecDeque::new();
+    let mut component = Vec::new();
+
+    for plane in values.chunks_exact_mut(plane_len) {
+        visited.fill(false);
+
+        for start in 0..plane_len {
+            if visited[start] || plane[start] < 0.5 {
+                continue;
+            }
+            visited[start] = true;
+            queue.push_back(start);
+
+            while let Some(pos) = queue.pop_front() {
+                component.push(pos);
+                push_neighbors_4(pos, width, height, &mut |next| {
+                    if !visited[next] && plane[next] >= 0.5 {
+                        visited[next] = true;
+                        queue.push_back(next);
+                    }
+                });
+            }
+
+            if component.len() < min_size {
+                for &idx in &component {
+                    plane[idx] = 0.0;
+                }
+            }
+            component.clear();
+        }
+    }
+
+    Tensor::<4>::from_data(
+        TensorData::new(values, Shape::new([batch, channels, height, width])),
+        &device,
+    )
 }
 
-/// Comprehensive postprocessing pipeline.
-///
-/// # Arguments
-/// * `mask` - Input mask tensor with shape [N, 1, H, W]
-/// * `threshold` - Threshold for binarization
-/// * `blur_kernel_size` - Size of blur kernel (0 to skip)
-/// * `blur_sigma` - Sigma for Gaussian blur
-/// * `morphology_kernel_size` - Size of morphology kernel (0 to skip)
-/// * `min_component_size` - Minimum component size (0 to skip)
-/// * `fill_holes_flag` - Whether to fill holes
-///
-/// # Returns
-/// Processed mask tensor
-pub fn postprocess_mask(
-    mask: Tensor<4>,
-    threshold: f64,
-    blur_kernel_size: usize,
-    blur_sigma: f64,
-    morphology_kernel_size: usize,
-    min_component_size: usize,
-    fill_holes_flag: bool,
-) -> Tensor<4> {
+/// Fills enclosed background (`< 0.5`) holes surrounded by foreground pixels (`>= 0.5`).
+#[must_use]
+pub fn fill_holes(mask: Tensor<4>) -> Tensor<4> {
+    let [batch, channels, height, width] = mask.dims();
+    if height < 3 || width < 3 {
+        return mask;
+    }
+
+    let device = mask.device();
+    let plane_len = height * width;
+    let mut values: Vec<f32> = mask.to_data().iter::<f32>().collect();
+    let mut reachable_bg = vec![false; plane_len];
+    let mut queue = VecDeque::new();
+
+    for plane in values.chunks_exact_mut(plane_len) {
+        reachable_bg.fill(false);
+
+        for x in 0..width {
+            let top = x;
+            let bottom = (height - 1) * width + x;
+            for idx in [top, bottom] {
+                if !reachable_bg[idx] && plane[idx] < 0.5 {
+                    reachable_bg[idx] = true;
+                    queue.push_back(idx);
+                }
+            }
+        }
+        for y in 0..height {
+            let left = y * width;
+            let right = y * width + (width - 1);
+            for idx in [left, right] {
+                if !reachable_bg[idx] && plane[idx] < 0.5 {
+                    reachable_bg[idx] = true;
+                    queue.push_back(idx);
+                }
+            }
+        }
+
+        while let Some(pos) = queue.pop_front() {
+            push_neighbors_4(pos, width, height, &mut |next| {
+                if !reachable_bg[next] && plane[next] < 0.5 {
+                    reachable_bg[next] = true;
+                    queue.push_back(next);
+                }
+            });
+        }
+
+        for idx in 0..plane_len {
+            if plane[idx] < 0.5 && !reachable_bg[idx] {
+                plane[idx] = 1.0;
+            }
+        }
+    }
+
+    Tensor::<4>::from_data(
+        TensorData::new(values, Shape::new([batch, channels, height, width])),
+        &device,
+    )
+}
+
+/// Runs the configured postprocessing steps sequentially on a `[B, C, H, W]` mask.
+#[must_use]
+pub fn postprocess_mask(mask: Tensor<4>, config: &PostprocessConfig) -> Tensor<4> {
     let mut processed = mask;
 
-    // Apply threshold
-    processed = apply_threshold(processed, threshold);
-
-    // Apply Gaussian blur if requested
-    if blur_kernel_size > 0 {
-        processed = gaussian_blur(processed, blur_kernel_size, blur_sigma);
+    if let Some(threshold) = config.threshold {
+        processed = apply_threshold(processed, threshold);
     }
-
-    // Apply morphological operations if requested
-    if morphology_kernel_size > 0 {
-        processed = morphological_opening(processed, morphology_kernel_size);
-        processed = morphological_closing(processed, morphology_kernel_size);
+    if let Some((kernel_size, sigma)) = config.blur_kernel {
+        processed = gaussian_blur(processed, kernel_size, sigma);
     }
-
-    // Remove small components if requested
-    if min_component_size > 0 {
-        processed = remove_small_components(processed, min_component_size);
+    if let Some(radius) = config.opening_radius {
+        processed = morphological_opening(processed, radius);
     }
-
-    // Fill holes if requested
-    if fill_holes_flag {
+    if let Some(radius) = config.closing_radius {
+        processed = morphological_closing(processed, radius);
+    }
+    if let Some(min_size) = config.min_component_size {
+        processed = remove_small_components(processed, min_size);
+    }
+    if config.fill_holes {
         processed = fill_holes(processed);
     }
 
     processed
 }
 
-/// Convert tensor to image data for saving.
-///
-/// # Arguments
-/// * `tensor` - Input tensor with shape [1, 1, H, W]
-///
-/// # Returns
-/// Vector of u8 pixel values
-pub fn tensor_to_image_data(tensor: Tensor<4>) -> Vec<u8> {
-    let [_n, _c, h, w] = tensor.dims();
-    let data = tensor.to_data();
-
-    let mut image_data = Vec::with_capacity(h * w);
-    for value in data.iter::<f64>() {
-        image_data.push((value.clamp(0.0, 1.0) * 255.0) as u8);
-    }
-
-    image_data
-}
-
-/// Resize tensor to target size.
-///
-/// # Arguments
-/// * `tensor` - Input tensor with shape [N, C, H, W]
-/// * `target_height` - Target height
-/// * `target_width` - Target width
-///
-/// # Returns
-/// Resized tensor
+/// Resizes a `[B, C, H, W]` tensor directly via native Burn spatial interpolation.
+#[must_use]
 pub fn resize_tensor(
     tensor: Tensor<4>,
     target_height: usize,
     target_width: usize,
-    device: &Device,
-) -> Result<Tensor<4>> {
-    let [_batch_size, _channels, current_height, current_width] = tensor.dims();
-
+    mode: InterpolateMode,
+) -> Tensor<4> {
+    let [_batch, _channels, current_height, current_width] = tensor.dims();
     if current_height == target_height && current_width == target_width {
-        return Ok(tensor);
+        return tensor;
     }
 
-    // This approach converts tensor to image, resizes, then converts back to tensor.
-    // It's inefficient but works without a direct tensor interpolation implementation.
-    let dynamic_image = tensor_to_dynamic_image(tensor, false)
-        .context("Failed to convert tensor to image for resizing")?;
+    interpolate(
+        tensor,
+        InterpolateOptions::new(mode).with_output_size([target_height, target_width]),
+    )
+}
 
-    let resized_image = dynamic_image.resize_exact(
-        target_width as u32,
-        target_height as u32,
-        FilterType::Lanczos3,
-    );
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "normalized values are clamped into [0.0, 1.0] and scaled into 0..=255"
+)]
+fn to_u8_pixel(val: f64) -> u8 {
+    (val.clamp(0.0, 1.0) * 255.0).round() as u8
+}
 
-    // Convert back to tensor
-    dynamic_image_to_tensor(resized_image, device)
-        .context("Failed to convert resized image back to tensor")
+/// Converts a single `[1, 1, H, W]` normalized mask tensor into an 8-bit [`GrayImage`].
+///
+/// # Errors
+///
+/// Returns [`InferenceError`] if `mask` shape is not `[1, 1, H, W]` or exceeds `u32` dimensions.
+pub fn mask_to_u8(mask: &Tensor<4>) -> Result<GrayImage, InferenceError> {
+    let [batch, channels, height, width] = mask.dims();
+    if batch != 1 || channels != 1 {
+        return Err(InferenceError::invalid_input(format!(
+            "mask_to_u8 expects [1, 1, H, W] tensor, got [{batch}, {channels}, {height}, {width}]"
+        )));
+    }
+
+    let w_u32 = u32::try_from(width)
+        .map_err(|_err| InferenceError::invalid_input(format!("width {width} exceeds u32::MAX")))?;
+    let h_u32 = u32::try_from(height).map_err(|_err| {
+        InferenceError::invalid_input(format!("height {height} exceeds u32::MAX"))
+    })?;
+
+    let bytes: Vec<u8> = mask.to_data().iter::<f64>().map(to_u8_pixel).collect();
+    GrayImage::from_raw(w_u32, h_u32, bytes).ok_or_else(|| {
+        InferenceError::invalid_input(format!(
+            "mask buffer length mismatch for [{height}, {width}] grayscale image"
+        ))
+    })
 }

@@ -1,22 +1,4 @@
-//! # Decoder for BiRefNet
-//!
-//! This module implements the decoder part of the BiRefNet model. The decoder is
-//! responsible for taking the feature maps from the backbone encoder and progressively
-//! upsampling them to generate the final high-resolution segmentation mask.
-//!
-//! ## Key Components
-//!
-//! - `DecoderConfig`: Configuration struct for the decoder, specifying parameters like
-//!   the number of channels, block types, and attention mechanisms.
-//! - `Decoder`: The main decoder struct, which builds the decoder architecture based on
-//!   the provided configuration.
-//! - `DecoderBlockModule`, `LateralBlockModule`: Enums to handle different types
-//!   of decoder and lateral blocks, allowing for flexible architecture design.
-//! - `GdtConvs`, `SimpleConvs`: Helper modules used within the decoder for specific
-//!   convolutional operations.
-//!
-//! The decoder's design allows for multi-scale supervision, gradient-guided attention,
-//! and various other features from the original BiRefNet paper.
+//! Hierarchical multi-scale decoder for `BiRefNet`.
 
 use burn::{
     nn::{
@@ -32,36 +14,44 @@ use super::modules::{
     SimpleConvs, SimpleConvsConfig,
 };
 use crate::{
-    config::{DecBlk, InterpolationStrategy, LateralBlock, ModelConfig, SqueezeBlock},
-    error::BiRefNetResult,
+    config::{
+        DecBlk, DecoderAttention, InterpolationStrategy, LateralBlock, ModelConfig, SqueezeBlock,
+    },
+    error::ModelError,
     models::modules::utils::intelligent_interpolate,
 };
 
-/// An enum to wrap different types of decoder blocks.
+/// Wrapper enum over supported decoder block implementations.
 #[derive(Module, Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Burn Module requires inline storage without Box indirection"
+)]
 pub enum DecoderBlockModule {
+    /// Basic decoder block.
     BasicDecBlk(BasicDecBlk),
+    /// Residual decoder block.
     ResBlk(ResBlk),
 }
 
-/// An enum to wrap different types of lateral blocks.
+/// Wrapper enum over supported lateral connection block implementations.
 #[derive(Module, Debug)]
 pub enum LateralBlockModule {
+    /// Basic `1x1` lateral projection block.
     BasicLatBlk(BasicLatBlk),
 }
 
-/// Configuration for the `Decoder` module.
+/// Configuration for [`Decoder`].
 #[derive(Config, Debug)]
 pub struct DecoderConfig {
-    /// The main model configuration.
+    /// Main model configuration.
     config: ModelConfig,
-    /// The channel sizes of the encoder features.
+    /// Deep-to-shallow channel counts `[c4, c3, c2, c1]` of encoder features.
     channels: [usize; 4],
     /// Interpolation strategy for tensor resizing operations.
     interpolation_strategy: InterpolationStrategy,
 }
 
-/// A small convolutional module used for gradient guidance.
 #[derive(Module, Debug)]
 struct GdtConvs {
     conv: Conv2d,
@@ -71,8 +61,8 @@ struct GdtConvs {
 
 impl GdtConvs {
     fn init(
-        conv2d_config: Conv2dConfig,
-        batch_norm_config: BatchNormConfig,
+        conv2d_config: &Conv2dConfig,
+        batch_norm_config: &BatchNormConfig,
         device: &Device,
     ) -> Self {
         let conv = conv2d_config.init(device);
@@ -101,9 +91,8 @@ impl DecoderConfig {
     const IC: usize = 64;
     const IPT_CHA_OPT: usize = 1;
     const N_DEC_IPT: usize = 64;
-    const _N: usize = 16;
+    const GDT_CHANNELS: usize = 16;
 
-    /// Creates IPT blocks for the decoder with reduced duplication.
     fn create_ipt_blocks(&self, split: bool, device: &Device) -> [Option<SimpleConvs>; 5] {
         if !self.config.decoder.dec_ipt {
             return [None, None, None, None, None];
@@ -132,7 +121,6 @@ impl DecoderConfig {
         blocks
     }
 
-    /// Creates multi-scale supervision and GDT convolution layers.
     fn create_supervision_layers(&self, device: &Device) -> SupervisionLayers {
         let mut conv_ms_spvn = [None, None, None];
         let mut gdt_convs = [None, None, None];
@@ -154,20 +142,20 @@ impl DecoderConfig {
 
             if self.config.decoder.out_ref {
                 gdt_convs[i] = Some(GdtConvs::init(
-                    Conv2dConfig::new([channel, Self::_N], [3, 3])
+                    &Conv2dConfig::new([channel, Self::GDT_CHANNELS], [3, 3])
                         .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1)),
-                    BatchNormConfig::new(Self::_N),
+                    &BatchNormConfig::new(Self::GDT_CHANNELS),
                     device,
                 ));
 
                 gdt_convs_pred[i] = Some(
-                    Conv2dConfig::new([Self::_N, 1], [1, 1])
+                    Conv2dConfig::new([Self::GDT_CHANNELS, 1], [1, 1])
                         .with_padding(PaddingConfig2d::Valid)
                         .init(device),
                 );
 
                 gdt_convs_attn[i] = Some(
-                    Conv2dConfig::new([Self::_N, 1], [1, 1])
+                    Conv2dConfig::new([Self::GDT_CHANNELS, 1], [1, 1])
                         .with_padding(PaddingConfig2d::Valid)
                         .init(device),
                 );
@@ -177,8 +165,20 @@ impl DecoderConfig {
         (conv_ms_spvn, gdt_convs, gdt_convs_pred, gdt_convs_attn)
     }
 
-    /// Creates decoder blocks with reduced duplication.
-    fn create_decoder_blocks(&self, device: &Device) -> BiRefNetResult<[DecoderBlockModule; 4]> {
+    fn ipt_extra_channels(&self, channel_idx: usize) -> usize {
+        if !self.config.decoder.dec_ipt {
+            0
+        } else if Self::IPT_CHA_OPT == 0 {
+            Self::N_DEC_IPT
+        } else {
+            self.channels[channel_idx] / 8
+        }
+    }
+
+    fn create_decoder_blocks(
+        &self,
+        device: &Device,
+    ) -> Result<[DecoderBlockModule; 4], ModelError> {
         let channel_configs = [
             (0, 0, self.channels[1]),     // decoder_block4
             (1, 0, self.channels[2]),     // decoder_block3
@@ -187,37 +187,16 @@ impl DecoderConfig {
         ];
 
         let mut blocks = Vec::with_capacity(4);
-
         for &(x, y, out_channels) in &channel_configs {
-            let in_channels = self.channels[x] + {
-                if self.config.decoder.dec_ipt {
-                    if Self::IPT_CHA_OPT == 0 {
-                        Self::N_DEC_IPT
-                    } else {
-                        self.channels[y] / 8
-                    }
-                } else {
-                    0
-                }
-            };
-
-            blocks.push(self.create_decoder_block(
-                in_channels,
-                out_channels,
-                self.config.interpolation.clone(),
-                device,
-            )?);
+            let in_channels = self.channels[x] + self.ipt_extra_channels(y);
+            blocks.push(self.create_decoder_block(in_channels, out_channels, device)?);
         }
 
-        // Convert Vec to array safely
         blocks
             .try_into()
-            .map_err(|_| crate::error::BiRefNetError::ModelInitializationFailed {
-                reason: "Failed to create decoder blocks".to_string(),
-            })
+            .map_err(|_err| ModelError::invalid_config("failed to assemble 4 decoder blocks"))
     }
 
-    /// Creates lateral blocks with reduced duplication.
     fn create_lateral_blocks(&self, device: &Device) -> [LateralBlockModule; 3] {
         [
             self.create_lateral_block(self.channels[1], self.channels[1], device),
@@ -226,23 +205,17 @@ impl DecoderConfig {
         ]
     }
 
-    /// Initializes a `Decoder` module.
-    ///
-    /// # Arguments
-    ///
-    /// * `device` - The device to create the module on.
+    /// Initializes a [`Decoder`] module.
     ///
     /// # Errors
     ///
-    /// Returns an error if initialization fails.
-    pub fn init(&self, device: &Device) -> BiRefNetResult<Decoder> {
+    /// Returns [`ModelError`] if any decoder block configuration is invalid.
+    pub fn init(&self, device: &Device) -> Result<Decoder, ModelError> {
         let split = self.config.decoder.dec_ipt && self.config.decoder.dec_ipt_split;
 
-        // Create IPT blocks using helper function
         let [ipt_blk5, ipt_blk4, ipt_blk3, ipt_blk2, ipt_blk1] =
             self.create_ipt_blocks(split, device);
 
-        // Create decoder blocks using helper function
         let [
             decoder_block4,
             decoder_block3,
@@ -250,10 +223,8 @@ impl DecoderConfig {
             decoder_block1,
         ] = self.create_decoder_blocks(device)?;
 
-        // Create lateral blocks using helper function
         let [lateral_block4, lateral_block3, lateral_block2] = self.create_lateral_blocks(device);
 
-        // Create supervision layers using helper function
         let (
             [conv_ms_spvn_4, conv_ms_spvn_3, conv_ms_spvn_2],
             [gdt_convs_4, gdt_convs_3, gdt_convs_2],
@@ -261,23 +232,10 @@ impl DecoderConfig {
             [gdt_convs_attn_4, gdt_convs_attn_3, gdt_convs_attn_2],
         ) = self.create_supervision_layers(device);
 
-        // Create final output convolution
-        let in_channels = (self.channels[3] / 2) + {
-            if self.config.decoder.dec_ipt {
-                if Self::IPT_CHA_OPT == 0 {
-                    Self::N_DEC_IPT
-                } else {
-                    self.channels[3] / 8
-                }
-            } else {
-                0
-            }
-        };
+        let in_channels = (self.channels[3] / 2) + self.ipt_extra_channels(3);
         let conv_out1 = Conv2dConfig::new([in_channels, 1], [1, 1])
             .with_padding(PaddingConfig2d::Valid)
             .init(device);
-
-        let interpolation_strategy = self.interpolation_strategy.clone();
 
         Ok(Decoder {
             split,
@@ -306,7 +264,7 @@ impl DecoderConfig {
             gdt_convs_attn_4,
             gdt_convs_attn_3,
             gdt_convs_attn_2,
-            interpolation_strategy,
+            interpolation_strategy: self.interpolation_strategy,
         })
     }
 
@@ -314,20 +272,35 @@ impl DecoderConfig {
         &self,
         in_channels: usize,
         out_channels: usize,
-        interpolation_strategy: InterpolationStrategy,
         device: &Device,
-    ) -> BiRefNetResult<DecoderBlockModule> {
+    ) -> Result<DecoderBlockModule, ModelError> {
+        let dec_att = self.config.decoder.dec_att;
+        let dec_channels_inter = self.config.decoder.dec_channels_inter;
+        let batch_size = self.config.task.batch_size;
+
         match self.config.decoder.dec_blk {
-            DecBlk::BasicDecBlk => Ok(DecoderBlockModule::BasicDecBlk(
-                BasicDecBlkConfig::new(SqueezeBlock::ASPPDeformable(0), interpolation_strategy)
-                    .with_in_channels(in_channels)
-                    .with_out_channels(out_channels)
-                    .init(device)?,
-            )),
+            DecBlk::BasicDecBlk => {
+                let squeeze_block = match dec_att {
+                    DecoderAttention::None => SqueezeBlock::None,
+                    DecoderAttention::ASPP => SqueezeBlock::ASPP(0),
+                    DecoderAttention::ASPPDeformable => SqueezeBlock::ASPPDeformable(0),
+                };
+                Ok(DecoderBlockModule::BasicDecBlk(
+                    BasicDecBlkConfig::new(squeeze_block, self.interpolation_strategy)
+                        .with_in_channels(in_channels)
+                        .with_out_channels(out_channels)
+                        .with_dec_channels_inter(dec_channels_inter)
+                        .with_batch_size(batch_size)
+                        .init(device)?,
+                ))
+            }
             DecBlk::ResBlk => Ok(DecoderBlockModule::ResBlk(
-                ResBlkConfig::new(interpolation_strategy)
+                ResBlkConfig::new(self.interpolation_strategy)
                     .with_in_channels(in_channels)
                     .with_out_channels(Some(out_channels))
+                    .with_dec_att(dec_att)
+                    .with_dec_channels_inter(dec_channels_inter)
+                    .with_batch_size(batch_size)
                     .init(device)?,
             )),
         }
@@ -350,8 +323,12 @@ impl DecoderConfig {
     }
 }
 
-/// The decoder module of BiRefNet.
+/// Multi-stage hierarchical decoder module for `BiRefNet`.
 #[derive(Module, Debug)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names match BiRefNet PyTorch state_dict keys for checkpoint compatibility"
+)]
 pub struct Decoder {
     split: bool,
     ipt_blk5: Option<SimpleConvs>,
@@ -379,58 +356,52 @@ pub struct Decoder {
     gdt_convs_attn_4: Option<Conv2d>,
     gdt_convs_attn_3: Option<Conv2d>,
     gdt_convs_attn_2: Option<Conv2d>,
-    /// Interpolation strategy for tensor resizing operations.
     #[module(skip)]
     interpolation_strategy: InterpolationStrategy,
 }
 
 impl Decoder {
-    /// Processes IPT block if present, otherwise returns the input feature unchanged.
     fn process_ipt_block(
         &self,
-        ipt_blk: &Option<SimpleConvs>,
+        ipt_blk: Option<&SimpleConvs>,
         x: &Tensor<4>,
         feature: Tensor<4>,
     ) -> Tensor<4> {
-        match ipt_blk {
-            Some(blk) => {
-                let [_, _, h, w] = feature.dims();
-                let patches_batch = if self.split {
-                    self.get_patches_batch(x.clone(), feature.clone())
-                } else {
-                    x.clone()
-                };
+        let Some(blk) = ipt_blk else {
+            return feature;
+        };
 
-                Tensor::cat(
-                    vec![
-                        feature,
-                        blk.forward(intelligent_interpolate(
-                            patches_batch,
-                            [h, w],
-                            &self.interpolation_strategy,
-                        )),
-                    ],
-                    1,
-                )
-            }
-            None => feature,
-        }
+        let [_, _, h, w] = feature.dims();
+        let patches_batch = if self.split {
+            Self::get_patches_batch(x, &feature)
+        } else {
+            x.clone()
+        };
+
+        Tensor::cat(
+            vec![
+                feature,
+                blk.forward(intelligent_interpolate(
+                    patches_batch,
+                    [h, w],
+                    self.interpolation_strategy,
+                )),
+            ],
+            1,
+        )
     }
 
-    /// Processes decoder block based on its type.
-    fn process_decoder_block(&self, block: &DecoderBlockModule, input: Tensor<4>) -> Tensor<4> {
+    fn process_decoder_block(block: &DecoderBlockModule, input: Tensor<4>) -> Tensor<4> {
         match block {
             DecoderBlockModule::BasicDecBlk(blk) => blk.forward(input),
             DecoderBlockModule::ResBlk(blk) => blk.forward(input),
         }
     }
 
-    /// Applies GDT attention if both convolution and attention layers are present.
     fn apply_gdt_attention(
-        &self,
         input: Tensor<4>,
-        gdt_conv: &Option<GdtConvs>,
-        gdt_attn: &Option<Conv2d>,
+        gdt_conv: Option<&GdtConvs>,
+        gdt_attn: Option<&Conv2d>,
     ) -> Tensor<4> {
         match (gdt_conv, gdt_attn) {
             (Some(conv), Some(attn)) => {
@@ -442,88 +413,112 @@ impl Decoder {
         }
     }
 
-    /// Processes lateral block connection.
-    fn process_lateral_block(&self, block: &LateralBlockModule, input: Tensor<4>) -> Tensor<4> {
+    fn process_lateral_block(block: &LateralBlockModule, input: Tensor<4>) -> Tensor<4> {
         match block {
             LateralBlockModule::BasicLatBlk(blk) => blk.forward(input),
         }
     }
 
-    /// Forward pass for the decoder.
-    ///
-    /// # Arguments
-    ///
-    /// * `features` - A 5-element array containing the input image and the four
-    ///   feature maps from the encoder `[x, x1, x2, x3, x4]`.
-    ///
-    /// # Returns
-    ///
-    /// The final segmentation map.
-    pub fn forward(&self, features: [Tensor<4>; 5]) -> Tensor<4> {
+    fn forward_core(&self, features: [Tensor<4>; 5], collect_ms: bool) -> Vec<Tensor<4>> {
         let [x, x1, x2, x3, x4] = features;
+        let mut outs = Vec::with_capacity(4);
 
-        // Level 4: Process with IPT block 5
-        let x4_processed = self.process_ipt_block(&self.ipt_blk5, &x, x4);
+        // Stage 4
+        let x4_processed = self.process_ipt_block(self.ipt_blk5.as_ref(), &x, x4);
+        let p4 = Self::process_decoder_block(&self.decoder_block4, x4_processed);
+        let p4 = Self::apply_gdt_attention(
+            p4,
+            self.gdt_convs_4.as_ref(),
+            self.gdt_convs_attn_4.as_ref(),
+        );
+        if collect_ms && let Some(conv) = &self.conv_ms_spvn_4 {
+            outs.push(conv.forward(p4.clone()));
+        }
 
-        // Decoder block 4 -> GDT attention
-        let mut p4 = self.process_decoder_block(&self.decoder_block4, x4_processed);
-        p4 = self.apply_gdt_attention(p4, &self.gdt_convs_4, &self.gdt_convs_attn_4);
-
-        // Interpolate and add lateral connection
         let [_, _, h3, w3] = x3.dims();
-        let p4_interp = intelligent_interpolate(p4, [h3, w3], &self.interpolation_strategy);
-        let p3_lateral = p4_interp + self.process_lateral_block(&self.lateral_block4, x3);
+        let p4_interp = intelligent_interpolate(p4, [h3, w3], self.interpolation_strategy);
+        let p3_lateral = p4_interp + Self::process_lateral_block(&self.lateral_block4, x3);
 
-        // Level 3: Process with IPT block 4
-        let p3_with_ipt = self.process_ipt_block(&self.ipt_blk4, &x, p3_lateral);
+        // Stage 3
+        let p3_with_ipt = self.process_ipt_block(self.ipt_blk4.as_ref(), &x, p3_lateral);
+        let p3 = Self::process_decoder_block(&self.decoder_block3, p3_with_ipt);
+        let p3 = Self::apply_gdt_attention(
+            p3,
+            self.gdt_convs_3.as_ref(),
+            self.gdt_convs_attn_3.as_ref(),
+        );
+        if collect_ms && let Some(conv) = &self.conv_ms_spvn_3 {
+            outs.push(conv.forward(p3.clone()));
+        }
 
-        // Decoder block 3 -> GDT attention
-        let mut p3 = self.process_decoder_block(&self.decoder_block3, p3_with_ipt);
-        p3 = self.apply_gdt_attention(p3, &self.gdt_convs_3, &self.gdt_convs_attn_3);
-
-        // Interpolate and add lateral connection
         let [_, _, h2, w2] = x2.dims();
-        let p3_interp = intelligent_interpolate(p3, [h2, w2], &self.interpolation_strategy);
-        let p2_lateral = p3_interp + self.process_lateral_block(&self.lateral_block3, x2);
+        let p3_interp = intelligent_interpolate(p3, [h2, w2], self.interpolation_strategy);
+        let p2_lateral = p3_interp + Self::process_lateral_block(&self.lateral_block3, x2);
 
-        // Level 2: Process with IPT block 3
-        let p2_with_ipt = self.process_ipt_block(&self.ipt_blk3, &x, p2_lateral);
+        // Stage 2
+        let p2_with_ipt = self.process_ipt_block(self.ipt_blk3.as_ref(), &x, p2_lateral);
+        let p2 = Self::process_decoder_block(&self.decoder_block2, p2_with_ipt);
+        let p2 = Self::apply_gdt_attention(
+            p2,
+            self.gdt_convs_2.as_ref(),
+            self.gdt_convs_attn_2.as_ref(),
+        );
+        if collect_ms && let Some(conv) = &self.conv_ms_spvn_2 {
+            outs.push(conv.forward(p2.clone()));
+        }
 
-        // Decoder block 2 -> GDT attention
-        let mut p2 = self.process_decoder_block(&self.decoder_block2, p2_with_ipt);
-        p2 = self.apply_gdt_attention(p2, &self.gdt_convs_2, &self.gdt_convs_attn_2);
-
-        // Interpolate and add lateral connection
         let [_, _, h1, w1] = x1.dims();
-        let p2_interp = intelligent_interpolate(p2, [h1, w1], &self.interpolation_strategy);
-        let p1_lateral = p2_interp + self.process_lateral_block(&self.lateral_block2, x1);
+        let p2_interp = intelligent_interpolate(p2, [h1, w1], self.interpolation_strategy);
+        let p1_lateral = p2_interp + Self::process_lateral_block(&self.lateral_block2, x1);
 
-        // Level 1: Process with IPT block 2
-        let p1_with_ipt = self.process_ipt_block(&self.ipt_blk2, &x, p1_lateral);
+        // Stage 1
+        let p1_with_ipt = self.process_ipt_block(self.ipt_blk2.as_ref(), &x, p1_lateral);
+        let p1 = Self::process_decoder_block(&self.decoder_block1, p1_with_ipt);
 
-        // Decoder block 1
-        let mut p1 = self.process_decoder_block(&self.decoder_block1, p1_with_ipt);
-
-        // Final interpolation to original resolution
         let [_, _, h_orig, w_orig] = x.dims();
-        p1 = intelligent_interpolate(p1, [h_orig, w_orig], &self.interpolation_strategy);
+        let p1 = intelligent_interpolate(p1, [h_orig, w_orig], self.interpolation_strategy);
+        let p1_final = self.process_ipt_block(self.ipt_blk1.as_ref(), &x, p1);
+        outs.push(self.conv_out1.forward(p1_final));
 
-        // Final IPT processing
-        let p1_final = self.process_ipt_block(&self.ipt_blk1, &x, p1);
-
-        // Output convolution
-        self.conv_out1.forward(p1_final)
+        outs
     }
 
-    fn get_patches_batch(&self, x: Tensor<4>, p: Tensor<4>) -> Tensor<4> {
-        let [b, c, h, w] = p.dims();
-        let [_, _, h_, w_] = x.dims();
-        let patch_count = (h_ / h) * (w_ / w);
-        let mut patches = Vec::with_capacity(patch_count);
-        for i in (0..w_).step_by(w) {
-            let column_x = x.clone().slice(s![0..b, 0..c, 0..h_, i..i + w]);
-            for j in (0..h_).step_by(h) {
-                let patch = column_x.clone().slice([0..b, 0..c, j..j + h, 0..w]);
+    /// Runs the decoder and returns only the final segmentation logit map `[B, 1, H, W]`.
+    #[must_use]
+    pub fn forward(&self, features: [Tensor<4>; 5]) -> Tensor<4> {
+        self.forward_core(features, false)
+            .pop()
+            .expect("decoder always emits final prediction")
+    }
+
+    /// Runs the decoder and returns multi-scale supervision logits followed by the final prediction.
+    #[must_use]
+    pub fn forward_multi_scale(&self, features: [Tensor<4>; 5]) -> Vec<Tensor<4>> {
+        self.forward_core(features, true)
+    }
+
+    fn get_patches_batch(image: &Tensor<4>, feature: &Tensor<4>) -> Tensor<4> {
+        let [batch_size, _, patch_h, patch_w] = feature.dims();
+        let [_, img_c, img_h, img_w] = image.dims();
+        let cols = img_w / patch_w;
+        let rows = img_h / patch_h;
+        let mut patches = Vec::with_capacity(cols * rows);
+        for col in 0..cols {
+            let col_start = col * patch_w;
+            let column = image.clone().slice(s![
+                0..batch_size,
+                0..img_c,
+                0..img_h,
+                col_start..col_start + patch_w
+            ]);
+            for row in 0..rows {
+                let row_start = row * patch_h;
+                let patch = column.clone().slice([
+                    0..batch_size,
+                    0..img_c,
+                    row_start..row_start + patch_h,
+                    0..patch_w,
+                ]);
                 patches.push(patch);
             }
         }

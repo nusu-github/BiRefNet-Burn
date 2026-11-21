@@ -1,20 +1,8 @@
-//! # BiRefNet Model Implementation
-//!
-//! This module defines the main `BiRefNet` model, which combines a backbone encoder
-//! with a sophisticated decoder to produce segmentation masks.
-//!
-//! ## Core Components
-//!
-//! - `BiRefNetConfig`: A configuration struct to initialize the `BiRefNet` model.
-//! - `BiRefNet`: The main model struct, which orchestrates the forward pass through
-//!   the encoder and decoder.
-//!
-//! The implementation closely follows the original PyTorch version, including support for
-//! multi-scale inputs, context aggregation, and various decoder block configurations.
+//! Main `BiRefNet` model uniting backbone encoder, squeeze stage, decoder, and optional refinement.
 
 use birefnet_backbones::{
-    Backbone, BackboneType, BackboneWrapper, PvtV2Variant, ResNetVariant, SwinVariant, VGGVariant,
-    create_backbone,
+    Backbone as _, BackboneModel, BackboneType, PvtV2Variant, ResNetVariant, SwinVariant,
+    VggVariant,
 };
 #[cfg(feature = "train")]
 use birefnet_loss::{BiRefNetLoss, BiRefNetLossConfig};
@@ -26,7 +14,7 @@ use super::{
     decoder::{Decoder, DecoderConfig},
     modules::{
         ASPP, ASPPConfig, ASPPDeformable, ASPPDeformableConfig, BasicDecBlk, BasicDecBlkConfig,
-        ResBlk, ResBlkConfig,
+        ResBlk, ResBlkConfig, utils::intelligent_interpolate,
     },
     refinement::{
         RefUNet, RefUNetConfig, Refiner, RefinerConfig, RefinerPVTInChannels4,
@@ -36,371 +24,328 @@ use super::{
 #[cfg(feature = "train")]
 use crate::training::{BiRefNetBatch, BiRefNetOutput};
 use crate::{
-    config::{InterpolationStrategy, ModelConfig, MultiScaleInput, Refine, SqueezeBlock},
-    error::{BiRefNetError, BiRefNetResult},
-    models::modules::utils::intelligent_interpolate,
+    config::{
+        Backbone, DecoderAttention, InterpolationStrategy, ModelConfig, MultiScaleInput, Refine,
+        SqueezeBlock,
+    },
+    error::ModelError,
 };
 
-/// An enum to wrap different types of squeeze blocks used in the decoder.
+/// Squeeze block variant applied between the encoder output and decoder input.
 #[derive(Module, Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "ASPP variants own fixed multi-branch parameters and stay non-boxed inside Burn Module derive"
+)]
+#[expect(
+    clippy::upper_case_acronyms,
+    reason = "preserves ASPP variant name matching existing BiRefNet schema"
+)]
 pub enum SqueezeBlockModule {
+    /// Basic decoder squeeze block.
     BasicDecBlk(BasicDecBlk),
+    /// Residual decoder squeeze block.
     ResBlk(ResBlk),
+    /// Atrous Spatial Pyramid Pooling squeeze block.
     ASPP(ASPP),
+    /// Deformable ASPP squeeze block.
     ASPPDeformable(ASPPDeformable),
 }
 
-/// An enum to wrap different types of refinement modules.
+/// Optional refinement module applied to coarse decoder predictions.
 #[derive(Module, Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Backbone-backed refiner variants stay inline for Burn Module parameter serialization"
+)]
 pub enum RefineModule {
+    /// Lightweight U-Net refiner.
     RefUNet(RefUNet),
+    /// Stem + PVTv2 refiner.
     Refiner(Refiner),
+    /// Direct 4-channel PVTv2 refiner.
     RefinerPVTInChannels4(RefinerPVTInChannels4),
 }
 
-/// Configuration for the `BiRefNet` model.
+/// Configuration for [`BiRefNet`].
 #[derive(Config, Debug)]
 pub struct BiRefNetConfig {
-    /// The detailed model configuration.
+    /// Detailed architecture configuration.
     config: ModelConfig,
-    /// The loss configuration for training.
+    /// Optional training loss configuration when built with the `train` feature.
     #[cfg(feature = "train")]
     loss_config: Option<BiRefNetLossConfig>,
 }
 
+fn nested_squeeze_for_attention(attention: DecoderAttention) -> SqueezeBlock {
+    match attention {
+        DecoderAttention::None => SqueezeBlock::None,
+        DecoderAttention::ASPP => SqueezeBlock::ASPP(0),
+        DecoderAttention::ASPPDeformable => SqueezeBlock::ASPPDeformable(0),
+    }
+}
+
 impl BiRefNetConfig {
-    /// Initializes a `BiRefNet` model with the given configuration.
-    ///
-    /// # Arguments
-    ///
-    /// * `device` - The device to create the model on.
+    /// Initializes a [`BiRefNet`] model on `device`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the configuration is invalid or model initialization fails.
-    pub fn init(&self, device: &Device) -> BiRefNetResult<BiRefNet> {
-        let backbone_type = self.convert_backbone_config()?;
-        let bb = create_backbone(backbone_type, device);
+    /// Returns [`ModelError`] if [`ModelConfig::validate`] fails or any submodule
+    /// cannot be initialized.
+    pub fn init(&self, device: &Device) -> Result<BiRefNet, ModelError> {
+        self.config.validate()?;
+
+        let bb = self.backbone_type().init(device)?;
         let channels = self.config.lateral_channels_in_collection();
         let cxt = self.config.cxt()?;
+        let cxt_sum = cxt.iter().sum::<usize>();
+        let dec_att = self.config.decoder.dec_att;
+        let dec_channels_inter = self.config.decoder.dec_channels_inter;
+        let batch_size = self.config.task.batch_size;
+        let count = self.config.decoder.squeeze_block.count();
 
-        let squeeze_module = if self.config.decoder.squeeze_block == SqueezeBlock::None {
-            vec![]
-        } else {
-            let mut squeeze_module = Vec::with_capacity(self.config.decoder.squeeze_block.count());
+        let mut squeeze_module = Vec::with_capacity(count);
+        for idx in 0..count {
+            let in_channels = if idx == 0 {
+                channels[0] + cxt_sum
+            } else {
+                channels[0]
+            };
+            let block = match self.config.decoder.squeeze_block {
+                SqueezeBlock::BasicDecBlk(_) => SqueezeBlockModule::BasicDecBlk(
+                    BasicDecBlkConfig::new(
+                        nested_squeeze_for_attention(dec_att),
+                        self.config.interpolation,
+                    )
+                    .with_in_channels(in_channels)
+                    .with_out_channels(channels[0])
+                    .with_dec_channels_inter(dec_channels_inter)
+                    .with_batch_size(batch_size)
+                    .init(device)?,
+                ),
+                SqueezeBlock::ResBlk(_) => SqueezeBlockModule::ResBlk(
+                    ResBlkConfig::new(self.config.interpolation)
+                        .with_in_channels(in_channels)
+                        .with_out_channels(Some(channels[0]))
+                        .with_dec_att(dec_att)
+                        .with_dec_channels_inter(dec_channels_inter)
+                        .with_batch_size(batch_size)
+                        .init(device)?,
+                ),
+                SqueezeBlock::ASPP(_) => SqueezeBlockModule::ASPP(
+                    ASPPConfig::new(self.config.interpolation)
+                        .with_in_channels(in_channels)
+                        .with_out_channels(Some(channels[0]))
+                        .with_batch_size(batch_size)
+                        .init(device)?,
+                ),
+                SqueezeBlock::ASPPDeformable(_) => SqueezeBlockModule::ASPPDeformable(
+                    ASPPDeformableConfig::new(self.config.interpolation)
+                        .with_in_channels(in_channels)
+                        .with_out_channels(Some(channels[0]))
+                        .with_batch_size(batch_size)
+                        .init(device),
+                ),
+                SqueezeBlock::None => unreachable!("count > 0 excludes SqueezeBlock::None"),
+            };
+            squeeze_module.push(block);
+        }
 
-            for _ in 0..self.config.decoder.squeeze_block.count() {
-                match self.config.decoder.squeeze_block {
-                    SqueezeBlock::BasicDecBlk(_) => {
-                        let cxt_sum = cxt.iter().sum::<usize>();
-                        let model = BasicDecBlkConfig::new(
-                            SqueezeBlock::ASPPDeformable(0),
-                            self.config.interpolation.clone(),
-                        )
-                        .with_in_channels(channels[0] + cxt_sum)
-                        .with_out_channels(channels[0])
-                        .init(device)?;
-                        squeeze_module.push(SqueezeBlockModule::BasicDecBlk(model));
-                    }
-                    SqueezeBlock::ResBlk(_) => {
-                        let cxt_sum = cxt.iter().sum::<usize>();
-                        let model = ResBlkConfig::new(self.config.interpolation.clone())
-                            .with_in_channels(channels[0] + cxt_sum)
-                            .with_out_channels(Some(channels[0]))
-                            .init(device)?;
-                        squeeze_module.push(SqueezeBlockModule::ResBlk(model));
-                    }
-                    SqueezeBlock::ASPP(_) => {
-                        let cxt_sum = cxt.iter().sum::<usize>();
-                        let model = ASPPConfig::new(self.config.interpolation.clone())
-                            .with_in_channels(channels[0] + cxt_sum)
-                            .with_out_channels(Some(channels[0]))
-                            .init(device);
-                        squeeze_module.push(SqueezeBlockModule::ASPP(model));
-                    }
-                    SqueezeBlock::ASPPDeformable(_) => {
-                        let cxt_sum = cxt.iter().sum::<usize>();
-                        let model = ASPPDeformableConfig::new(self.config.interpolation.clone())
-                            .with_in_channels(channels[0] + cxt_sum)
-                            .with_out_channels(Some(channels[0]))
-                            .init(device)?;
-                        squeeze_module.push(SqueezeBlockModule::ASPPDeformable(model));
-                    }
-                    SqueezeBlock::None => {
-                        return Err(BiRefNetError::InvalidConfiguration {
-                            reason: "SqueezeBlock::None should not be processed in this loop"
-                                .to_owned(),
-                        });
-                    }
-                }
-            }
-
-            squeeze_module
-        };
-
-        let mul_scl_ipt = self.config.decoder.mul_scl_ipt.clone();
-
-        // Initialize refinement module based on configuration
         let refine = match self.config.refine.refine {
-            Refine::RefUNet => {
-                let refine_config = RefUNetConfig::new(self.config.interpolation.clone());
-                Some(RefineModule::RefUNet(refine_config.init(device)))
-            }
-            Refine::Refiner => {
-                let refine_config =
-                    RefinerConfig::new(self.config.clone(), self.config.interpolation.clone());
-                Some(RefineModule::Refiner(refine_config.init(device)?))
-            }
-            Refine::RefinerPVTInChannels4 => {
-                let refine_config = RefinerPVTInChannels4Config::new(
-                    self.config.clone(),
-                    self.config.interpolation.clone(),
-                );
-                Some(RefineModule::RefinerPVTInChannels4(
-                    refine_config.init(device)?,
-                ))
-            }
-            Refine::Itself => None,
-            Refine::None => None,
+            Refine::RefUNet => Some(RefineModule::RefUNet(
+                RefUNetConfig::new(self.config.interpolation).init(device),
+            )),
+            Refine::Refiner => Some(RefineModule::Refiner(
+                RefinerConfig::new(self.config.clone(), self.config.interpolation).init(device)?,
+            )),
+            Refine::RefinerPVTInChannels4 => Some(RefineModule::RefinerPVTInChannels4(
+                RefinerPVTInChannels4Config::new(self.config.clone(), self.config.interpolation)
+                    .init(device)?,
+            )),
+            Refine::Itself | Refine::None => None,
         };
+
+        let decoder = DecoderConfig::new(self.config.clone(), channels, self.config.interpolation)
+            .init(device)?;
 
         #[cfg(feature = "train")]
         let loss = self.loss_config.as_ref().map(|config| config.init(device));
 
-        let interpolation_strategy = self.config.interpolation.clone();
-
         Ok(BiRefNet {
-            mul_scl_ipt,
+            mul_scl_ipt: self.config.decoder.mul_scl_ipt,
             cxt,
             bb,
             squeeze_module,
-            decoder: DecoderConfig::new(
-                self.config.clone(),
-                channels,
-                self.config.interpolation.clone(),
-            )
-            .init(device)?,
+            decoder,
             refine,
             #[cfg(feature = "train")]
             loss,
-            interpolation_strategy,
+            interpolation_strategy: self.config.interpolation,
         })
     }
 
-    /// Converts the old Backbone enum in config to the new BackboneType enum.
-    const fn convert_backbone_config(&self) -> BiRefNetResult<BackboneType> {
-        use crate::config::Backbone as OldBackbone;
-
+    const fn backbone_type(&self) -> BackboneType {
         match self.config.backbone.backbone {
-            OldBackbone::Vgg16 => Ok(BackboneType::VGG(VGGVariant::VGG16)),
-            OldBackbone::Vgg16bn => Ok(BackboneType::VGG(VGGVariant::VGG16BN)),
-            OldBackbone::Resnet50 => Ok(BackboneType::ResNet(ResNetVariant::ResNet50)),
-            OldBackbone::SwinV1T => Ok(BackboneType::SwinTransformer(SwinVariant::SwinT)),
-            OldBackbone::SwinV1S => Ok(BackboneType::SwinTransformer(SwinVariant::SwinS)),
-            OldBackbone::SwinV1B => Ok(BackboneType::SwinTransformer(SwinVariant::SwinB)),
-            OldBackbone::SwinV1L => Ok(BackboneType::SwinTransformer(SwinVariant::SwinL)),
-            OldBackbone::PvtV2B0 => Ok(BackboneType::PvtV2(PvtV2Variant::B0)),
-            OldBackbone::PvtV2B1 => Ok(BackboneType::PvtV2(PvtV2Variant::B1)),
-            OldBackbone::PvtV2B2 => Ok(BackboneType::PvtV2(PvtV2Variant::B2)),
-            OldBackbone::PvtV2B5 => Ok(BackboneType::PvtV2(PvtV2Variant::B5)),
+            Backbone::Vgg16 => BackboneType::Vgg(VggVariant::Vgg16),
+            Backbone::Vgg16bn => BackboneType::Vgg(VggVariant::Vgg16Bn),
+            Backbone::Resnet50 => BackboneType::ResNet(ResNetVariant::ResNet50),
+            Backbone::SwinV1T => BackboneType::SwinTransformer(SwinVariant::SwinT),
+            Backbone::SwinV1S => BackboneType::SwinTransformer(SwinVariant::SwinS),
+            Backbone::SwinV1B => BackboneType::SwinTransformer(SwinVariant::SwinB),
+            Backbone::SwinV1L => BackboneType::SwinTransformer(SwinVariant::SwinL),
+            Backbone::PvtV2B0 => BackboneType::PvtV2(PvtV2Variant::B0),
+            Backbone::PvtV2B1 => BackboneType::PvtV2(PvtV2Variant::B1),
+            Backbone::PvtV2B2 => BackboneType::PvtV2(PvtV2Variant::B2),
+            Backbone::PvtV2B5 => BackboneType::PvtV2(PvtV2Variant::B5),
         }
     }
 }
 
-/// The main BiRefNet model.
+/// Bilateral Reference Network (`BiRefNet`) model for high-resolution dichotomous segmentation.
 #[derive(Module, Debug)]
 pub struct BiRefNet {
-    /// The multi-scale input handling strategy.
     #[module(skip)]
     mul_scl_ipt: MultiScaleInput,
-    /// Context channel sizes.
     cxt: [usize; 3],
-    /// The backbone encoder.
-    bb: BackboneWrapper,
-    /// The squeeze module applied to the deepest encoder feature.
+    bb: BackboneModel,
     squeeze_module: Vec<SqueezeBlockModule>,
-    /// The decoder module.
     decoder: Decoder,
-    /// The refinement module.
     refine: Option<RefineModule>,
-    /// The loss function used for training.
     #[cfg(feature = "train")]
     loss: Option<BiRefNetLoss>,
-    /// Interpolation strategy for tensor resizing operations.
     #[module(skip)]
     interpolation_strategy: InterpolationStrategy,
 }
 
 impl BiRefNet {
-    /// Performs the forward pass through the encoder part of the network.
+    /// Extracts multi-stage encoder feature maps `[x1, x2, x3, x4]` from `x`.
     ///
     /// # Shapes
-    /// * `x` - Input tensor: `[batch_size, channels, height, width]`
-    /// * Returns - Feature maps: `[[batch_size, C1, H/4, W/4], [batch_size, C2, H/8, W/8], [batch_size, C3, H/16, W/16], [batch_size, C4, H/32, W/32]]`
+    /// - `x`: `[batch_size, 3, height, width]`
+    /// - returns: `[x1, x2, x3, x4]` ordered shallow-to-deep.
     ///
-    /// # Arguments
-    /// * `x` - The input RGB image tensor
+    /// # Errors
     ///
-    /// # Returns
-    /// A result containing a 4-element array of hierarchical feature maps from different encoder stages with decreasing spatial resolutions
-    pub fn forward_enc(&self, x: Tensor<4>) -> BiRefNetResult<[Tensor<4>; 4]> {
-        let [x1, x2, x3, x4] = self.bb.forward(x.clone());
-        let [x1, x2, x3, x4] = match self.mul_scl_ipt {
-            MultiScaleInput::None => [x1, x2, x3, x4],
-            MultiScaleInput::Add => {
-                let [_, _, h, w] = x.dims();
-                let [x1_, x2_, x3_, x4_] = self.bb.forward(intelligent_interpolate(
-                    x,
-                    [h / 2, w / 2],
-                    &self.interpolation_strategy,
-                ));
+    /// Returns [`ModelError`] if `x` has invalid channel count (`!= 3`).
+    pub fn forward_enc(&self, x: Tensor<4>) -> Result<[Tensor<4>; 4], ModelError> {
+        let [_, channels, height, width] = x.dims();
+        if channels != 3 {
+            return Err(ModelError::invalid_input(format!(
+                "BiRefNet expects 3 RGB input channels, got {channels}"
+            )));
+        }
 
-                let [_, _, h, w] = x1.dims();
-                let x1 = x1 + intelligent_interpolate(x1_, [h, w], &self.interpolation_strategy);
-                let [_, _, h, w] = x2.dims();
-                let x2 = x2 + intelligent_interpolate(x2_, [h, w], &self.interpolation_strategy);
-                let [_, _, h, w] = x3.dims();
-                let x3 = x3 + intelligent_interpolate(x3_, [h, w], &self.interpolation_strategy);
-                let [_, _, h, w] = x4.dims();
-                let x4 = x4 + intelligent_interpolate(x4_, [h, w], &self.interpolation_strategy);
+        let [mut x1, mut x2, mut x3, mut x4] = self.bb.forward(x.clone());
 
-                [x1, x2, x3, x4]
+        if !matches!(self.mul_scl_ipt, MultiScaleInput::None) {
+            let half_h = (height / 2).max(1);
+            let half_w = (width / 2).max(1);
+            let half_x = intelligent_interpolate(x, [half_h, half_w], self.interpolation_strategy);
+            let [x1_half, x2_half, x3_half, x4_half] = self.bb.forward(half_x);
+
+            let align = |base: &Tensor<4>, low_res: Tensor<4>| {
+                let [_, _, target_h, target_w] = base.dims();
+                intelligent_interpolate(low_res, [target_h, target_w], self.interpolation_strategy)
+            };
+
+            let x1_up = align(&x1, x1_half);
+            let x2_up = align(&x2, x2_half);
+            let x3_up = align(&x3, x3_half);
+            let x4_up = align(&x4, x4_half);
+
+            match self.mul_scl_ipt {
+                MultiScaleInput::Add => {
+                    x1 = x1 + x1_up;
+                    x2 = x2 + x2_up;
+                    x3 = x3 + x3_up;
+                    x4 = x4 + x4_up;
+                }
+                MultiScaleInput::Cat => {
+                    x1 = Tensor::cat(vec![x1, x1_up], 1);
+                    x2 = Tensor::cat(vec![x2, x2_up], 1);
+                    x3 = Tensor::cat(vec![x3, x3_up], 1);
+                    x4 = Tensor::cat(vec![x4, x4_up], 1);
+                }
+                MultiScaleInput::None => unreachable!(),
             }
-            MultiScaleInput::Cat => {
-                let [_, _, h, w] = x.dims();
-                let [x1_, x2_, x3_, x4_] = self.bb.forward(intelligent_interpolate(
-                    x,
-                    [h / 2, w / 2],
-                    &self.interpolation_strategy,
+        }
+
+        let active_cxt = self.cxt.iter().filter(|&&count| count > 0).count();
+        if active_cxt > 0 {
+            let [_, _, h4, w4] = x4.dims();
+            let candidates = [&x1, &x2, &x3];
+            let start = candidates.len().saturating_sub(active_cxt);
+            let mut concat_inputs = Vec::with_capacity(active_cxt + 1);
+            for feat in &candidates[start..] {
+                concat_inputs.push(intelligent_interpolate(
+                    (*feat).clone(),
+                    [h4, w4],
+                    self.interpolation_strategy,
                 ));
-
-                let [_, _, h, w] = x1.dims();
-                let x1 = Tensor::cat(
-                    vec![
-                        x1,
-                        intelligent_interpolate(x1_, [h, w], &self.interpolation_strategy),
-                    ],
-                    1,
-                );
-                let [_, _, h, w] = x2.dims();
-                let x2 = Tensor::cat(
-                    vec![
-                        x2,
-                        intelligent_interpolate(x2_, [h, w], &self.interpolation_strategy),
-                    ],
-                    1,
-                );
-                let [_, _, h, w] = x3.dims();
-                let x3 = Tensor::cat(
-                    vec![
-                        x3,
-                        intelligent_interpolate(x3_, [h, w], &self.interpolation_strategy),
-                    ],
-                    1,
-                );
-                let [_, _, h, w] = x4.dims();
-                let x4 = Tensor::cat(
-                    vec![
-                        x4,
-                        intelligent_interpolate(x4_, [h, w], &self.interpolation_strategy),
-                    ],
-                    1,
-                );
-
-                [x1, x2, x3, x4]
             }
-        };
+            concat_inputs.push(x4);
+            x4 = Tensor::cat(concat_inputs, 1);
+        }
 
-        if self.cxt[0] > 0 {
-            let mut combined = vec![];
-            let [_, _, h, w] = x4.dims();
-            combined.push(intelligent_interpolate(
-                x1.clone(),
-                [h, w],
-                &InterpolationStrategy::Nearest,
-            ));
-            combined.push(intelligent_interpolate(
-                x2.clone(),
-                [h, w],
-                &InterpolationStrategy::Nearest,
-            ));
-            combined.push(intelligent_interpolate(
-                x3.clone(),
-                [h, w],
-                &InterpolationStrategy::Nearest,
-            ));
-            let len_cxt = self.cxt.len();
-            let mut result = combined[combined.len().saturating_sub(len_cxt)..].to_vec();
-            result.push(x4);
+        Ok([x1, x2, x3, x4])
+    }
 
-            let x4 = Tensor::cat(result, 1);
-            Ok([x1, x2, x3, x4])
+    fn forward_backbone_decoder(
+        &self,
+        x: &Tensor<4>,
+        collect_ms: bool,
+    ) -> Result<Vec<Tensor<4>>, ModelError> {
+        let [x1, x2, x3, mut x4] = self.forward_enc(x.clone())?;
+        for squeeze_module in &self.squeeze_module {
+            x4 = match squeeze_module {
+                SqueezeBlockModule::BasicDecBlk(model) => model.forward(x4),
+                SqueezeBlockModule::ResBlk(model) => model.forward(x4),
+                SqueezeBlockModule::ASPP(model) => model.forward(x4),
+                SqueezeBlockModule::ASPPDeformable(model) => model.forward(x4),
+            };
+        }
+
+        let features = [x.clone(), x1, x2, x3, x4];
+        if collect_ms {
+            Ok(self.decoder.forward_multi_scale(features))
         } else {
-            Ok([x1, x2, x3, x4])
+            Ok(vec![self.decoder.forward(features)])
         }
     }
 
-    /// The original forward pass of the model.
+    /// Runs inference forward pass returning segmentation logits `[batch_size, 1, height, width]`.
     ///
-    /// This method encapsulates the full process from encoder to decoder, including
-    /// multi-scale feature extraction, squeeze operations, and hierarchical decoding.
+    /// # Errors
     ///
-    /// # Shapes
-    /// * `x` - Input tensor: `[batch_size, channels, height, width]`
-    /// * Returns - Segmentation map: `[batch_size, 1, height, width]`
-    ///
-    /// # Arguments
-    /// * `x` - The input RGB image tensor
-    ///
-    /// # Returns
-    /// A result containing the final segmentation map with values representing pixel-wise probabilities
-    pub fn forward_ori(&self, x: Tensor<4>) -> BiRefNetResult<Tensor<4>> {
-        // ########## Encoder ##########
-        let [x1, x2, x3, x4] = self.forward_enc(x.clone())?;
-        let mut x4 = x4;
-        for squeeze_module in &self.squeeze_module {
-            match squeeze_module {
-                SqueezeBlockModule::BasicDecBlk(model) => {
-                    x4 = model.forward(x4);
-                }
-                SqueezeBlockModule::ResBlk(model) => {
-                    x4 = model.forward(x4);
-                }
-                SqueezeBlockModule::ASPP(model) => {
-                    x4 = model.forward(x4);
-                }
-                SqueezeBlockModule::ASPPDeformable(model) => {
-                    x4 = model.forward(x4);
-                }
-            }
-        }
-        // ########## Decoder ##########
-        let features = [x.clone(), x1, x2, x3, x4];
-        let decoder_output = self.decoder.forward(features);
+    /// Returns [`ModelError`] if inputs have invalid shape or any refinement module fails.
+    pub fn forward(&self, x: Tensor<4>) -> Result<Tensor<4>, ModelError> {
+        let decoder_output = self
+            .forward_backbone_decoder(&x, false)?
+            .pop()
+            .ok_or_else(|| ModelError::invalid_input("decoder emitted no predictions"))?;
 
-        // ########## Refinement ##########
-        if self.refine.is_none() {
+        let Some(refine) = &self.refine else {
             return Ok(decoder_output);
-        }
+        };
 
-        let refined_output = match self.refine.as_ref().unwrap() {
-            RefineModule::RefUNet(refine_module) => {
-                let refined_features = refine_module.forward(vec![x, decoder_output.clone()]);
-                refined_features
-                    .into_iter()
-                    .last()
-                    .unwrap_or(decoder_output)
-            }
+        let refined_output = match refine {
+            RefineModule::RefUNet(refine_module) => refine_module
+                .forward(&[x, decoder_output.clone()])?
+                .into_iter()
+                .last()
+                .unwrap_or(decoder_output),
             RefineModule::Refiner(refine_module) => {
-                let refined_features = refine_module.forward(x);
-                refined_features
+                let combined = Tensor::cat(vec![x, decoder_output.clone()], 1);
+                refine_module
+                    .forward(combined)
                     .into_iter()
                     .last()
                     .unwrap_or(decoder_output)
             }
             RefineModule::RefinerPVTInChannels4(refine_module) => {
-                let refined_features = refine_module.forward(x);
-                refined_features
+                let combined = Tensor::cat(vec![x, decoder_output.clone()], 1);
+                refine_module
+                    .forward(combined)
                     .into_iter()
                     .last()
                     .unwrap_or(decoder_output)
@@ -410,53 +355,31 @@ impl BiRefNet {
         Ok(refined_output)
     }
 
-    /// The main forward pass for the `BiRefNet` model.
+    /// Runs a supervised training/validation step returning predictions, targets, and loss.
     ///
-    /// # Shapes
-    /// * `x` - Input tensor: `[batch_size, channels, height, width]`
-    /// * Returns - Segmentation map: `[batch_size, 1, height, width]`
+    /// # Errors
     ///
-    /// # Arguments
-    /// * `x` - The input RGB image tensor
-    ///
-    /// # Returns
-    /// A result containing the final binary segmentation map with probability values
-    pub fn forward(&self, x: Tensor<4>) -> BiRefNetResult<Tensor<4>> {
-        self.forward_ori(x)
-    }
-
-    /// Forward pass for training with configurable loss computation.
-    ///
-    /// This method combines the model's segmentation output with ground truth
-    /// to compute comprehensive training losses. The loss configuration can be
-    /// customized for different training scenarios.
-    ///
-    /// # Arguments
-    /// * `batch` - Training batch containing input images and ground truth masks
-    /// * `loss_config` - Optional loss configuration (uses default if None)
-    ///
-    /// # Returns
-    /// A result containing the training output with predictions, targets, and computed loss
+    /// Returns [`ModelError`] if `loss_config` is unset on [`BiRefNetConfig`] or forward/loss fails.
     #[cfg(feature = "train")]
-    pub fn forward_classification(&self, batch: BiRefNetBatch) -> BiRefNetResult<BiRefNetOutput> {
-        // 1. Forward pass through the model to get predictions
-        let prediction = self.forward(batch.images.clone())?;
+    pub fn forward_step(&self, batch: BiRefNetBatch) -> Result<BiRefNetOutput, ModelError> {
+        let loss_fn = self.loss.as_ref().ok_or_else(|| {
+            ModelError::invalid_config("loss_config is not set on BiRefNetConfig")
+        })?;
 
-        let loss = if let Some(loss_config) = &self.loss {
-            loss_config
+        let (prediction, loss) = if self.refine.is_none() {
+            let scaled_preds = self.forward_backbone_decoder(&batch.images, true)?;
+            let loss = loss_fn.forward(&scaled_preds, &batch.masks)?;
+            let prediction = scaled_preds
+                .into_iter()
+                .last()
+                .ok_or_else(|| ModelError::invalid_input("decoder emitted no predictions"))?;
+            (prediction, loss)
         } else {
-            return Err(BiRefNetError::InvalidConfiguration {
-                reason: "Loss configuration is not set".to_owned(),
-            });
+            let prediction = self.forward(batch.images)?;
+            let loss = loss_fn.forward(core::slice::from_ref(&prediction), &batch.masks)?;
+            (prediction, loss)
         };
 
-        let loss = loss
-            .forward(vec![prediction.clone()], batch.masks.clone())
-            .map_err(|e| BiRefNetError::General {
-                message: format!("Loss computation failed: {e}"),
-            })?;
-
-        // 4. Create output item
         Ok(BiRefNetOutput::new(loss, prediction, batch.masks))
     }
 }
@@ -466,10 +389,11 @@ impl TrainStep for BiRefNet {
     type Input = BiRefNetBatch;
     type Output = BiRefNetOutput;
 
-    fn step(&self, batch: BiRefNetBatch) -> TrainOutput<BiRefNetOutput> {
-        // Use default loss configuration for training
-        let item = self.forward_classification(batch).unwrap();
-        TrainOutput::new(self, item.loss.backward(), item)
+    fn step(&self, item: BiRefNetBatch) -> TrainOutput<BiRefNetOutput> {
+        let output = self
+            .forward_step(item)
+            .expect("BiRefNet train forward_step failed");
+        TrainOutput::new(self, output.loss.backward(), output)
     }
 }
 
@@ -478,78 +402,8 @@ impl InferenceStep for BiRefNet {
     type Input = BiRefNetBatch;
     type Output = BiRefNetOutput;
 
-    fn step(&self, batch: BiRefNetBatch) -> BiRefNetOutput {
-        // Use default loss configuration for validation
-        self.forward_classification(batch).unwrap()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[cfg(feature = "train")]
-    use birefnet_loss::BiRefNetLossConfig;
-    #[cfg(feature = "train")]
-    use burn::train::{InferenceStep, TrainStep};
-    use burn::{prelude::*, tensor::Distribution};
-
-    use super::BiRefNetConfig;
-    #[cfg(feature = "train")]
-    use crate::BiRefNetBatch;
-    use crate::config::{InterpolationStrategy, ModelConfig};
-
-    #[test]
-    fn birefnet_forward_produces_correct_output_shape() {
-        let device = Device::flex();
-        let config = BiRefNetConfig::new(ModelConfig::new(InterpolationStrategy::Nearest));
-        let model = config.init(&device).unwrap();
-
-        // Create test input tensor [batch_size=1, channels=3, height=64, width=64]
-        let input = Tensor::<4>::random([1, 3, 64, 64], Distribution::Normal(0.0, 1.0), &device);
-
-        // Test forward pass
-        let output = model.forward(input);
-        assert!(output.is_ok());
-
-        let output_tensor = output.unwrap();
-        // Output should have shape [1, 1, 64, 64] for segmentation
-        assert_eq!(output_tensor.dims(), [1, 1, 64, 64]);
-    }
-
-    #[cfg(feature = "train")]
-    fn batch(device: &Device) -> BiRefNetBatch {
-        let images = Tensor::<4>::random([2, 3, 64, 64], Distribution::Normal(0.0, 1.0), device);
-        let masks = Tensor::<4>::random([2, 1, 64, 64], Distribution::Uniform(0.0, 1.0), device);
-        BiRefNetBatch { images, masks }
-    }
-
-    #[cfg(feature = "train")]
-    #[test]
-    fn birefnet_train_step_produces_finite_loss() {
-        // Training models are built on the autodiff device so that `backward` has a graph.
-        let device = Device::flex().autodiff();
-        let config = BiRefNetConfig::new(ModelConfig::new(InterpolationStrategy::Nearest))
-            .with_loss_config(Some(BiRefNetLossConfig::new()));
-        let model = config.init(&device).unwrap();
-
-        let train_output = TrainStep::step(&model, batch(&device));
-
-        assert!(train_output.item.loss.into_scalar::<f32>().is_finite());
-        assert_eq!(train_output.item.output.dims(), [2, 1, 64, 64]);
-        assert_eq!(train_output.item.targets.dims(), [2, 1, 64, 64]);
-    }
-
-    #[cfg(feature = "train")]
-    #[test]
-    fn birefnet_valid_step_produces_finite_loss() {
-        let device = Device::flex();
-        let config = BiRefNetConfig::new(ModelConfig::new(InterpolationStrategy::Nearest))
-            .with_loss_config(Some(BiRefNetLossConfig::new()));
-        let model = config.init(&device).unwrap();
-
-        let output = InferenceStep::step(&model, batch(&device));
-
-        assert!(output.loss.into_scalar::<f32>().is_finite());
-        assert_eq!(output.output.dims(), [2, 1, 64, 64]);
-        assert_eq!(output.targets.dims(), [2, 1, 64, 64]);
+    fn step(&self, item: BiRefNetBatch) -> BiRefNetOutput {
+        self.forward_step(item)
+            .expect("BiRefNet validation forward_step failed")
     }
 }

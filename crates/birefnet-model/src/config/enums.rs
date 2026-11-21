@@ -1,34 +1,24 @@
-//! Enumeration types for BiRefNet configuration.
-//!
-//! This module contains all the enumeration types that define various
-//! configuration options for the BiRefNet model.
+//! Enumeration types for `BiRefNet` configuration.
 
-use burn::prelude::*;
+use burn::serde::{Deserialize, Serialize};
 
-/// Defines the interpolation strategy for tensor resizing operations.
+/// Interpolation strategy for tensor resizing operations.
 ///
-/// This configuration determines how tensors are resized during training and inference.
-/// Since Burn's backward mode only supports Nearest interpolation, this enum provides
-/// automatic switching between modes based on training state.
-#[derive(Config, Debug, PartialEq, Eq, Hash)]
+/// Burn's autodiff backward pass supports only `Nearest` interpolation, whereas
+/// inference can use `Bilinear` for smoother masks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(crate = "burn::serde")]
 pub enum InterpolationStrategy {
-    /// Always use Bilinear interpolation (inference only).
-    /// WARNING: This will cause errors during training.
+    /// Bilinear interpolation (inference only).
+    #[default]
     Bilinear,
-    /// Always use Nearest interpolation (works in both training and inference).
+    /// Nearest-neighbor interpolation (works for both training and inference).
     Nearest,
 }
 
-// `#[default]` does not compile together with `#[derive(Config)]`, so keep the manual impl.
-#[allow(clippy::derivable_impls)]
-impl Default for InterpolationStrategy {
-    fn default() -> Self {
-        Self::Bilinear
-    }
-}
-
-/// Defines the target dataset or task.
-#[derive(Config, Debug, PartialEq, Eq, Hash)]
+/// Target dataset or segmentation task preset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(crate = "burn::serde")]
 pub enum Task {
     /// Dichotomous Image Segmentation 5K dataset.
     DIS5K,
@@ -36,16 +26,17 @@ pub enum Task {
     COD,
     /// High-Resolution Salient Object Detection dataset.
     HRSOD,
-    /// General purpose segmentation.
+    /// General-purpose segmentation.
     General,
-    /// General purpose segmentation (2k version).
+    /// General-purpose 2K resolution segmentation.
     General2k,
-    /// Image Matting task.
+    /// Image matting task.
     Matting,
 }
 
-/// Defines the type of prompt for localization.
-#[derive(Config, Debug, PartialEq, Eq, Hash)]
+/// Prompt type used for localization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(crate = "burn::serde")]
 pub enum PromptForLocation {
     /// Dense prompt.
     Dense,
@@ -53,55 +44,63 @@ pub enum PromptForLocation {
     Sparse,
 }
 
-/// Defines the method for combining multi-scale inputs.
-#[derive(Config, Debug, PartialEq, Eq, Hash)]
+/// Method for combining multi-scale inputs in the encoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(crate = "burn::serde")]
 pub enum MultiScaleInput {
-    /// No multi-scale input.
+    /// Single-scale input only.
     None,
-    /// Add multi-scale features.
+    /// Add half-resolution features to full-resolution features.
     Add,
-    /// Concatenate multi-scale features.
+    /// Concatenate half-resolution features with full-resolution features.
     Cat,
 }
 
-/// Defines the attention mechanism used in the decoder.
-#[derive(Config, Debug, PartialEq, Eq, Hash)]
+/// Attention mechanism used inside decoder and squeeze blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(crate = "burn::serde")]
 pub enum DecoderAttention {
-    /// No attention mechanism.
+    /// No squeeze attention block.
     None,
-    /// Atrous Spatial Pyramid Pooling.
+    /// Atrous Spatial Pyramid Pooling (`ASPP`).
     ASPP,
-    /// ASPP with Deformable Convolutions.
+    /// Deformable Atrous Spatial Pyramid Pooling (`ASPPDeformable`).
     ASPPDeformable,
 }
 
-/// Defines the type and number of blocks in the squeeze module.
-#[derive(Config, Debug, PartialEq, Eq, Hash)]
+/// Type and repetition count of blocks in the encoder-decoder squeeze module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(crate = "burn::serde")]
 pub enum SqueezeBlock {
     /// No squeeze block.
     None,
-    /// A sequence of `BasicDecBlk`.
+    /// Sequence of `BasicDecBlk` squeeze blocks.
     BasicDecBlk(usize),
-    /// A sequence of `ResBlk`.
+    /// Sequence of `ResBlk` squeeze blocks.
     ResBlk(usize),
-    /// A sequence of `ASPP` blocks.
+    /// Sequence of `ASPP` squeeze blocks.
     ASPP(usize),
-    /// A sequence of `ASPPDeformable` blocks.
+    /// Sequence of `ASPPDeformable` squeeze blocks.
     ASPPDeformable(usize),
 }
 
 impl SqueezeBlock {
-    /// Returns the number of blocks configured for the squeeze module.
+    /// Returns the number of repeated blocks configured for the squeeze module.
+    #[must_use]
     pub const fn count(&self) -> usize {
         match self {
             Self::None => 0,
-            Self::BasicDecBlk(x) | Self::ResBlk(x) | Self::ASPP(x) | Self::ASPPDeformable(x) => *x,
+            Self::BasicDecBlk(count)
+            | Self::ResBlk(count)
+            | Self::ASPP(count)
+            | Self::ASPPDeformable(count) => *count,
         }
     }
 }
 
-/// Defines the type of decoder block.
-#[derive(Config, Debug, PartialEq, Eq, Hash)]
+/// Decoder block architecture variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(crate = "burn::serde")]
 pub enum DecBlk {
     /// Basic decoder block.
     BasicDecBlk,
@@ -109,77 +108,74 @@ pub enum DecBlk {
     ResBlk,
 }
 
-/// Defines the backbone architecture.
-#[derive(Config, Debug, PartialEq, Eq, Hash)]
+/// Backbone encoder architecture variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(crate = "burn::serde")]
 pub enum Backbone {
-    /// VGG-16.
+    /// VGG-16 without batch normalization.
     Vgg16,
-    /// VGG-16 with Batch Normalization.
+    /// VGG-16 with batch normalization.
     Vgg16bn,
-    /// ResNet-50.
-    Resnet50, // 0, 1, 2
+    /// `ResNet-50`.
+    Resnet50,
     /// Swin Transformer Tiny.
     SwinV1T,
     /// Swin Transformer Small.
-    SwinV1S, // 3, 4
+    SwinV1S,
     /// Swin Transformer Base.
     SwinV1B,
     /// Swin Transformer Large.
-    SwinV1L, // 5-bs9, 6-bs4
+    SwinV1L,
     /// Pyramid Vision Transformer v2 B0.
     PvtV2B0,
     /// Pyramid Vision Transformer v2 B1.
-    PvtV2B1, // 7, 8
+    PvtV2B1,
     /// Pyramid Vision Transformer v2 B2.
     PvtV2B2,
     /// Pyramid Vision Transformer v2 B5.
-    PvtV2B5, // 9-bs10, 10-bs5
+    PvtV2B5,
 }
 
-/// Defines the type of lateral connection block.
-#[derive(Config, Debug, PartialEq, Eq, Hash)]
+/// Lateral connection block architecture variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(crate = "burn::serde")]
 pub enum LateralBlock {
-    /// Basic lateral block.
+    /// Single `1x1` convolution lateral block.
     BasicLatBlk,
 }
 
-/// Defines the strategy for intermediate channel sizes in the decoder.
-#[derive(Config, Debug, PartialEq, Eq, Hash)]
+/// Strategy for intermediate channel widths inside decoder blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(crate = "burn::serde")]
 pub enum DecChannelsInter {
-    /// Fixed channel sizes.
+    /// Fixed intermediate width (`64` channels).
     Fixed,
-    /// Adaptive channel sizes.
+    /// Adaptive intermediate width (`in_channels / 4`).
     Adap,
 }
 
-/// Defines the refinement strategy.
-#[derive(Config, Debug, PartialEq, Eq, Hash)]
+/// Output refinement module strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(crate = "burn::serde")]
 pub enum Refine {
-    /// No refinement.
+    /// No refinement stage.
     None,
-    /// Refine with the model itself.
+    /// Self-refinement (reserved).
     Itself,
-    /// Refine with a U-Net like structure.
+    /// U-Net refinement module (`RefUNet`).
     RefUNet,
-    /// Refine with the `Refiner` module.
+    /// Stem + PVTv2 refinement module (`Refiner`).
     Refiner,
-    /// Refiner with 4 input channels for PVT backbone.
+    /// 4-channel PVTv2 refinement module (`RefinerPVTInChannels4`).
     RefinerPVTInChannels4,
 }
 
-/// Defines preprocessing methods.
-#[derive(Config, Debug, PartialEq, Eq, Hash)]
-pub enum PreprocMethods {
-    Flip,
-    Enhance,
-    Rotate,
-    Pepper,
-    Crop,
-}
-
-/// Defines the optimizer type.
-#[derive(Config, Debug, PartialEq, Eq, Hash)]
+/// Optimizer selection for model training configurations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(crate = "burn::serde")]
 pub enum Optimizer {
+    /// Adam optimizer.
     Adam,
+    /// `AdamW` decoupled weight-decay optimizer.
     AdamW,
 }

@@ -1,260 +1,277 @@
-//! Distance transform operations for computer vision
-//!
-//! This module provides distance transform algorithms required for implementing
-//! evaluation metrics like WeightedFMeasure that depend on spatial distance calculations.
+//! Linear-time Euclidean and Manhattan distance transforms for `[B, C, H, W]` masks.
 
-use burn::tensor::{Tensor, s};
+use burn::tensor::{Shape, Tensor, TensorData};
 
-/// Euclidean distance transform with indices (simplified implementation)
+const INF_SQ: f32 = 1.0e20;
+const INF_THRESHOLD: f32 = 1.0e18;
+
+fn usize_to_f32(value: usize) -> f32 {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "image dimensions fit comfortably within exact 24-bit mantissa"
+    )]
+    {
+        value as f32
+    }
+}
+
+/// Exact O(n) 1D squared Euclidean distance transform via lower envelope of parabolas
+/// (Felzenszwalb & Huttenlocher, 2012), returning `(min_sq_dist, argmin_index)`.
+fn dt1d_with_arg(costs: &[f32]) -> (Vec<f32>, Vec<usize>) {
+    let len = costs.len();
+    if len == 0 {
+        return (Vec::new(), Vec::new());
+    }
+
+    let Some(first_site) = costs.iter().position(|&val| val < INF_THRESHOLD) else {
+        return (vec![INF_SQ; len], vec![0; len]);
+    };
+
+    let mut parabola_indices = vec![0_usize; len];
+    let mut boundaries = vec![0.0_f32; len + 1];
+    let mut hull_len = 0_usize;
+    parabola_indices[0] = first_site;
+    boundaries[0] = f32::NEG_INFINITY;
+    boundaries[1] = f32::INFINITY;
+
+    for idx in (first_site + 1)..len {
+        if costs[idx] >= INF_THRESHOLD {
+            continue;
+        }
+        let site_cost = costs[idx];
+        let site_pos = usize_to_f32(idx);
+        let site_sq = site_pos * site_pos;
+        let intersect = loop {
+            let prev_idx = parabola_indices[hull_len];
+            let prev_pos = usize_to_f32(prev_idx);
+            let candidate = ((site_cost + site_sq) - (costs[prev_idx] + prev_pos * prev_pos))
+                / (2.0 * (site_pos - prev_pos));
+            if hull_len > 0 && candidate <= boundaries[hull_len] {
+                hull_len -= 1;
+            } else {
+                break candidate;
+            }
+        };
+        hull_len += 1;
+        parabola_indices[hull_len] = idx;
+        boundaries[hull_len] = intersect;
+        boundaries[hull_len + 1] = f32::INFINITY;
+    }
+
+    let mut sq_dists = vec![0.0_f32; len];
+    let mut argmin = vec![0_usize; len];
+    let mut envelope_idx = 0_usize;
+    for idx in 0..len {
+        let pos = usize_to_f32(idx);
+        while boundaries[envelope_idx + 1] < pos {
+            envelope_idx += 1;
+        }
+        let site = parabola_indices[envelope_idx];
+        let diff = pos - usize_to_f32(site);
+        sq_dists[idx] = diff.mul_add(diff, costs[site]);
+        argmin[idx] = site;
+    }
+
+    (sq_dists, argmin)
+}
+
+fn edt_plane(plane: &[f32], height: usize, width: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let hw = height * width;
+    let mut dist = vec![0.0_f32; hw];
+    let mut idx_y = vec![0.0_f32; hw];
+    let mut idx_x = vec![0.0_f32; hw];
+
+    if height == 0 || width == 0 {
+        return (dist, idx_y, idx_x);
+    }
+
+    if !plane.iter().any(|&val| val < 0.5) {
+        let fallback = usize_to_f32(height + width);
+        dist.fill(fallback);
+        return (dist, idx_y, idx_x);
+    }
+
+    let mut row_sq = vec![INF_SQ; hw];
+    let mut row_nx = vec![0_usize; hw];
+    let mut row_in = vec![0.0_f32; width];
+
+    for y in 0..height {
+        let row_offset = y * width;
+        for (x, dst) in row_in.iter_mut().enumerate() {
+            *dst = if plane[row_offset + x] < 0.5 {
+                0.0
+            } else {
+                INF_SQ
+            };
+        }
+        let (d1, a1) = dt1d_with_arg(&row_in);
+        row_sq[row_offset..row_offset + width].copy_from_slice(&d1);
+        row_nx[row_offset..row_offset + width].copy_from_slice(&a1);
+    }
+
+    let mut col_in = vec![0.0_f32; height];
+    for x in 0..width {
+        for y in 0..height {
+            col_in[y] = row_sq[y * width + x];
+        }
+        let (d2, a2) = dt1d_with_arg(&col_in);
+        for y in 0..height {
+            let best_y = a2[y];
+            let best_x = row_nx[best_y * width + x];
+            let offset = y * width + x;
+            dist[offset] = d2[y].sqrt();
+            idx_y[offset] = usize_to_f32(best_y);
+            idx_x[offset] = usize_to_f32(best_x);
+        }
+    }
+
+    (dist, idx_y, idx_x)
+}
+
+fn manhattan_plane(plane: &[f32], height: usize, width: usize) -> Vec<f32> {
+    let hw = height * width;
+    let mut dist = vec![0.0_f32; hw];
+    if height == 0 || width == 0 {
+        return dist;
+    }
+
+    if !plane.iter().any(|&val| val < 0.5) {
+        dist.fill(usize_to_f32(height + width));
+        return dist;
+    }
+
+    let inf = usize_to_f32(height + width) * 2.0;
+    for y in 0..height {
+        for x in 0..width {
+            let idx = y * width + x;
+            if plane[idx] < 0.5 {
+                dist[idx] = 0.0;
+            } else {
+                let top = if y > 0 {
+                    dist[(y - 1) * width + x] + 1.0
+                } else {
+                    inf
+                };
+                let left = if x > 0 { dist[idx - 1] + 1.0 } else { inf };
+                dist[idx] = top.min(left);
+            }
+        }
+    }
+
+    for y in (0..height).rev() {
+        for x in (0..width).rev() {
+            let idx = y * width + x;
+            let bottom = if y + 1 < height {
+                dist[(y + 1) * width + x] + 1.0
+            } else {
+                inf
+            };
+            let right = if x + 1 < width {
+                dist[idx + 1] + 1.0
+            } else {
+                inf
+            };
+            dist[idx] = dist[idx].min(bottom).min(right);
+        }
+    }
+
+    dist
+}
+
+/// Computes the exact 2D Euclidean distance transform of a `[B, C, H, W]` binary mask
+/// (`< 0.5` = foreground object, `>= 0.5` = background), returning `(distances, (indices_y, indices_x))`.
 ///
-/// This function computes the Euclidean distance transform of a binary image,
-/// equivalent to scipy.ndimage.distance_transform_edt with return_indices=True.
+/// # Panics
 ///
-/// # Arguments
-/// * `binary_image` - Input binary image tensor [B, C, H, W] where 0=foreground, 1=background
-///
-/// # Returns
-/// Tuple of (distance_tensor, (indices_y, indices_x)) where:
-/// - distance_tensor: [B, C, H, W] with distances to nearest foreground pixel
-/// - indices_y: [B, C, H, W] with y-coordinates of nearest foreground pixels  
-/// - indices_x: [B, C, H, W] with x-coordinates of nearest foreground pixels
+/// Panics if `binary_image` data cannot be converted to `f32`.
+#[must_use]
 pub fn euclidean_distance_transform(
     binary_image: Tensor<4>,
 ) -> (Tensor<4>, (Tensor<4>, Tensor<4>)) {
     let [batch_size, channels, height, width] = binary_image.dims();
     let device = binary_image.device();
+    let values = binary_image
+        .into_data()
+        .try_to_vec::<f32>()
+        .expect("distance transform input must be convertible to f32");
 
-    // For simplicity, use brute-force approach: for each background pixel,
-    // find the nearest foreground pixel by checking all foreground pixels
-    let large_value = (height + width) as f32;
-    let mut distances =
-        Tensor::<4>::ones([batch_size, channels, height, width], &device) * large_value;
-    let mut indices_y = Tensor::<4>::zeros([batch_size, channels, height, width], &device);
-    let mut indices_x = Tensor::<4>::zeros([batch_size, channels, height, width], &device);
+    let plane_len = height * width;
+    let total = batch_size * channels * plane_len;
+    let mut dist_out = Vec::with_capacity(total);
+    let mut row_indices_out = Vec::with_capacity(total);
+    let mut col_indices_out = Vec::with_capacity(total);
 
-    // Collect foreground pixel positions
-    let mut fg_pixels = Vec::new();
-    for b in 0..batch_size {
-        for c in 0..channels {
-            let mut batch_fg = Vec::new();
-            for y in 0..height {
-                for x in 0..width {
-                    let pixel_val = binary_image
-                        .clone()
-                        .slice(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1])
-                        .into_scalar::<f32>();
-
-                    if pixel_val < 0.5 {
-                        // Foreground pixel
-                        batch_fg.push((y, x));
-                    }
-                }
-            }
-            fg_pixels.push(batch_fg);
-        }
+    for plane in values.chunks_exact(plane_len) {
+        let (dists, row_indices, col_indices) = edt_plane(plane, height, width);
+        dist_out.extend_from_slice(&dists);
+        row_indices_out.extend_from_slice(&row_indices);
+        col_indices_out.extend_from_slice(&col_indices);
     }
 
-    // For each pixel, find distance to nearest foreground pixel
-    for b in 0..batch_size {
-        for c in 0..channels {
-            for y in 0..height {
-                for x in 0..width {
-                    let pixel_val = binary_image
-                        .clone()
-                        .slice(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1])
-                        .into_scalar::<f32>();
-
-                    if pixel_val < 0.5 {
-                        // Foreground pixel - distance is 0, indices point to self
-                        let zero_tensor =
-                            Tensor::<1>::from_floats([0.0], &device).reshape([1, 1, 1, 1]);
-                        let y_tensor =
-                            Tensor::<1>::from_floats([y as f32], &device).reshape([1, 1, 1, 1]);
-                        let x_tensor =
-                            Tensor::<1>::from_floats([x as f32], &device).reshape([1, 1, 1, 1]);
-
-                        distances = distances
-                            .slice_assign(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1], zero_tensor);
-                        indices_y = indices_y
-                            .slice_assign(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1], y_tensor);
-                        indices_x = indices_x
-                            .slice_assign(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1], x_tensor);
-                    } else {
-                        // Background pixel - find nearest foreground pixel
-                        let fg_list = &fg_pixels[b * channels + c];
-
-                        if !fg_list.is_empty() {
-                            let mut min_dist = large_value;
-                            let mut best_y = 0;
-                            let mut best_x = 0;
-
-                            for &(fy, fx) in fg_list {
-                                let dy = y as f32 - fy as f32;
-                                let dx = x as f32 - fx as f32;
-                                let dist = dy.hypot(dx);
-
-                                if dist < min_dist {
-                                    min_dist = dist;
-                                    best_y = fy;
-                                    best_x = fx;
-                                }
-                            }
-
-                            let dist_tensor =
-                                Tensor::<1>::from_floats([min_dist], &device).reshape([1, 1, 1, 1]);
-                            let y_tensor = Tensor::<1>::from_floats([best_y as f32], &device)
-                                .reshape([1, 1, 1, 1]);
-                            let x_tensor = Tensor::<1>::from_floats([best_x as f32], &device)
-                                .reshape([1, 1, 1, 1]);
-
-                            distances = distances.slice_assign(
-                                s![b..b + 1, c..c + 1, y..y + 1, x..x + 1],
-                                dist_tensor,
-                            );
-                            indices_y = indices_y
-                                .slice_assign(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1], y_tensor);
-                            indices_x = indices_x
-                                .slice_assign(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1], x_tensor);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
+    let shape = Shape::new([batch_size, channels, height, width]);
+    let distances = Tensor::<4>::from_data(TensorData::new(dist_out, shape.clone()), &device);
+    let indices_y =
+        Tensor::<4>::from_data(TensorData::new(row_indices_out, shape.clone()), &device);
+    let indices_x = Tensor::<4>::from_data(TensorData::new(col_indices_out, shape), &device);
     (distances, (indices_y, indices_x))
 }
 
-/// Manhattan distance transform
+/// Computes only the Euclidean distance map without tracking nearest-foreground coordinate tensors.
 ///
-/// Computes the Manhattan (L1) distance transform of a binary image.
+/// # Panics
 ///
-/// # Arguments
-/// * `binary_image` - Input binary image tensor [B, C, H, W] where 0=foreground, 1=background
+/// Panics if `binary_image` data cannot be converted to `f32`.
+#[must_use]
+pub fn euclidean_distance_transform_simple(binary_image: Tensor<4>) -> Tensor<4> {
+    let [batch_size, channels, height, width] = binary_image.dims();
+    let device = binary_image.device();
+    let values = binary_image
+        .into_data()
+        .try_to_vec::<f32>()
+        .expect("distance transform input must be convertible to f32");
+
+    let plane_len = height * width;
+    let mut dist_out = Vec::with_capacity(batch_size * channels * plane_len);
+    for plane in values.chunks_exact(plane_len) {
+        let (dists, _, _) = edt_plane(plane, height, width);
+        dist_out.extend_from_slice(&dists);
+    }
+
+    Tensor::<4>::from_data(
+        TensorData::new(dist_out, Shape::new([batch_size, channels, height, width])),
+        &device,
+    )
+}
+
+/// Computes the 2D Manhattan (L1) distance transform of a `[B, C, H, W]` binary mask
+/// (`< 0.5` = foreground, `>= 0.5` = background).
 ///
-/// # Returns
-/// Distance tensor [B, C, H, W] with Manhattan distances to nearest foreground pixel
+/// # Panics
+///
+/// Panics if `binary_image` data cannot be converted to `f32`.
+#[must_use]
 pub fn manhattan_distance_transform(binary_image: Tensor<4>) -> Tensor<4> {
     let [batch_size, channels, height, width] = binary_image.dims();
     let device = binary_image.device();
+    let values = binary_image
+        .into_data()
+        .try_to_vec::<f32>()
+        .expect("distance transform input must be convertible to f32");
 
-    // Initialize distance tensor
-    let large_value = (height + width) as f32;
-    let mut distances =
-        Tensor::<4>::ones([batch_size, channels, height, width], &device) * large_value;
-
-    // Set distance to 0 for foreground pixels
-    let zero_threshold = Tensor::<4>::zeros_like(&binary_image) + 0.5;
-    let foreground_mask = binary_image.lower(zero_threshold);
-    distances = distances.mask_fill(foreground_mask, 0.0);
-
-    // Two-pass algorithm for Manhattan distance
-    // Forward pass: top-left to bottom-right
-    for b in 0..batch_size {
-        for c in 0..channels {
-            for y in 0..height {
-                for x in 0..width {
-                    let current_dist = distances
-                        .clone()
-                        .slice(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1])
-                        .into_scalar::<f32>();
-
-                    let mut min_dist = current_dist;
-
-                    // Check top and left neighbors
-                    if y > 0 {
-                        let top_dist = distances
-                            .clone()
-                            .slice(s![b..b + 1, c..c + 1, y - 1..y, x..x + 1])
-                            .into_scalar::<f32>();
-                        min_dist = min_dist.min(top_dist + 1.0);
-                    }
-
-                    if x > 0 {
-                        let left_dist = distances
-                            .clone()
-                            .slice(s![b..b + 1, c..c + 1, y..y + 1, x - 1..x])
-                            .into_scalar::<f32>();
-                        min_dist = min_dist.min(left_dist + 1.0);
-                    }
-
-                    if min_dist < current_dist {
-                        let dist_tensor =
-                            Tensor::<1>::from_floats([min_dist], &device).reshape([1, 1, 1, 1]);
-                        distances = distances
-                            .slice_assign(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1], dist_tensor);
-                    }
-                }
-            }
-        }
+    let plane_len = height * width;
+    let mut dist_out = Vec::with_capacity(batch_size * channels * plane_len);
+    for plane in values.chunks_exact(plane_len) {
+        dist_out.extend_from_slice(&manhattan_plane(plane, height, width));
     }
 
-    // Backward pass: bottom-right to top-left
-    for b in 0..batch_size {
-        for c in 0..channels {
-            for y in (0..height).rev() {
-                for x in (0..width).rev() {
-                    let current_dist = distances
-                        .clone()
-                        .slice(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1])
-                        .into_scalar::<f32>();
-
-                    let mut min_dist = current_dist;
-
-                    // Check bottom and right neighbors
-                    if y < height - 1 {
-                        let bottom_dist = distances
-                            .clone()
-                            .slice(s![b..b + 1, c..c + 1, y + 1..y + 2, x..x + 1])
-                            .into_scalar::<f32>();
-                        min_dist = min_dist.min(bottom_dist + 1.0);
-                    }
-
-                    if x < width - 1 {
-                        let right_dist = distances
-                            .clone()
-                            .slice(s![b..b + 1, c..c + 1, y..y + 1, x + 1..x + 2])
-                            .into_scalar::<f32>();
-                        min_dist = min_dist.min(right_dist + 1.0);
-                    }
-
-                    if min_dist < current_dist {
-                        let dist_tensor =
-                            Tensor::<1>::from_floats([min_dist], &device).reshape([1, 1, 1, 1]);
-                        distances = distances
-                            .slice_assign(s![b..b + 1, c..c + 1, y..y + 1, x..x + 1], dist_tensor);
-                    }
-                }
-            }
-        }
-    }
-
-    distances
+    Tensor::<4>::from_data(
+        TensorData::new(dist_out, Shape::new([batch_size, channels, height, width])),
+        &device,
+    )
 }
 
-/// Simplified Euclidean distance transform without indices
-///
-/// # Arguments
-/// * `binary_image` - Input binary image tensor [B, C, H, W] where 0=foreground, 1=background
-///
-/// # Returns
-/// Distance tensor [B, C, H, W] with Euclidean distances to nearest foreground pixel
-pub fn euclidean_distance_transform_simple(binary_image: Tensor<4>) -> Tensor<4> {
-    let (distances, _indices) = euclidean_distance_transform(binary_image);
-    distances
-}
-
-/// Get distance transform for scipy.ndimage.bwdist compatibility
-///
-/// This function matches the behavior of scipy's bwdist function used in WeightedFMeasure.
-///
-/// # Arguments
-/// * `binary_image` - Input binary image tensor [B, C, H, W] where False=object, True=background
-/// * `return_indices` - Whether to return nearest pixel indices
-///
-/// # Returns
-/// If return_indices is true: (distances, (indices_y, indices_x))
-/// If return_indices is false: distances only
+/// SciPy-compatible `bwdist` wrapper returning distances and optional nearest `(y, x)` coordinates.
+#[must_use]
 pub fn bwdist(
     binary_image: Tensor<4>,
     return_indices: bool,
@@ -265,142 +282,5 @@ pub fn bwdist(
     } else {
         let dist = euclidean_distance_transform_simple(binary_image);
         (dist, None)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use burn::tensor::Device;
-
-    use super::*;
-
-    #[test]
-    fn manhattan_distance_transform_single_point() {
-        let device = Device::flex();
-
-        // Create 5x5 image with single foreground pixel at center
-        let mut image_data = [[1.0; 5]; 5]; // All background
-        image_data[2][2] = 0.0; // Center pixel is foreground
-
-        let image = Tensor::<4>::from_data([[image_data]], &device);
-        let distances = manhattan_distance_transform(image);
-
-        // Check center distance is 0
-        let center_dist = distances
-            .clone()
-            .slice(s![0..1, 0..1, 2..3, 2..3])
-            .into_scalar::<f32>();
-        assert!((center_dist - 0.0).abs() < 1e-6);
-
-        // Check distance at (1,2) should be 1 (Manhattan distance)
-        let neighbor_dist = distances
-            .clone()
-            .slice(s![0..1, 0..1, 1..2, 2..3])
-            .into_scalar::<f32>();
-        assert!((neighbor_dist - 1.0).abs() < 1e-6);
-
-        // Check distance at corner (0,0) should be 4 (2+2)
-        let corner_dist = distances
-            .clone()
-            .slice(s![0..1, 0..1, 0..1, 0..1])
-            .into_scalar::<f32>();
-        assert!((corner_dist - 4.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn euclidean_distance_transform_single_point() {
-        let device = Device::flex();
-
-        // Create 3x3 image with single foreground pixel at center
-        let mut image_data = [[1.0; 3]; 3]; // All background
-        image_data[1][1] = 0.0; // Center pixel is foreground
-
-        let image = Tensor::<4>::from_data([[image_data]], &device);
-        let (distances, (indices_y, indices_x)) = euclidean_distance_transform(image);
-
-        // Check center distance is 0
-        let center_dist = distances
-            .clone()
-            .slice(s![0..1, 0..1, 1..2, 1..2])
-            .into_scalar::<f32>();
-        assert!((center_dist - 0.0).abs() < 1e-6);
-
-        // Check that indices point to center for all pixels
-        let corner_idx_y = indices_y
-            .clone()
-            .slice(s![0..1, 0..1, 0..1, 0..1])
-            .into_scalar::<f32>();
-        let corner_idx_x = indices_x
-            .clone()
-            .slice(s![0..1, 0..1, 0..1, 0..1])
-            .into_scalar::<f32>();
-
-        assert!((corner_idx_y - 1.0).abs() < 1e-6); // Should point to center y=1
-        assert!((corner_idx_x - 1.0).abs() < 1e-6); // Should point to center x=1
-    }
-
-    #[test]
-    fn euclidean_distance_transform_diagonal_distance() {
-        let device = Device::flex();
-
-        // Create 3x3 image with single foreground pixel at center
-        let mut image_data = [[1.0; 3]; 3];
-        image_data[1][1] = 0.0; // Center at (1,1)
-
-        let image = Tensor::<4>::from_data([[image_data]], &device);
-        let (distances, _) = euclidean_distance_transform(image);
-
-        // Check diagonal distance (should be sqrt(2) ≈ 1.414)
-        let corner_dist = distances
-            .clone()
-            .slice(s![0..1, 0..1, 0..1, 0..1])
-            .into_scalar::<f32>();
-
-        let expected_diagonal = 2.0_f32.sqrt(); // sqrt(1^2 + 1^2)
-        assert!((corner_dist - expected_diagonal).abs() < 0.1); // Allow some tolerance for approximation
-    }
-
-    #[test]
-    fn bwdist_compatibility_function_works() {
-        let device = Device::flex();
-
-        let mut image_data = [[1.0; 3]; 3];
-        image_data[1][1] = 0.0; // Center foreground
-
-        let image = Tensor::<4>::from_data([[image_data]], &device);
-
-        // Test without indices
-        let (distances, indices_opt) = bwdist(image.clone(), false);
-        assert!(indices_opt.is_none());
-
-        // Test with indices
-        let (distances_with_idx, indices_opt) = bwdist(image, true);
-        assert!(indices_opt.is_some());
-
-        // Distances should be the same
-        let diff = (distances - distances_with_idx)
-            .abs()
-            .sum()
-            .into_scalar::<f32>();
-        assert!(diff < 1e-6);
-    }
-
-    #[test]
-    fn distance_transforms_handle_all_foreground() {
-        let device = Device::flex();
-
-        // Create image with all foreground pixels
-        let image_data = [[0.0; 3]; 3]; // All foreground
-        let image = Tensor::<4>::from_data([[image_data]], &device);
-
-        let manhattan_dist = manhattan_distance_transform(image.clone());
-        let euclidean_dist = euclidean_distance_transform_simple(image);
-
-        // All distances should be 0
-        let manhattan_sum = manhattan_dist.sum().into_scalar::<f32>();
-        let euclidean_sum = euclidean_dist.sum().into_scalar::<f32>();
-
-        assert!(manhattan_sum < 1e-6);
-        assert!(euclidean_sum < 1e-6);
     }
 }

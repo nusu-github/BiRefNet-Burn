@@ -1,3 +1,9 @@
+//! Lightweight two-layer convolutional block used for image-pyramid input paths.
+#![expect(
+    clippy::struct_field_names,
+    reason = "Burn Config macro generates shadow builder structs mirroring *_channels fields"
+)]
+
 use burn::{
     nn::{
         PaddingConfig2d,
@@ -6,7 +12,7 @@ use burn::{
     prelude::*,
 };
 
-/// A simple two-layer convolutional block.
+/// Configuration for [`SimpleConvs`].
 #[derive(Config, Debug)]
 pub struct SimpleConvsConfig {
     in_channels: usize,
@@ -16,7 +22,8 @@ pub struct SimpleConvsConfig {
 }
 
 impl SimpleConvsConfig {
-    /// Initializes a `SimpleConvs` module.
+    /// Initializes a [`SimpleConvs`] module.
+    #[must_use]
     pub fn init(&self, device: &Device) -> SimpleConvs {
         let conv1 = Conv2dConfig::new([self.in_channels, self.inter_channels], [3, 3])
             .with_padding(PaddingConfig2d::Explicit(1, 1, 1, 1))
@@ -30,7 +37,7 @@ impl SimpleConvsConfig {
     }
 }
 
-/// A simple two-layer convolutional block used for decoder input processing.
+/// Two-layer convolutional block for decoder image-pyramid branches.
 #[derive(Module, Debug)]
 pub struct SimpleConvs {
     conv1: Conv2d,
@@ -38,6 +45,8 @@ pub struct SimpleConvs {
 }
 
 impl SimpleConvs {
+    /// Applies both `3x3` convolution layers sequentially.
+    #[must_use]
     pub fn forward(&self, x: Tensor<4>) -> Tensor<4> {
         self.conv_out.forward(self.conv1.forward(x))
     }
