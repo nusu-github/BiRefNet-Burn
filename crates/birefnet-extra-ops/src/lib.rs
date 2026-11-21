@@ -1,4 +1,4 @@
-//! Additional tensor operations and layers for the Burn deep learning framework.
+#![doc = include_str!("../README.md")]
 
 mod drop_path;
 mod erfinv;
