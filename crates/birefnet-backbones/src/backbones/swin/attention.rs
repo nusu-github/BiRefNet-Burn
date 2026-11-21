@@ -2,7 +2,7 @@
 
 use birefnet_extra_ops::trunc_normal;
 use burn::{
-    module::Param,
+    module::{Param, ParamId},
     nn::{Dropout, DropoutConfig, Linear, LinearConfig},
     prelude::*,
     tensor::{
@@ -71,7 +71,7 @@ impl WindowAttentionConfig {
         let w_coords_shifted = w_coords + usize_to_f64(self.window_size[1] - 1);
         let h_index = h_coords_shifted * usize_to_f64(2 * self.window_size[1] - 1);
         let relative_position_index =
-            Param::from_tensor((h_index + w_coords_shifted).int().float());
+            Param::initialized(ParamId::new(), (h_index + w_coords_shifted).int());
 
         WindowAttention {
             dim: self.dim,
@@ -100,7 +100,7 @@ pub struct WindowAttention {
     num_heads: usize,
     scale: f64,
     relative_position_bias_table: Param<Tensor<2>>,
-    relative_position_index: Param<Tensor<2>>,
+    relative_position_index: Param<Tensor<2, Int>>,
     qkv: Linear,
     attn_drop: Dropout,
     proj: Linear,
@@ -131,7 +131,7 @@ impl WindowAttention {
         let scaled_query = query * self.scale;
         let attn = scaled_query.matmul(key.swap_dims(2, 3));
 
-        let indices = self.relative_position_index.val().flatten(0, 1).int();
+        let indices = self.relative_position_index.val().flatten(0, 1);
         let window_area = self.window_size[0] * self.window_size[1];
         let relative_position_bias = self
             .relative_position_bias_table
@@ -164,5 +164,45 @@ impl WindowAttention {
             .swap_dims(1, 2)
             .reshape([batch_windows, seq_len, channels]);
         self.proj_drop.forward(self.proj.forward(out))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use burn::tensor::IntDType;
+
+    use super::*;
+
+    #[test]
+    fn relative_position_index_matches_swin_formula_and_is_int() {
+        let device = Device::flex();
+        let attn = WindowAttentionConfig::new(8, [2, 2], 2).init(&device);
+        let index = attn.relative_position_index.val();
+
+        assert!(index.dtype().is_int());
+        assert_eq!(index.dims(), [4, 4]);
+        let values = index
+            .into_data()
+            .try_to_vec_as::<i64>()
+            .expect("integer index should convert to i64");
+        assert_eq!(values, vec![4, 3, 1, 0, 5, 4, 2, 1, 7, 6, 4, 3, 8, 7, 5, 4]);
+    }
+
+    #[test]
+    fn window_attention_forward_accepts_i64_relative_position_index() {
+        let device = Device::flex();
+        let mut attn = WindowAttentionConfig::new(8, [2, 2], 2).init(&device);
+        attn.relative_position_index = Param::initialized(
+            ParamId::new(),
+            attn.relative_position_index.val().cast(IntDType::I64),
+        );
+
+        let output = attn.forward(Tensor::zeros([1, 4, 8], &device), None);
+        assert_eq!(output.dims(), [1, 4, 8]);
+        let values = output
+            .into_data()
+            .try_to_vec_as::<f32>()
+            .expect("output should convert to f32");
+        assert!(values.iter().all(|v| v.is_finite()));
     }
 }

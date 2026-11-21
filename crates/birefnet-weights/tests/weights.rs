@@ -9,9 +9,15 @@ use birefnet_model::{
 };
 use birefnet_weights::{
     BiRefNetWeightLoading, Fetcher, MODEL_SPECS, ManagedModel, ModelName, WeightError,
-    WeightFormat, WeightSource, get_model_spec, list_available_models,
+    WeightFormat, WeightSource, get_model_spec, list_available_models, load_weights_from_path,
 };
-use burn::{prelude::*, tensor::Distribution};
+use burn::{
+    module::{Module, Param, ParamId},
+    nn::{Linear, LinearConfig},
+    prelude::*,
+    store::{BurnToPyTorchAdapter, ModuleSnapshot, SafetensorsStore},
+    tensor::{DType, Distribution, FloatDType, IntDType},
+};
 use tempfile::TempDir;
 
 #[derive(Debug)]
@@ -235,4 +241,58 @@ fn mock_fetcher_resolves_registered_artifacts() {
             .unwrap_err()
             .is_not_found()
     );
+}
+
+#[derive(Module, Debug)]
+struct SafetensorsMixedDTypeModule {
+    linear: Linear,
+    index: Param<Tensor<2, Int>>,
+}
+
+#[test]
+fn safetensors_loads_i64_int_buffer_and_casts_f16_weights() {
+    let device = Device::flex();
+    let dir = TempDir::new().unwrap();
+    let st_path = dir.path().join("mixed.safetensors");
+
+    let mut linear = LinearConfig::new(3, 2).with_bias(true).init(&device);
+    linear.weight = linear.weight.map(|w| w.cast(FloatDType::F16));
+    linear.bias = linear.bias.map(|b| b.map(|t| t.cast(FloatDType::F16)));
+
+    let expected_indices = vec![4_i64, 3, 1, 0];
+    let index_tensor =
+        Tensor::<2, Int>::from_data(TensorData::new(expected_indices.clone(), [2, 2]), &device)
+            .cast(IntDType::I64);
+    assert_eq!(index_tensor.dtype(), DType::I64);
+
+    let saved = SafetensorsMixedDTypeModule {
+        linear: linear.clone(),
+        index: Param::initialized(ParamId::new(), index_tensor),
+    };
+    let mut save_store =
+        SafetensorsStore::from_file(&st_path).with_to_adapter(BurnToPyTorchAdapter);
+    saved.save_into(&mut save_store).unwrap();
+
+    let fresh = SafetensorsMixedDTypeModule {
+        linear: LinearConfig::new(3, 2).with_bias(true).init(&device),
+        index: Param::initialized(ParamId::new(), Tensor::<2, Int>::zeros([2, 2], &device)),
+    };
+    let loaded = load_weights_from_path(fresh, &st_path, &device).unwrap();
+
+    assert_eq!(loaded.linear.weight.val().dtype(), DType::F32);
+    assert!(loaded.index.val().dtype().is_int());
+
+    let loaded_indices = loaded
+        .index
+        .val()
+        .into_data()
+        .try_to_vec_as::<i64>()
+        .unwrap();
+    assert_eq!(loaded_indices, expected_indices);
+
+    let weight_diff = (linear.weight.val().cast(FloatDType::F32) - loaded.linear.weight.val())
+        .abs()
+        .max()
+        .into_scalar::<f64>();
+    assert!(weight_diff < 1e-3, "weight_diff={weight_diff}");
 }

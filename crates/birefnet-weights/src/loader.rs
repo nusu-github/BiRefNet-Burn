@@ -233,15 +233,61 @@ fn check_apply_result(result: &ApplyResult) -> Result<(), WeightError> {
     Ok(())
 }
 
+const BIREFNET_KEY_REMAPPINGS: &[(&str, &str)] = &[
+    (r"decoder\.conv_out1\.0\.(.+)", "decoder.conv_out1.$1"),
+    (
+        r"decoder\.gdt_convs_attn_([2-4])\.0\.(.+)",
+        "decoder.gdt_convs_attn_$1.$2",
+    ),
+    (
+        r"decoder\.gdt_convs_pred_([2-4])\.0\.(.+)",
+        "decoder.gdt_convs_pred_$1.$2",
+    ),
+    (r"bb\.norm([0-3])\.(.+)", "bb.norm_layers.$1.$2"),
+    (
+        r"(.+?)\.gdt_convs_([2-4])\.0\.(.+)",
+        "$1.gdt_convs_$2.conv.$3",
+    ),
+    (
+        r"(.+?)\.gdt_convs_([2-4])\.1\.(.+)",
+        "$1.gdt_convs_$2.bn.$3",
+    ),
+    (
+        r"(.+)\.global_avg_pool\.1\.(.+)",
+        "$1.global_avg_pool.conv.$2",
+    ),
+    (
+        r"(.+)\.global_avg_pool\.2\.(.+)",
+        "$1.global_avg_pool.bn.$2",
+    ),
+];
+
+fn build_pytorch_store(weights_path: &Path) -> PytorchStore {
+    BIREFNET_KEY_REMAPPINGS.iter().fold(
+        PytorchStore::from_file(weights_path).map_indices_contiguous(false),
+        |store, &(from_pattern, to_pattern)| store.with_key_remapping(from_pattern, to_pattern),
+    )
+}
+
 fn load_pytorch_model<M: Module>(
     mut model: M,
     weights_path: &Path,
     device: &Device,
 ) -> Result<M, WeightError> {
-    let mut store = PytorchStore::from_file(weights_path);
+    let mut store = build_pytorch_store(weights_path);
     let result = model.load_from(&mut store)?;
     check_apply_result(&result)?;
     Ok(model.map(&mut CastFloatParams(device.settings().float_dtype)))
+}
+
+fn build_safetensors_store(weights_path: &Path, device: &Device) -> SafetensorsStore {
+    let cast_adapter = FloatCastAdapter::to(DType::from(device.settings().float_dtype));
+    BIREFNET_KEY_REMAPPINGS.iter().fold(
+        SafetensorsStore::from_file(weights_path)
+            .skip_enum_variants(true)
+            .with_from_adapter(PyTorchToBurnAdapter.chain(cast_adapter)),
+        |store, &(from_pattern, to_pattern)| store.with_key_remapping(from_pattern, to_pattern),
+    )
 }
 
 fn load_safetensors_model<M: Module>(
@@ -249,37 +295,7 @@ fn load_safetensors_model<M: Module>(
     weights_path: &Path,
     device: &Device,
 ) -> Result<M, WeightError> {
-    let cast_adapter = FloatCastAdapter::to(DType::from(device.settings().float_dtype));
-    let mut store = SafetensorsStore::from_file(weights_path)
-        .skip_enum_variants(true)
-        .with_from_adapter(PyTorchToBurnAdapter.chain(cast_adapter))
-        .with_key_remapping(r"decoder\.conv_out1\.0\.(.+)", "decoder.conv_out1.$1")
-        .with_key_remapping(
-            r"decoder\.gdt_convs_attn_([2-4])\.0\.(.+)",
-            "decoder.gdt_convs_attn_$1.$2",
-        )
-        .with_key_remapping(
-            r"decoder\.gdt_convs_pred_([2-4])\.0\.(.+)",
-            "decoder.gdt_convs_pred_$1.$2",
-        )
-        .with_key_remapping(r"bb\.norm([0-3])\.(.+)", "bb.norm_layers.$1.$2")
-        .with_key_remapping(
-            r"(.+?)\.gdt_convs_([2-4])\.0\.(.+)",
-            "$1.gdt_convs_$2.conv.$3",
-        )
-        .with_key_remapping(
-            r"(.+?)\.gdt_convs_([2-4])\.1\.(.+)",
-            "$1.gdt_convs_$2.bn.$3",
-        )
-        .with_key_remapping(
-            r"(.+)\.global_avg_pool\.1\.(.+)",
-            "$1.global_avg_pool.conv.$2",
-        )
-        .with_key_remapping(
-            r"(.+)\.global_avg_pool\.2\.(.+)",
-            "$1.global_avg_pool.bn.$2",
-        );
-
+    let mut store = build_safetensors_store(weights_path, device);
     let result = model.load_from(&mut store)?;
     check_apply_result(&result)?;
     Ok(model)
@@ -428,5 +444,82 @@ impl BiRefNetWeightLoading for BiRefNet {
     fn from_managed_model(managed: &ManagedModel, device: &Device) -> Result<Self, WeightError> {
         let model = managed.build_config().init(device)?;
         model.load_weights_from_managed(managed, device)
+    }
+}
+
+#[cfg(all(test, feature = "hub"))]
+mod tests {
+    use super::*;
+
+    fn inspect_preset_checkpoint(preset_name: &str) {
+        let device = Device::flex();
+        let managed = ManagedModel::from_pretrained(preset_name).expect("preset must resolve");
+        let path = managed
+            .resolve_path()
+            .expect("pretrained weights must download from Hugging Face Hub");
+        let mut model = managed
+            .build_config()
+            .init(&device)
+            .expect("model config must initialize");
+        let mut store = build_safetensors_store(&path, &device);
+        let result = model
+            .load_from(&mut store)
+            .expect("safetensors store must apply");
+
+        println!("=== Preset: {preset_name} ({}) ===", path.display());
+        println!(
+            "applied: {}, missing: {}, unused: {}, errors: {}",
+            result.applied.len(),
+            result.missing.len(),
+            result.unused.len(),
+            result.errors.len()
+        );
+        for (missing_path, stack) in &result.missing {
+            println!("  MISSING: {missing_path} [{stack}]");
+        }
+        for unused_path in &result.unused {
+            println!("  UNUSED: {unused_path}");
+        }
+        for err in &result.errors {
+            println!("  ERROR: {err}");
+        }
+
+        assert!(
+            !result.applied.is_empty(),
+            "preset {preset_name} applied zero parameters"
+        );
+        assert!(
+            result.errors.is_empty(),
+            "preset {preset_name} had apply errors: {:?}",
+            result.errors
+        );
+        assert!(
+            result.missing.is_empty(),
+            "preset {preset_name} had missing parameters: {:?}",
+            result.missing
+        );
+        assert!(
+            result
+                .unused
+                .iter()
+                .all(|key| key.ends_with(".num_batches_tracked")),
+            "preset {preset_name} had unexpected unused keys: {:?}",
+            result.unused
+        );
+    }
+
+    #[test]
+    #[ignore = "downloads pretrained weights from Hugging Face Hub"]
+    fn hub_safetensors_apply_result_diagnostics() {
+        std::thread::Builder::new()
+            .name(String::from("hf-weights-check"))
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                inspect_preset_checkpoint("General-Lite");
+                inspect_preset_checkpoint("General");
+            })
+            .expect("spawn diagnostic thread")
+            .join()
+            .expect("diagnostic thread panicked");
     }
 }
