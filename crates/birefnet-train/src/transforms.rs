@@ -1,144 +1,110 @@
-//! Self-contained image geometric and filter transforms for training augmentations.
+//! Geometric and filter transforms used by the training augmentations.
 
-use image::{GrayImage, Luma, Rgb, RgbImage};
+use image::{GrayImage, RgbImage};
 
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "values are clamped into [0.0, 255.0] before casting to u8"
-)]
 fn round_clamped_u8(value: f64) -> u8 {
-    value.clamp(0.0, 255.0).round() as u8
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the value is clamped to [0, 255] before rounding"
+    )]
+    let byte = value.clamp(0.0, 255.0).round() as u8;
+    byte
 }
 
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "caller checks value >= 0 before casting"
-)]
-fn checked_coord(value: isize, limit: u32) -> Option<u32> {
-    if value < 0 {
-        return None;
-    }
-    let unsigned = value as usize;
-    u32::try_from(unsigned).ok().filter(|&coord| coord < limit)
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "image dimensions fit well within isize range"
-)]
-fn floor_isize(value: f64) -> isize {
-    value.floor() as isize
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "image dimensions fit well within isize range"
-)]
-fn round_isize(value: f64) -> isize {
-    value.round() as isize
-}
-
-fn sample_rgb_zero_padded(img: &RgbImage, ix: isize, iy: isize) -> [f64; 3] {
-    let Some(ux) = checked_coord(ix, img.width()) else {
-        return [0.0; 3];
-    };
-    let Some(uy) = checked_coord(iy, img.height()) else {
-        return [0.0; 3];
-    };
-    let [r, g, b] = img.get_pixel(ux, uy).0;
-    [f64::from(r), f64::from(g), f64::from(b)]
-}
-
-/// Rotates an 8-bit grayscale mask about its center using nearest-neighbor sampling.
-pub(crate) fn rotate_about_center_luma8(img: &GrayImage, angle_rad: f32) -> GrayImage {
-    let (width, height) = img.dimensions();
-    if width == 0 || height == 0 {
-        return img.clone();
-    }
-
+/// Inverse rotation about the image center, stepping source coordinates incrementally.
+///
+/// Calls `write(dst_index, src_x, src_y)` for every destination pixel in row-major order.
+fn for_each_source(
+    width: u32,
+    height: u32,
+    angle_rad: f32,
+    mut write: impl FnMut(usize, f64, f64),
+) {
     let (sin_a, cos_a) = f64::from(angle_rad).sin_cos();
     let cx = (f64::from(width) - 1.0) * 0.5;
     let cy = (f64::from(height) - 1.0) * 0.5;
-
-    let mut out = GrayImage::new(width, height);
+    let mut dst = 0_usize;
     for dy in 0..height {
         let rel_y = f64::from(dy) - cy;
-        for dx in 0..width {
-            let rel_x = f64::from(dx) - cx;
-            let src_x = round_isize(rel_x.mul_add(cos_a, rel_y * sin_a) + cx);
-            let src_y = round_isize((-rel_x).mul_add(sin_a, rel_y * cos_a) + cy);
-
-            let value = match (checked_coord(src_x, width), checked_coord(src_y, height)) {
-                (Some(ux), Some(uy)) => *img.get_pixel(ux, uy),
-                _ => Luma([0u8]),
-            };
-            out.put_pixel(dx, dy, value);
+        // Source of (dx = 0, dy); each step right adds (cos, -sin).
+        let mut src_x = (-cx).mul_add(cos_a, rel_y * sin_a) + cx;
+        let mut src_y = cx.mul_add(sin_a, rel_y * cos_a) + cy;
+        for _ in 0..width {
+            write(dst, src_x, src_y);
+            dst += 1;
+            src_x += cos_a;
+            src_y -= sin_a;
         }
     }
+}
 
+/// Converts a coordinate to an in-bounds index, or `None` outside `[0, limit)`.
+fn index_in(value: f64, limit: u32) -> Option<usize> {
+    (value >= 0.0 && value < f64::from(limit)).then(|| {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the value is checked to lie in [0, limit)"
+        )]
+        let idx = value as usize;
+        idx
+    })
+}
+
+/// Rotates an 8-bit mask about its center with nearest-neighbor sampling and a zero border.
+pub(crate) fn rotate_about_center_luma8(img: &GrayImage, angle_rad: f32) -> GrayImage {
+    let (width, height) = img.dimensions();
+    let src = img.as_raw();
+    let mut out = GrayImage::new(width, height);
+    let dst = out.as_mut();
+    for_each_source(width, height, angle_rad, |idx, x, y| {
+        if let (Some(sx), Some(sy)) = (index_in(x.round(), width), index_in(y.round(), height)) {
+            dst[idx] = src[sy * width as usize + sx];
+        }
+    });
     out
 }
 
-/// Rotates an 8-bit RGB image about its center using bilinear interpolation and zero border fill.
+/// Rotates an 8-bit RGB image about its center with bilinear sampling and a zero border.
 pub(crate) fn rotate_about_center_rgb8(img: &RgbImage, angle_rad: f32) -> RgbImage {
     let (width, height) = img.dimensions();
-    if width == 0 || height == 0 {
-        return img.clone();
-    }
-
-    let (sin_a, cos_a) = f64::from(angle_rad).sin_cos();
-    let w_f = f64::from(width);
-    let h_f = f64::from(height);
-    let cx = (w_f - 1.0) * 0.5;
-    let cy = (h_f - 1.0) * 0.5;
+    let src = img.as_raw();
+    let stride = width as usize * 3;
+    let texel = |x: f64, y: f64| -> [f64; 3] {
+        match (index_in(x, width), index_in(y, height)) {
+            (Some(ix), Some(iy)) => {
+                let base = iy * stride + ix * 3;
+                [src[base], src[base + 1], src[base + 2]].map(f64::from)
+            }
+            _ => [0.0; 3],
+        }
+    };
 
     let mut out = RgbImage::new(width, height);
-    for dy in 0..height {
-        let rel_y = f64::from(dy) - cy;
-        for dx in 0..width {
-            let rel_x = f64::from(dx) - cx;
-            let src_x = rel_x.mul_add(cos_a, rel_y * sin_a) + cx;
-            let src_y = (-rel_x).mul_add(sin_a, rel_y * cos_a) + cy;
-
-            if src_x <= -1.0 || src_y <= -1.0 || src_x >= w_f || src_y >= h_f {
-                out.put_pixel(dx, dy, Rgb([0u8; 3]));
-                continue;
-            }
-
-            let x0_f = src_x.floor();
-            let y0_f = src_y.floor();
-            let x0 = floor_isize(x0_f);
-            let y0 = floor_isize(y0_f);
-            let fx = src_x - x0_f;
-            let fy = src_y - y0_f;
-
-            let p00 = sample_rgb_zero_padded(img, x0, y0);
-            let p10 = sample_rgb_zero_padded(img, x0 + 1, y0);
-            let p01 = sample_rgb_zero_padded(img, x0, y0 + 1);
-            let p11 = sample_rgb_zero_padded(img, x0 + 1, y0 + 1);
-
-            let w00 = (1.0 - fx) * (1.0 - fy);
-            let w10 = fx * (1.0 - fy);
-            let w01 = (1.0 - fx) * fy;
-            let w11 = fx * fy;
-
-            let mut rgb = [0u8; 3];
-            for ch in 0..3 {
-                let interpolated = p00[ch].mul_add(
-                    w00,
-                    p10[ch].mul_add(w10, p01[ch].mul_add(w01, p11[ch] * w11)),
-                );
-                rgb[ch] = round_clamped_u8(interpolated);
-            }
-            out.put_pixel(dx, dy, Rgb(rgb));
+    let dst = out.as_mut();
+    for_each_source(width, height, angle_rad, |idx, x, y| {
+        if x <= -1.0 || y <= -1.0 || x >= f64::from(width) || y >= f64::from(height) {
+            return;
         }
-    }
-
+        let (x0, y0) = (x.floor(), y.floor());
+        let (fx, fy) = (x - x0, y - y0);
+        let corners = [
+            (texel(x0, y0), (1.0 - fx) * (1.0 - fy)),
+            (texel(x0 + 1.0, y0), fx * (1.0 - fy)),
+            (texel(x0, y0 + 1.0), (1.0 - fx) * fy),
+            (texel(x0 + 1.0, y0 + 1.0), fx * fy),
+        ];
+        for ch in 0..3 {
+            let value = corners.iter().map(|(p, w)| p[ch] * w).sum::<f64>();
+            dst[idx * 3 + ch] = round_clamped_u8(value);
+        }
+    });
     out
 }
 
-/// Applies a 3x3 Laplacian sharpen blended with the original RGB image, preserving borders.
+/// Blends a 3x3 Laplacian sharpen with the original (`factor = 0` is the identity); the
+/// one-pixel border is left unchanged.
 pub(crate) fn sharpen_rgb(img: &RgbImage, factor: f32) -> RgbImage {
     let (width, height) = img.dimensions();
     let mut out = img.clone();
@@ -148,29 +114,67 @@ pub(crate) fn sharpen_rgb(img: &RgbImage, factor: f32) -> RgbImage {
 
     let blend = f64::from(factor);
     let keep = 1.0 - blend;
-
-    for y in 1..(height - 1) {
-        for x in 1..(width - 1) {
-            let center = img.get_pixel(x, y).0;
-            let top = img.get_pixel(x, y - 1).0;
-            let bottom = img.get_pixel(x, y + 1).0;
-            let left = img.get_pixel(x - 1, y).0;
-            let right = img.get_pixel(x + 1, y).0;
-
-            let mut sharpened_pixel = [0u8; 3];
-            for ch in 0..3 {
-                let c = f64::from(center[ch]);
-                let sharp = 5.0 * c
-                    - f64::from(top[ch])
-                    - f64::from(bottom[ch])
-                    - f64::from(left[ch])
-                    - f64::from(right[ch]);
-                let blended = keep.mul_add(c, blend * sharp);
-                sharpened_pixel[ch] = round_clamped_u8(blended);
-            }
-            out.put_pixel(x, y, Rgb(sharpened_pixel));
+    let stride = width as usize * 3;
+    let rows: Vec<&[u8]> = img.as_raw().chunks_exact(stride).collect();
+    let dst = out.as_mut();
+    for (y, [top, mid, bottom]) in rows.array_windows::<3>().enumerate() {
+        let dst_row = &mut dst[(y + 1) * stride..(y + 2) * stride];
+        for i in 3..stride - 3 {
+            let center = f64::from(mid[i]);
+            let neighbors = f64::from(top[i])
+                + f64::from(bottom[i])
+                + f64::from(mid[i - 3])
+                + f64::from(mid[i + 3]);
+            let sharp = 5.0f64.algebraic_mul(center).algebraic_sub(neighbors);
+            dst_row[i] = round_clamped_u8(keep.algebraic_mul(center).algebraic_add(blend * sharp));
         }
     }
-
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use image::{Luma, Rgb};
+
+    use super::*;
+
+    #[test]
+    fn rotation_by_zero_is_the_identity() {
+        let rgb = RgbImage::from_fn(9, 5, |x, y| Rgb([u8::try_from(x * 20 + y).unwrap(), 7, 9]));
+        assert_eq!(rotate_about_center_rgb8(&rgb, 0.0), rgb);
+        let gray = GrayImage::from_fn(9, 5, |x, y| Luma([u8::try_from(x * 20 + y).unwrap()]));
+        assert_eq!(rotate_about_center_luma8(&gray, 0.0), gray);
+    }
+
+    #[test]
+    fn quarter_turn_moves_pixels_to_the_rotated_position() {
+        // At 90° the destination pixel (x, y) samples the source pixel (y, W - 1 - x).
+        let mut gray = GrayImage::new(5, 5);
+        gray.put_pixel(4, 1, Luma([200]));
+        let rotated = rotate_about_center_luma8(&gray, std::f32::consts::FRAC_PI_2);
+        let hits: Vec<_> = rotated
+            .enumerate_pixels()
+            .filter(|(.., p)| p.0[0] == 200)
+            .map(|(x, y, _)| (x, y))
+            .collect();
+        assert_eq!(hits, vec![(3, 4)]);
+    }
+
+    #[test]
+    fn sharpening_keeps_flat_regions_and_amplifies_edges() {
+        let flat = RgbImage::from_pixel(6, 6, Rgb([90, 90, 90]));
+        assert_eq!(sharpen_rgb(&flat, 1.0), flat);
+
+        let edge = RgbImage::from_fn(
+            6,
+            6,
+            |x, _| if x < 3 { Rgb([50; 3]) } else { Rgb([150; 3]) },
+        );
+        let sharpened = sharpen_rgb(&edge, 1.0);
+        // The dark side of the edge gets darker, the bright side brighter; borders are unchanged.
+        assert!(sharpened.get_pixel(2, 2).0[0] < 50);
+        assert!(sharpened.get_pixel(3, 2).0[0] > 150);
+        assert_eq!(sharpened.get_pixel(0, 0), edge.get_pixel(0, 0));
+        assert_eq!(sharpen_rgb(&edge, 0.0), edge);
+    }
 }

@@ -1,145 +1,201 @@
-//! Error types for training dataset discovery, image decoding, and preprocessing.
+//! Canonical error type for [`crate`].
 
-use std::{backtrace::Backtrace, fmt, path::Path};
+use std::{
+    backtrace::{Backtrace, BacktraceStatus},
+    error::Error,
+    fmt,
+    path::{Path, PathBuf},
+};
 
-type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ErrorKind {
-    NotFound,
-    EmptyDataset,
-    Io,
-    Image,
-    InvalidPath,
+/// Error returned by dataset discovery, sample loading, and data pipeline configuration.
+#[derive(Debug)]
+pub struct TrainDataError {
+    inner: Box<ErrorInner>,
 }
 
 #[derive(Debug)]
 struct ErrorInner {
     kind: ErrorKind,
-    message: String,
-    source: Option<BoxError>,
+    path: Option<PathBuf>,
     backtrace: Backtrace,
 }
 
-/// Error returned by dataset construction and item loading operations.
-pub struct TrainDataError {
-    inner: Box<ErrorInner>,
+#[derive(Debug)]
+enum ErrorKind {
+    NotFound,
+    EmptyDataset,
+    InvalidPath { reason: &'static str },
+    Io(std::io::Error),
+    Image(image::ImageError),
+    DimensionMismatch { image: (u32, u32), mask: (u32, u32) },
+    IndexOutOfBounds { index: usize, len: usize },
+    InvalidConfig { message: String },
 }
 
-const _: () = {
-    const fn assert_error_bounds<E: std::error::Error + Send + Sync + 'static>() {}
-    assert_error_bounds::<TrainDataError>();
-};
-
 impl TrainDataError {
-    fn new(kind: ErrorKind, message: impl Into<String>, source: Option<BoxError>) -> Self {
+    fn new(kind: ErrorKind, path: Option<&Path>) -> Self {
         Self {
             inner: Box::new(ErrorInner {
                 kind,
-                message: message.into(),
-                source,
+                path: path.map(Path::to_path_buf),
                 backtrace: Backtrace::capture(),
             }),
         }
     }
 
     pub(crate) fn not_found(path: &Path) -> Self {
-        Self::new(
-            ErrorKind::NotFound,
-            format!("dataset directory not found: `{}`", path.display()),
-            None,
-        )
+        Self::new(ErrorKind::NotFound, Some(path))
     }
 
     pub(crate) fn empty_dataset(path: &Path) -> Self {
-        Self::new(
-            ErrorKind::EmptyDataset,
-            format!("no valid image/mask pairs found in `{}`", path.display()),
-            None,
-        )
+        Self::new(ErrorKind::EmptyDataset, Some(path))
     }
 
-    pub(crate) fn invalid_path(path: &Path, reason: &str) -> Self {
-        Self::new(
-            ErrorKind::InvalidPath,
-            format!("invalid dataset path `{}`: {reason}", path.display()),
-            None,
-        )
+    pub(crate) fn invalid_path(path: &Path, reason: &'static str) -> Self {
+        Self::new(ErrorKind::InvalidPath { reason }, Some(path))
     }
 
     pub(crate) fn io(path: &Path, source: std::io::Error) -> Self {
-        let kind = if source.kind() == std::io::ErrorKind::NotFound {
-            ErrorKind::NotFound
-        } else {
-            ErrorKind::Io
-        };
-        let message = format!("failed to read `{}`: {source}", path.display());
-        Self::new(kind, message, Some(Box::new(source)))
+        Self::new(ErrorKind::Io(source), Some(path))
     }
 
     pub(crate) fn image(path: &Path, source: image::ImageError) -> Self {
-        let message = format!("failed to decode image `{}`: {source}", path.display());
-        Self::new(ErrorKind::Image, message, Some(Box::new(source)))
+        Self::new(ErrorKind::Image(source), Some(path))
     }
 
-    /// Returns `true` if a required dataset directory or file does not exist.
+    pub(crate) fn dimension_mismatch(path: &Path, image: (u32, u32), mask: (u32, u32)) -> Self {
+        Self::new(ErrorKind::DimensionMismatch { image, mask }, Some(path))
+    }
+
+    pub(crate) fn index_out_of_bounds(index: usize, len: usize) -> Self {
+        Self::new(ErrorKind::IndexOutOfBounds { index, len }, None)
+    }
+
+    pub(crate) fn invalid_config(message: impl Into<String>) -> Self {
+        Self::new(
+            ErrorKind::InvalidConfig {
+                message: message.into(),
+            },
+            None,
+        )
+    }
+
+    /// Returns `true` if a required directory or file does not exist.
     #[must_use]
     pub fn is_not_found(&self) -> bool {
-        self.inner.kind == ErrorKind::NotFound
+        match &self.inner.kind {
+            ErrorKind::NotFound => true,
+            ErrorKind::Io(source) => source.kind() == std::io::ErrorKind::NotFound,
+            _ => false,
+        }
     }
 
-    /// Returns `true` if no matching image/mask pairs were discovered.
+    /// Returns `true` if no image/mask pairs were discovered.
     #[must_use]
     pub fn is_empty_dataset(&self) -> bool {
-        self.inner.kind == ErrorKind::EmptyDataset
+        matches!(self.inner.kind, ErrorKind::EmptyDataset)
     }
 
-    /// Returns `true` if the failure originated from filesystem I/O.
+    /// Returns `true` if a filesystem operation failed (including a missing file).
     #[must_use]
     pub fn is_io(&self) -> bool {
-        self.inner.kind == ErrorKind::Io
+        matches!(self.inner.kind, ErrorKind::Io(_))
     }
 
     /// Returns `true` if decoding an image or mask failed.
     #[must_use]
     pub fn is_image(&self) -> bool {
-        self.inner.kind == ErrorKind::Image
+        matches!(self.inner.kind, ErrorKind::Image(_))
     }
 
-    /// Returns `true` if a filesystem path lacked a valid UTF-8 filename or stem.
+    /// Returns `true` if a file name could not be interpreted.
     #[must_use]
     pub fn is_invalid_path(&self) -> bool {
-        self.inner.kind == ErrorKind::InvalidPath
+        matches!(self.inner.kind, ErrorKind::InvalidPath { .. })
     }
 
-    /// Returns the backtrace captured when this error was constructed.
+    /// Returns `true` if an image and its mask have different sizes.
+    #[must_use]
+    pub fn is_dimension_mismatch(&self) -> bool {
+        matches!(self.inner.kind, ErrorKind::DimensionMismatch { .. })
+    }
+
+    /// Returns `true` if a sample index was past the end of the dataset.
+    #[must_use]
+    pub fn is_index_out_of_bounds(&self) -> bool {
+        matches!(self.inner.kind, ErrorKind::IndexOutOfBounds { .. })
+    }
+
+    /// Returns `true` if a data pipeline parameter was invalid.
+    #[must_use]
+    pub fn is_invalid_config(&self) -> bool {
+        matches!(self.inner.kind, ErrorKind::InvalidConfig { .. })
+    }
+
+    /// Returns the file or directory involved, if any.
+    #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        self.inner.path.as_deref()
+    }
+
+    /// Returns the captured [`Backtrace`] for this error.
     #[must_use]
     pub fn backtrace(&self) -> &Backtrace {
         &self.inner.backtrace
     }
 }
 
-impl fmt::Debug for TrainDataError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TrainDataError")
-            .field("kind", &self.inner.kind)
-            .field("message", &self.inner.message)
-            .field("source", &self.inner.source)
-            .finish_non_exhaustive()
+impl From<std::io::Error> for TrainDataError {
+    fn from(source: std::io::Error) -> Self {
+        Self::new(ErrorKind::Io(source), None)
+    }
+}
+
+impl From<image::ImageError> for TrainDataError {
+    fn from(source: image::ImageError) -> Self {
+        Self::new(ErrorKind::Image(source), None)
     }
 }
 
 impl fmt::Display for TrainDataError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.inner.message)
+        match &self.inner.kind {
+            ErrorKind::NotFound => f.write_str("not found"),
+            ErrorKind::EmptyDataset => f.write_str("no image/mask pairs found"),
+            ErrorKind::InvalidPath { reason } => write!(f, "invalid path ({reason})"),
+            ErrorKind::Io(_) => f.write_str("I/O error"),
+            ErrorKind::Image(_) => f.write_str("image decoding failed"),
+            ErrorKind::DimensionMismatch { image, mask } => write!(
+                f,
+                "image is {}x{} but its mask is {}x{}",
+                image.0, image.1, mask.0, mask.1
+            ),
+            ErrorKind::IndexOutOfBounds { index, len } => {
+                write!(f, "sample index {index} is out of bounds for {len} samples")
+            }
+            ErrorKind::InvalidConfig { message } => write!(f, "invalid configuration: {message}"),
+        }?;
+        if let Some(path) = &self.inner.path {
+            write!(f, " at '{}'", path.display())?;
+        }
+        if self.inner.backtrace.status() == BacktraceStatus::Captured {
+            write!(f, "\n\nstack backtrace:\n{}", self.inner.backtrace)?;
+        }
+        Ok(())
     }
 }
 
-impl std::error::Error for TrainDataError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self.inner.source.as_deref() {
-            Some(err) => Some(err),
-            None => None,
+impl Error for TrainDataError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match &self.inner.kind {
+            ErrorKind::Io(source) => Some(source),
+            ErrorKind::Image(source) => Some(source),
+            _ => None,
         }
     }
 }
+
+const _: fn() = || {
+    fn assert_send_sync_static<T: Send + Sync + 'static>() {}
+    assert_send_sync_static::<TrainDataError>();
+};

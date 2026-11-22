@@ -1,26 +1,33 @@
-//! Dataset discovery, loading, and batching for `BiRefNet` training and validation.
+//! Dataset discovery, loading, and batching for BiRefNet training and validation.
 
+use core::range::RangeInclusive;
 use std::{
-    collections::BTreeMap,
-    fs,
+    collections::HashMap,
+    fmt, fs,
+    ops::{Bound, RangeBounds},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use birefnet_model::{BiRefNetBatch, Task};
-use birefnet_util::apply_imagenet_normalization;
+use birefnet_util::normalize::apply_imagenet_normalization;
 use burn::{
-    data::{dataloader::batcher::Batcher, dataset::Dataset},
+    data::{
+        dataloader::batcher::Batcher,
+        dataset::{Dataset, DatasetError},
+    },
     tensor::{Device, Tensor, TensorData},
 };
-use image::{DynamicImage, ImageFormat};
+use image::{GrayImage, ImageFormat, ImageReader, RgbImage, imageops::FilterType};
+use rand::RngExt;
 
 use crate::{
-    augmentation::{AugmentationConfig, ImageAugmentor},
+    augmentation::{ImageAugmentor, SeedSequence},
     error::TrainDataError,
 };
 
-/// Dataset split selecting subdirectory conventions under `<root>/<task>/`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Dataset split selecting the directory under `<root>/<task>/`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DatasetSplit {
     /// Training split (`DIS-TR`).
     Train,
@@ -49,70 +56,222 @@ impl DatasetSplit {
             Self::Test2 => "DIS-TE2",
             Self::Test3 => "DIS-TE3",
             Self::Test4 => "DIS-TE4",
-            Self::Custom(name) => name.as_str(),
+            Self::Custom(name) => name,
+        }
+    }
+}
+
+impl fmt::Display for DatasetSplit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.dir_name())
+    }
+}
+
+/// One loaded (and possibly augmented) image / mask pair of matching size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BiRefNetItem {
+    /// RGB image.
+    pub image: RgbImage,
+    /// Grayscale ground-truth mask.
+    pub mask: GrayImage,
+}
+
+/// Side length alignment required by the backbones' 32x total stride.
+const SIZE_ALIGN: u32 = 32;
+
+/// Per-batch random resolution, drawn independently for width and height from the multiples
+/// of 32 inside the given ranges (upstream `dynamic_size`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DynamicSize {
+    width: RangeInclusive<u32>,
+    height: RangeInclusive<u32>,
+}
+
+fn inclusive(range: &impl RangeBounds<u32>) -> Option<RangeInclusive<u32>> {
+    let start = match range.start_bound() {
+        Bound::Included(&s) => s,
+        Bound::Excluded(&s) => s.checked_add(1)?,
+        Bound::Unbounded => 0,
+    };
+    let last = match range.end_bound() {
+        Bound::Included(&e) => e,
+        Bound::Excluded(&e) => e.checked_sub(1)?,
+        Bound::Unbounded => u32::MAX,
+    };
+    Some(RangeInclusive { start, last })
+}
+
+/// Multiples of `SIZE_ALIGN` (at least one) inside `range`, as `(first, last)` multipliers.
+fn aligned_steps(range: RangeInclusive<u32>) -> Option<(u32, u32)> {
+    let first = range.start.div_ceil(SIZE_ALIGN).max(1);
+    let last = range.last / SIZE_ALIGN;
+    (first <= last).then_some((first, last))
+}
+
+impl DynamicSize {
+    /// Creates a dynamic size from width and height ranges in pixels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrainDataError`] if either range contains no positive multiple of 32.
+    pub fn new(
+        width: impl RangeBounds<u32>,
+        height: impl RangeBounds<u32>,
+    ) -> Result<Self, TrainDataError> {
+        let checked = |range: Option<RangeInclusive<u32>>, axis: &str| {
+            range
+                .filter(|&r| aligned_steps(r).is_some())
+                .ok_or_else(|| {
+                    TrainDataError::invalid_config(format!(
+                        "dynamic {axis} range must contain a positive multiple of {SIZE_ALIGN}"
+                    ))
+                })
+        };
+        Ok(Self {
+            width: checked(inclusive(&width), "width")?,
+            height: checked(inclusive(&height), "height")?,
+        })
+    }
+
+    /// Creates a dynamic size using the same range for width and height.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrainDataError`] if the range contains no positive multiple of 32.
+    pub fn square(range: impl RangeBounds<u32>) -> Result<Self, TrainDataError> {
+        let range = inclusive(&range).unwrap_or(RangeInclusive { start: 1, last: 0 });
+        Self::new(range, range)
+    }
+
+    /// Returns the width range in pixels.
+    #[must_use]
+    pub const fn width(&self) -> RangeInclusive<u32> {
+        self.width
+    }
+
+    /// Returns the height range in pixels.
+    #[must_use]
+    pub const fn height(&self) -> RangeInclusive<u32> {
+        self.height
+    }
+
+    fn sample(&self, rng: &mut impl rand::Rng) -> [u32; 2] {
+        let mut draw = |range: RangeInclusive<u32>| {
+            let (first, last) = aligned_steps(range)
+                .unwrap_or_else(|| panic!("DynamicSize range {range:?} was validated"));
+            rng.random_range(first..=last) * SIZE_ALIGN
+        };
+        [draw(self.width), draw(self.height)]
+    }
+}
+
+/// Spatial size every batch is resized to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Resolution {
+    /// The same `[width, height]` for every batch.
+    Fixed([u32; 2]),
+    /// A new random size per batch.
+    Dynamic(DynamicSize),
+}
+
+impl Resolution {
+    /// A fixed `[width, height]` resolution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrainDataError`] if either dimension is zero.
+    pub fn fixed(width: u32, height: u32) -> Result<Self, TrainDataError> {
+        if width == 0 || height == 0 {
+            return Err(TrainDataError::invalid_config(format!(
+                "resolution must be positive, got {width}x{height}"
+            )));
+        }
+        Ok(Self::Fixed([width, height]))
+    }
+}
+
+/// Resizes, normalizes, and uploads [`BiRefNetItem`]s as one `[B, 3, H, W]` / `[B, 1, H, W]`
+/// batch.
+///
+/// Images and masks are resized with bilinear filtering (as `torchvision.transforms.Resize`
+/// does upstream), scaled to `[0, 1]`, and uploaded in a single transfer each; images are then
+/// ImageNet-normalized on the device.
+#[derive(Debug, Clone)]
+pub struct BiRefNetBatcher {
+    resolution: Resolution,
+    seeds: Arc<SeedSequence>,
+}
+
+impl BiRefNetBatcher {
+    /// Creates a batcher; dynamic resolutions are seeded from the operating system's entropy.
+    #[must_use]
+    pub fn new(resolution: Resolution) -> Self {
+        Self::with_seed(resolution, rand::random())
+    }
+
+    /// Creates a batcher with a reproducible `seed` for dynamic resolutions.
+    #[must_use]
+    pub fn with_seed(resolution: Resolution, seed: u64) -> Self {
+        Self {
+            resolution,
+            seeds: Arc::new(SeedSequence::new(seed)),
         }
     }
 
-    /// Returns `true` when full training augmentations should be enabled.
+    /// Returns the batch resolution.
     #[must_use]
-    pub const fn is_train(&self) -> bool {
-        matches!(self, Self::Train)
+    pub const fn resolution(&self) -> Resolution {
+        self.resolution
     }
-}
 
-/// Single preprocessed image/mask pair emitted by [`BiRefNetDataset`].
-#[derive(Debug, Clone)]
-pub struct BiRefNetItem {
-    /// Flattened `[H, W, 3]` RGB pixel values in `[0.0, 1.0]`.
-    pub image: Vec<f32>,
-    /// Flattened `[H, W]` grayscale mask values in `[0.0, 1.0]`.
-    pub mask: Vec<f32>,
-    /// Preprocessed image height in pixels.
-    pub height: usize,
-    /// Preprocessed image width in pixels.
-    pub width: usize,
-}
-
-/// Converts a batch of [`BiRefNetItem`]s into normalized `[B, 3, H, W]` / `[B, 1, H, W]` tensors.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct BiRefNetBatcher;
-
-impl BiRefNetBatcher {
-    /// Creates a new [`BiRefNetBatcher`].
-    #[must_use]
-    pub const fn new() -> Self {
-        Self
+    fn batch_size(&self) -> [u32; 2] {
+        match self.resolution {
+            Resolution::Fixed(size) => size,
+            Resolution::Dynamic(dynamic) => dynamic.sample(&mut self.seeds.next_rng()),
+        }
     }
 }
 
 impl Batcher<BiRefNetItem, BiRefNetBatch> for BiRefNetBatcher {
+    /// # Panics
+    ///
+    /// Panics if `items` is empty (Burn never requests an empty batch).
     fn batch(&self, items: Vec<BiRefNetItem>, device: &Device) -> BiRefNetBatch {
-        let batch_size = items.len();
-        let mut images = Vec::with_capacity(batch_size);
-        let mut masks = Vec::with_capacity(batch_size);
+        assert!(!items.is_empty(), "BiRefNetBatcher received an empty batch");
+        let [width, height] = self.batch_size();
+        let (w, h) = (width as usize, height as usize);
+        let batch = items.len();
 
+        let mut images = Vec::with_capacity(batch * h * w * 3);
+        let mut masks = Vec::with_capacity(batch * h * w);
         for item in items {
-            let image_tensor = Tensor::<3>::from_data(
-                TensorData::new(item.image, [item.height, item.width, 3]),
-                device,
-            )
-            .permute([2, 0, 1]);
-
-            let normalized_tensor = apply_imagenet_normalization(image_tensor.unsqueeze::<4>())
-                .expect("3-channel RGB tensor matches ImageNet normalization")
-                .squeeze_dim::<3>(0);
-
-            let mask_tensor = Tensor::<2>::from_data(
-                TensorData::new(item.mask, [item.height, item.width]),
-                device,
-            )
-            .unsqueeze::<3>();
-
-            images.push(normalized_tensor);
-            masks.push(mask_tensor);
+            let image = resized(item.image, width, height);
+            let mask = resized(item.mask, width, height);
+            images.extend(image.as_raw().iter().map(|&v| f32::from(v) / 255.0));
+            masks.extend(mask.as_raw().iter().map(|&v| f32::from(v) / 255.0));
         }
 
-        BiRefNetBatch::new(Tensor::stack(images, 0), Tensor::stack(masks, 0))
+        let images = Tensor::<4>::from_data(TensorData::new(images, [batch, h, w, 3]), device)
+            .permute([0, 3, 1, 2]);
+        let images = apply_imagenet_normalization(images)
+            .unwrap_or_else(|err| panic!("RGB batch has 3 channels: {err}"));
+        let masks = Tensor::<4>::from_data(TensorData::new(masks, [batch, 1, h, w]), device);
+        BiRefNetBatch::new(images, masks)
+    }
+}
+
+fn resized<P>(
+    image: image::ImageBuffer<P, Vec<u8>>,
+    width: u32,
+    height: u32,
+) -> image::ImageBuffer<P, Vec<u8>>
+where
+    P: image::Pixel<Subpixel = u8> + 'static,
+{
+    if image.dimensions() == (width, height) {
+        image
+    } else {
+        image::imageops::resize(&image, width, height, FilterType::Triangle)
     }
 }
 
@@ -127,171 +286,190 @@ const fn task_dir_name(task: Task) -> &'static str {
     }
 }
 
-fn supported_image_extensions() -> Vec<&'static str> {
-    let mut extensions: Vec<&'static str> = ImageFormat::all()
-        .filter(ImageFormat::reading_enabled)
-        .flat_map(|format| format.extensions_str().iter().copied())
-        .collect();
-    extensions.sort_unstable();
-    extensions.dedup();
-    extensions
+fn is_supported_image(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .and_then(ImageFormat::from_extension)
+        .is_some_and(|format| format.reading_enabled())
 }
 
-fn has_supported_extension(path: &Path, valid_extensions: &[&str]) -> bool {
-    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
-        return false;
-    };
-    valid_extensions
-        .iter()
-        .any(|valid| ext.eq_ignore_ascii_case(valid))
-}
-
-fn read_dir_entries(dir: &Path) -> Result<Vec<PathBuf>, TrainDataError> {
+fn image_files(dir: &Path) -> Result<Vec<PathBuf>, TrainDataError> {
     let reader = fs::read_dir(dir).map_err(|err| TrainDataError::io(dir, err))?;
     let mut paths = Vec::new();
     for entry in reader {
-        let entry = entry.map_err(|err| TrainDataError::io(dir, err))?;
-        paths.push(entry.path());
+        let path = entry.map_err(|err| TrainDataError::io(dir, err))?.path();
+        if path.is_file() && is_supported_image(&path) {
+            paths.push(path);
+        }
     }
-    paths.sort();
     Ok(paths)
 }
 
-/// Dataset loading paired segmentation images and masks for [`BiRefNetDataset`].
+fn file_stem(path: &Path) -> Result<&str, TrainDataError> {
+    path.file_stem()
+        .ok_or_else(|| TrainDataError::invalid_path(path, "missing file stem"))?
+        .to_str()
+        .ok_or_else(|| TrainDataError::invalid_path(path, "non-UTF-8 file stem"))
+}
+
+/// Pairs every image under `<root>/<task>/<split>/im` with the same-stem mask under `gt`.
+fn discover_pairs(
+    root_dir: &Path,
+    task: Task,
+    split: &DatasetSplit,
+) -> Result<Vec<(PathBuf, PathBuf)>, TrainDataError> {
+    let split_root = root_dir.join(task_dir_name(task)).join(split.dir_name());
+    let image_root = split_root.join("im");
+    let mask_root = split_root.join("gt");
+    for dir in [&image_root, &mask_root] {
+        if !dir.is_dir() {
+            return Err(TrainDataError::not_found(dir));
+        }
+    }
+
+    let mask_paths = image_files(&mask_root)?;
+    let mut masks_by_stem = HashMap::with_capacity(mask_paths.len());
+    for mask_path in mask_paths {
+        let stem = file_stem(&mask_path)?.to_owned();
+        masks_by_stem.entry(stem).or_insert(mask_path);
+    }
+
+    let mut pairs = Vec::new();
+    let mut unmatched = 0_usize;
+    for image_path in image_files(&image_root)? {
+        match masks_by_stem.get(file_stem(&image_path)?) {
+            Some(mask_path) => pairs.push((image_path, mask_path.clone())),
+            None => unmatched += 1,
+        }
+    }
+    if unmatched > 0 {
+        tracing::warn!(
+            name: "birefnet.train.dataset.discover.unmatched",
+            unmatched,
+            file.path = %image_root.display(),
+            "{unmatched} images have no mask with the same file stem and were skipped"
+        );
+    }
+    if pairs.is_empty() {
+        return Err(TrainDataError::empty_dataset(&image_root));
+    }
+
+    pairs.sort_unstable();
+    tracing::info!(
+        name: "birefnet.train.dataset.discover.done",
+        pairs = pairs.len(),
+        file.path = %image_root.display(),
+        "discovered {} image/mask pairs",
+        pairs.len()
+    );
+    Ok(pairs)
+}
+
+fn open_image(path: &Path) -> Result<image::DynamicImage, TrainDataError> {
+    let file = fs::File::open(path).map_err(|err| TrainDataError::io(path, err))?;
+    ImageReader::new(std::io::BufReader::new(file))
+        .with_guessed_format()
+        .map_err(|err| TrainDataError::io(path, err))?
+        .decode()
+        .map_err(|err| TrainDataError::image(path, err))
+}
+
+/// Paired segmentation images and masks loaded from disk, optionally augmented.
+///
+/// Items keep their source resolution (after augmentation); [`BiRefNetBatcher`] resizes each
+/// batch to a common size.
 #[derive(Debug)]
 pub struct BiRefNetDataset {
-    items: Vec<(PathBuf, PathBuf)>,
-    is_train: bool,
-    augmentor: ImageAugmentor,
+    items: Box<[(PathBuf, PathBuf)]>,
+    augmentor: Option<ImageAugmentor>,
 }
 
 impl BiRefNetDataset {
-    /// Discovers paired image/mask samples under `<root_dir>/<task>/<split>/{im,gt}`
-    /// using default [`AugmentationConfig`].
+    /// Discovers image / mask pairs under `<root_dir>/<task>/<split>/{im,gt}` without
+    /// augmentation.
     ///
     /// # Errors
     ///
-    /// Returns [`TrainDataError`] if expected directories are missing, contain invalid UTF-8
-    /// filenames, or yield no matching pairs.
+    /// Returns [`TrainDataError`] if a directory is missing or unreadable, a file name is not
+    /// UTF-8, or no pairs are found.
     pub fn new(
         root_dir: impl AsRef<Path>,
         task: Task,
         split: &DatasetSplit,
     ) -> Result<Self, TrainDataError> {
-        Self::with_augmentation(root_dir, task, split, AugmentationConfig::default())
+        Ok(Self {
+            items: discover_pairs(root_dir.as_ref(), task, split)?.into_boxed_slice(),
+            augmentor: None,
+        })
     }
 
-    /// Discovers paired image/mask samples using an explicit `augmentation_config`.
+    /// Applies `augmentor` to every loaded sample (use for training splits only).
+    #[must_use]
+    pub fn with_augmentor(self, augmentor: ImageAugmentor) -> Self {
+        Self {
+            augmentor: Some(augmentor),
+            ..self
+        }
+    }
+
+    /// Returns the augmentor, if any.
+    #[must_use]
+    pub const fn augmentor(&self) -> Option<&ImageAugmentor> {
+        self.augmentor.as_ref()
+    }
+
+    /// Returns the `(image, mask)` paths of every sample.
+    #[must_use]
+    pub fn pairs(&self) -> &[(PathBuf, PathBuf)] {
+        &self.items
+    }
+
+    /// Returns the number of samples.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    /// Returns `true` if the dataset has no samples.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// Loads (and augments) sample `index`.
     ///
     /// # Errors
     ///
-    /// Returns [`TrainDataError`] if expected directories are missing, contain invalid UTF-8
-    /// filenames, or yield no matching pairs.
-    pub fn with_augmentation(
-        root_dir: impl AsRef<Path>,
-        task: Task,
-        split: &DatasetSplit,
-        augmentation_config: AugmentationConfig,
-    ) -> Result<Self, TrainDataError> {
-        let items = Self::collect_dataset_items(root_dir.as_ref(), task, split)?;
-        let augmentor = ImageAugmentor::new(augmentation_config);
-
-        Ok(Self {
-            items,
-            is_train: split.is_train(),
-            augmentor,
-        })
-    }
-
-    fn collect_dataset_items(
-        root_dir: &Path,
-        task: Task,
-        split: &DatasetSplit,
-    ) -> Result<Vec<(PathBuf, PathBuf)>, TrainDataError> {
-        let split_root = root_dir.join(task_dir_name(task)).join(split.dir_name());
-        let image_root = split_root.join("im");
-        let mask_root = split_root.join("gt");
-
-        if !image_root.exists() {
-            return Err(TrainDataError::not_found(&image_root));
+    /// Returns [`TrainDataError`] if `index` is out of bounds, a file cannot be read or decoded,
+    /// or the image and mask sizes differ.
+    pub fn get(&self, index: usize) -> Result<BiRefNetItem, TrainDataError> {
+        let (image_path, mask_path) = self
+            .items
+            .get(index)
+            .ok_or_else(|| TrainDataError::index_out_of_bounds(index, self.items.len()))?;
+        let image = open_image(image_path)?.into_rgb8();
+        let mask = open_image(mask_path)?.into_luma8();
+        if image.dimensions() != mask.dimensions() {
+            return Err(TrainDataError::dimension_mismatch(
+                mask_path,
+                image.dimensions(),
+                mask.dimensions(),
+            ));
         }
-        if !mask_root.exists() {
-            return Err(TrainDataError::not_found(&mask_root));
-        }
-
-        let valid_extensions = supported_image_extensions();
-        let mut masks_by_stem: BTreeMap<String, PathBuf> = BTreeMap::new();
-        for mask_path in read_dir_entries(&mask_root)? {
-            if mask_path.is_file() && has_supported_extension(&mask_path, &valid_extensions) {
-                let stem = mask_path
-                    .file_stem()
-                    .ok_or_else(|| TrainDataError::invalid_path(&mask_path, "missing file stem"))?
-                    .to_str()
-                    .ok_or_else(|| {
-                        TrainDataError::invalid_path(&mask_path, "non-UTF-8 file stem")
-                    })?;
-                masks_by_stem.entry(stem.to_owned()).or_insert(mask_path);
-            }
-        }
-
-        let mut items = Vec::new();
-        for image_path in read_dir_entries(&image_root)? {
-            if !image_path.is_file() || !has_supported_extension(&image_path, &valid_extensions) {
-                continue;
-            }
-
-            let stem = image_path
-                .file_stem()
-                .ok_or_else(|| TrainDataError::invalid_path(&image_path, "missing file stem"))?
-                .to_str()
-                .ok_or_else(|| TrainDataError::invalid_path(&image_path, "non-UTF-8 file stem"))?;
-
-            if let Some(mask_path) = masks_by_stem.get(stem) {
-                items.push((image_path, mask_path.clone()));
-            } else {
-                tracing::warn!(image = %image_path.display(), "no matching mask found in gt directory");
-            }
-        }
-
-        if items.is_empty() {
-            return Err(TrainDataError::empty_dataset(&image_root));
-        }
-
-        items.sort_by(|a, b| a.0.cmp(&b.0));
-        tracing::info!(
-            pairs = items.len(),
-            directory = %image_root.display(),
-            "discovered image/mask dataset pairs"
-        );
-        Ok(items)
-    }
-
-    fn open_image(path: &Path) -> Result<DynamicImage, burn::data::dataset::DatasetError> {
-        image::open(path).map_err(|source| {
-            burn::data::dataset::DatasetError::new(TrainDataError::image(path, source))
-        })
+        let (image, mask) = match &self.augmentor {
+            Some(augmentor) => augmentor.augment(image, mask),
+            None => (image, mask),
+        };
+        Ok(BiRefNetItem { image, mask })
     }
 }
 
 impl Dataset<BiRefNetItem> for BiRefNetDataset {
-    fn get(&self, index: usize) -> Result<BiRefNetItem, burn::data::dataset::DatasetError> {
-        let (image_path, mask_path) = &self.items[index];
-        let image = Self::open_image(image_path)?;
-        let mask = Self::open_image(mask_path)?;
-
-        let (image, mask) = self.augmentor.augment(image, mask, self.is_train);
-        let height = image.height() as usize;
-        let width = image.width() as usize;
-
-        Ok(BiRefNetItem {
-            image: image.to_rgb32f().into_raw(),
-            mask: mask.to_luma32f().into_raw(),
-            height,
-            width,
-        })
+    fn get(&self, index: usize) -> Result<BiRefNetItem, DatasetError> {
+        Self::get(self, index).map_err(DatasetError::new)
     }
 
     fn len(&self) -> usize {
-        self.items.len()
+        Self::len(self)
     }
 }
