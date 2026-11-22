@@ -25,6 +25,7 @@ train = [
     "dep:birefnet-train",
     "dep:birefnet-loss",
     "dep:birefnet-metric",
+    "birefnet-metric/train",
 ]
 
 # Backends. Burn 0.22 selects the backend at run time from a `Device` value; Cargo features

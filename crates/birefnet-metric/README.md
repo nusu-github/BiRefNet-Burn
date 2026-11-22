@@ -1,37 +1,57 @@
 # birefnet-metric
 
-[![Crates.io](https://img.shields.io/crates/v/birefnet-metric.svg)](https://crates.io/crates/birefnet-metric)
-[![Documentation](https://docs.rs/birefnet-metric/badge.svg)](https://docs.rs/birefnet-metric)
+Dichotomous / salient object segmentation metrics for BiRefNet, numerically matching the
+`py_sod_metrics` implementation used by the upstream evaluation scripts.
 
-**Segmentation evaluation metrics and Burn `Metric` adapters for `BiRefNet`**
+| Measure | Method on [`Sample`] | Reported as |
+| --- | --- | --- |
+| Mean absolute / squared error | [`mae`](Sample::mae), [`mse`](Sample::mse) | `MAE`, `MSE` |
+| F-measure (`β² = 0.3`) | [`f_measure`](Sample::f_measure) | `adpFm`, `meanFm`, `maxFm` |
+| E-measure | [`e_measure`](Sample::e_measure) | `adpEm`, `meanEm`, `maxEm` |
+| S-measure (`α = 0.5`) | [`s_measure`](Sample::s_measure) | `Smeasure` |
+| Weighted F-measure (`β² = 1`) | [`weighted_f_measure`](Sample::weighted_f_measure) | `wFmeasure` |
+| Boundary IoU | [`biou`](Sample::biou) | `meanBIoU`, `maxBIoU` |
 
-## Implemented Metrics
+Predictions and targets are `[0, 1]` maps. A [`Sample`] is read from the device once (a batch
+costs one transaction) and every measure runs on the host; threshold curves come from a single
+256-bin histogram. [`MetricsAggregator`] averages [`Scores`] over a dataset in constant memory.
+With the `train` feature, `SegmentationMetric` exposes any linearly averageable measure as a Burn
+`Metric`.
 
-- **MAE (`MAEMetric` / `calculate_mae`)**: Mean Absolute Error
-- **MSE (`MSEMetric` / `calculate_mse`)**: Mean Squared Error
-- **F-measure (`FMeasureMetric` / `calculate_f_measure`)**: Adaptive threshold and 256-threshold precision/recall curves
-- **Weighted F-measure (`WeightedFMeasureMetric` / `calculate_weighted_f_measure`)**: Precision/recall weighted by Euclidean distance transform (`birefnet-util`) and error dependencies
-- **S-measure (`SMeasureMetric` / `calculate_s_measure`)**: Structural similarity combining object-aware ($S_o$) and region-aware ($S_r$) terms
-- **E-measure (`EMeasureMetric` / `calculate_e_measure`)**: Enhanced alignment matrix metric (adaptive and 256-threshold curves)
-- **Boundary IoU (`BIoUMetric` / `calculate_biou`)**: Morphological disk boundary IoU across 255 thresholds
-
-All Burn `Metric` adapters consume `[B, 1, H, W]` batches (`MAEInput`, `MSEInput`, `FMeasureInput`, `WeightedFMeasureInput`, `SMeasureInput`, `EMeasureInput`, `BIoUInput`) with exact unweighted sample averaging across batches.
-
-## Batch Evaluation
+## Examples
 
 ```rust
-use birefnet_metric::{MetricsAggregator, calculate_all_metrics};
-use burn::tensor::{Device, Tensor};
+use birefnet_metric::{EvaluationConfig, MetricsAggregator};
+use burn::prelude::*;
 
 let device = Device::flex();
-let pred = Tensor::<4>::ones([1, 1, 16, 16], &device);
-let gt = Tensor::<4>::ones([1, 1, 16, 16], &device);
+let mut mask = [[0.0_f32; 16]; 16];
+for row in &mut mask[4..12] {
+    row[4..12].fill(1.0);
+}
+let targets = Tensor::<4>::from_floats([[mask]], &device);
+let predictions = targets.clone();
 
-let summary = calculate_all_metrics(&pred, &gt, 0.02);
-let mut aggregator = MetricsAggregator::new();
-aggregator.update(&pred, &gt, 0.02);
-let (biou, f_measure, mae) = aggregator.averages();
-# let _ = (summary, biou, f_measure, mae);
+let mut aggregator = MetricsAggregator::new(EvaluationConfig::new());
+aggregator.update(&predictions, &targets)?;
+let scores = aggregator.summary().expect("one sample was added");
+
+assert_eq!(scores.mae, 0.0);
+assert!((scores.f_measure.curve.max() - 1.0).abs() < 1e-12);
+println!("{scores}");
+# Ok::<(), birefnet_metric::MetricError>(())
+```
+
+Saved 8-bit masks can be evaluated without a device:
+
+```rust
+use birefnet_metric::Sample;
+
+let prediction = [0_u8, 64, 255, 255];
+let target = [0_u8, 0, 255, 255];
+let sample = Sample::from_u8(&prediction, &target, [2, 2])?;
+assert_eq!(sample.f_measure(0.3).adaptive, 1.0);
+# Ok::<(), birefnet_metric::MetricError>(())
 ```
 
 ## License
