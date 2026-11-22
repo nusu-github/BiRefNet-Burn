@@ -1,4 +1,4 @@
-//! `BiRefNet`: Bilateral Reference Network model architecture in Burn.
+#![doc = include_str!("../README.md")]
 
 mod config;
 mod error;
@@ -9,8 +9,8 @@ mod training;
 #[doc(inline)]
 pub use config::{
     Backbone, BackboneConfig, DecBlk, DecChannelsInter, DecoderAttention, DecoderConfig,
-    InterpolationStrategy, LateralBlock, ModelConfig, MultiScaleInput, Optimizer,
-    PromptForLocation, Refine, RefineConfig, SqueezeBlock, Task, TaskConfig,
+    InterpolationStrategy, LateralBlock, ModelConfig, MultiScaleInput, Refine, RefineConfig,
+    SqueezeBlock, Task, TaskConfig,
 };
 #[doc(inline)]
 pub use error::ModelError;

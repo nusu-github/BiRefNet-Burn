@@ -1,10 +1,15 @@
-//! Training batch and step output structures for `BiRefNet`.
+//! Training batch, step output, and Burn `TrainStep` / `InferenceStep` integration.
 
 use burn::{
     prelude::*,
     tensor::ExecutionError,
-    train::metric::{Adaptor, ItemLazy, LossInput},
+    train::{
+        InferenceStep, TrainOutput, TrainStep,
+        metric::{Adaptor, ItemLazy, LossInput},
+    },
 };
+
+use crate::{BiRefNet, error::ModelError};
 
 /// Batched input images and segmentation target masks for `BiRefNet` training.
 #[derive(Debug, Clone)]
@@ -68,5 +73,59 @@ impl BiRefNetOutput {
 impl Adaptor<LossInput> for BiRefNetOutput {
     fn adapt(&self) -> LossInput {
         LossInput::new(self.loss.clone())
+    }
+}
+
+impl BiRefNet {
+    /// Runs a supervised training/validation step returning predictions, targets, and loss.
+    ///
+    /// Without a refiner, the loss supervises every multi-scale decoder output; with one, it
+    /// supervises the refined prediction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError`] if `loss_config` is unset on [`BiRefNetConfig`](crate::BiRefNetConfig)
+    /// or the forward pass or loss computation fails.
+    pub fn forward_step(&self, batch: BiRefNetBatch) -> Result<BiRefNetOutput, ModelError> {
+        let loss_fn = self.loss.as_ref().ok_or_else(|| {
+            ModelError::invalid_config("loss_config is not set on BiRefNetConfig")
+        })?;
+
+        let (prediction, loss) = if self.has_refiner() {
+            let prediction = self.forward(batch.images)?;
+            let loss = loss_fn.forward(core::slice::from_ref(&prediction), &batch.masks)?;
+            (prediction, loss)
+        } else {
+            let mut scaled_preds = self.forward_backbone_decoder(&batch.images, true)?;
+            let loss = loss_fn.forward(&scaled_preds, &batch.masks)?;
+            let prediction = scaled_preds
+                .pop()
+                .ok_or_else(|| ModelError::invalid_input("decoder emitted no predictions"))?;
+            (prediction, loss)
+        };
+
+        Ok(BiRefNetOutput::new(loss, prediction, batch.masks))
+    }
+}
+
+impl TrainStep for BiRefNet {
+    type Input = BiRefNetBatch;
+    type Output = BiRefNetOutput;
+
+    fn step(&self, item: BiRefNetBatch) -> TrainOutput<BiRefNetOutput> {
+        let output = self
+            .forward_step(item)
+            .unwrap_or_else(|err| panic!("BiRefNet training step failed: {err}"));
+        TrainOutput::new(self, output.loss.backward(), output)
+    }
+}
+
+impl InferenceStep for BiRefNet {
+    type Input = BiRefNetBatch;
+    type Output = BiRefNetOutput;
+
+    fn step(&self, item: BiRefNetBatch) -> BiRefNetOutput {
+        self.forward_step(item)
+            .unwrap_or_else(|err| panic!("BiRefNet validation step failed: {err}"))
     }
 }

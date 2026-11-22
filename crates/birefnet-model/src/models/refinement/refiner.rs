@@ -1,6 +1,6 @@
 //! Backbone-based refinement modules (`Refiner` and `RefinerPVTInChannels4`) for `BiRefNet`.
 
-use birefnet_backbones::{Backbone as _, BackboneModel, BackboneType, PvtV2Variant};
+use birefnet_backbones::{Backbone as _, BackboneModel, PvtV2Config, PvtV2Variant};
 use burn::{
     nn::{
         PaddingConfig2d,
@@ -11,8 +11,8 @@ use burn::{
 };
 
 use crate::{
-    DecoderAttention, ModelConfig,
-    config::{InterpolationStrategy, SqueezeBlock},
+    ModelConfig,
+    config::InterpolationStrategy,
     error::ModelError,
     models::modules::{
         BasicDecBlk, BasicDecBlkConfig, BasicLatBlk, BasicLatBlkConfig,
@@ -53,14 +53,6 @@ pub struct RefinerDecoder {
     interpolation_strategy: InterpolationStrategy,
 }
 
-fn squeeze_for_attention(attention: DecoderAttention) -> SqueezeBlock {
-    match attention {
-        DecoderAttention::None => SqueezeBlock::None,
-        DecoderAttention::ASPP => SqueezeBlock::ASPP(0),
-        DecoderAttention::ASPPDeformable => SqueezeBlock::ASPPDeformable(0),
-    }
-}
-
 impl RefinerDecoderConfig {
     fn make_decoder_block(
         &self,
@@ -68,15 +60,12 @@ impl RefinerDecoderConfig {
         out_channels: usize,
         device: &Device,
     ) -> Result<BasicDecBlk, ModelError> {
-        BasicDecBlkConfig::new(
-            squeeze_for_attention(self.config.decoder.dec_att),
-            self.config.interpolation,
-        )
-        .with_in_channels(in_channels)
-        .with_out_channels(out_channels)
-        .with_dec_channels_inter(self.config.decoder.dec_channels_inter)
-        .with_batch_size(self.config.task.batch_size)
-        .init(device)
+        BasicDecBlkConfig::new(self.config.decoder.dec_att, self.config.interpolation)
+            .with_in_channels(in_channels)
+            .with_out_channels(out_channels)
+            .with_dec_channels_inter(self.config.decoder.dec_channels_inter)
+            .with_batch_size(self.config.task.batch_size)
+            .init(device)
     }
 
     /// Initializes a [`RefinerDecoder`] module.
@@ -154,40 +143,31 @@ impl RefinerDecoder {
     pub fn forward(&self, features: [Tensor<4>; 5]) -> Vec<Tensor<4>> {
         let [x, x1, x2, x3, x4] = features;
         let mut outs = Vec::with_capacity(4);
+        let resize_like = |tensor: Tensor<4>, like: &Tensor<4>| {
+            let [_, _, h, w] = like.dims();
+            intelligent_interpolate(tensor, [h, w], self.interpolation_strategy)
+        };
+        // Side outputs exist only with `ms_supervision`, so features are cloned only then.
+        let mut side_output = |conv: Option<&Conv2d>, p: &Tensor<4>| {
+            if let Some(conv) = conv {
+                outs.push(conv.forward(p.clone()));
+            }
+        };
 
         let p4 = self.decoder_block4.forward(x4);
-        let [_, _, h3, w3] = x3.dims();
-        let p4_up = intelligent_interpolate(p4.clone(), [h3, w3], self.interpolation_strategy);
-        let d3_in = p4_up + self.lateral_block4.forward(x3);
+        side_output(self.conv_ms_spvn_4.as_ref(), &p4);
+        let d3_in = resize_like(p4, &x3) + self.lateral_block4.forward(x3);
 
         let p3 = self.decoder_block3.forward(d3_in);
-        let [_, _, h2, w2] = x2.dims();
-        let p3_up = intelligent_interpolate(p3.clone(), [h2, w2], self.interpolation_strategy);
-        let d2_in = p3_up + self.lateral_block3.forward(x2);
+        side_output(self.conv_ms_spvn_3.as_ref(), &p3);
+        let d2_in = resize_like(p3, &x2) + self.lateral_block3.forward(x2);
 
         let p2 = self.decoder_block2.forward(d2_in);
-        let [_, _, h1, w1] = x1.dims();
-        let p2_up = intelligent_interpolate(p2.clone(), [h1, w1], self.interpolation_strategy);
-        let d1_in = p2_up + self.lateral_block2.forward(x1);
+        side_output(self.conv_ms_spvn_2.as_ref(), &p2);
+        let d1_in = resize_like(p2, &x1) + self.lateral_block2.forward(x1);
 
         let d1 = self.decoder_block1.forward(d1_in);
-        let [_, _, h, w] = x.dims();
-        let d1_up = intelligent_interpolate(d1, [h, w], self.interpolation_strategy);
-        let p1_out = self.conv_out1.forward(d1_up);
-
-        if self.ms_supervision {
-            if let Some(conv) = &self.conv_ms_spvn_4 {
-                outs.push(conv.forward(p4));
-            }
-            if let Some(conv) = &self.conv_ms_spvn_3 {
-                outs.push(conv.forward(p3));
-            }
-            if let Some(conv) = &self.conv_ms_spvn_2 {
-                outs.push(conv.forward(p2));
-            }
-        }
-
-        outs.push(p1_out);
+        outs.push(self.conv_out1.forward(resize_like(d1, &x)));
         outs
     }
 }
@@ -238,31 +218,16 @@ impl StemLayer {
         }
     }
 
-    fn apply_norms(mut x: Tensor<4>, norms: &[NormLayerEnum]) -> Tensor<4> {
-        for norm in norms {
-            x = match norm {
-                NormLayerEnum::ChannelsFirst(layer) => layer.forward(x),
-                NormLayerEnum::ChannelsLast(layer) => layer.forward(x),
-                NormLayerEnum::BatchNorm2d(layer) => layer.forward(x),
-                NormLayerEnum::LayerNorm(layer) => {
-                    let x_nhwc = x.permute([0, 2, 3, 1]);
-                    layer.forward(x_nhwc).permute([0, 3, 1, 2])
-                }
-            };
-        }
-        x
-    }
-
     /// Runs the two-stage stem block over `[B, in_channels, H, W]`.
     #[must_use]
     pub fn forward(&self, x: Tensor<4>) -> Tensor<4> {
         let x = self.conv1.forward(x);
-        let x = Self::apply_norms(x, &self.norm1);
+        let x = self.norm1.iter().fold(x, |x, norm| norm.forward(x));
         let x = match self.act {
             ActLayerEnum::Gelu => activation::gelu(x),
         };
         let x = self.conv2.forward(x);
-        Self::apply_norms(x, &self.norm2)
+        self.norm2.iter().fold(x, |x, norm| norm.forward(x))
     }
 }
 
@@ -296,7 +261,9 @@ impl RefinerPVTInChannels4Config {
     ///
     /// Returns [`ModelError`] if backbone or decoder initialization fails.
     pub fn init(&self, device: &Device) -> Result<RefinerPVTInChannels4, ModelError> {
-        let backbone = BackboneType::PvtV2(self.backbone_variant).init(device)?;
+        let backbone = BackboneModel::PvtV2(
+            PvtV2Config::from_variant(self.backbone_variant, self.in_channels).init(device)?,
+        );
         let raw_channels = backbone.output_channels();
         let dec_channels = [
             raw_channels[3],
@@ -305,15 +272,13 @@ impl RefinerPVTInChannels4Config {
             raw_channels[0],
         ];
 
-        let squeeze_module = BasicDecBlkConfig::new(
-            squeeze_for_attention(self.config.decoder.dec_att),
-            self.config.interpolation,
-        )
-        .with_in_channels(raw_channels[3])
-        .with_out_channels(raw_channels[3])
-        .with_dec_channels_inter(self.config.decoder.dec_channels_inter)
-        .with_batch_size(self.config.task.batch_size)
-        .init(device)?;
+        let squeeze_module =
+            BasicDecBlkConfig::new(self.config.decoder.dec_att, self.config.interpolation)
+                .with_in_channels(raw_channels[3])
+                .with_out_channels(raw_channels[3])
+                .with_dec_channels_inter(self.config.decoder.dec_channels_inter)
+                .with_batch_size(self.config.task.batch_size)
+                .init(device)?;
 
         let decoder = RefinerDecoderConfig::new(
             self.config.clone(),
@@ -332,16 +297,12 @@ impl RefinerPVTInChannels4Config {
 }
 
 impl RefinerPVTInChannels4 {
-    /// Runs refinement over `[B, 4, H, W]` `(RGB + mask)` inputs.
+    /// Runs refinement over `[B, in_channels, H, W]` `(RGB + mask)` inputs.
+    ///
+    /// Every input channel, including the coarse mask, is fed to the PVTv2 encoder.
     #[must_use]
     pub fn forward(&self, x: Tensor<4>) -> Vec<Tensor<4>> {
-        let x_rgb = if x.dims()[1] > 3 {
-            x.clone().slice(s![.., 0..3, .., ..])
-        } else {
-            x.clone()
-        };
-
-        let [x1, x2, x3, x4] = self.backbone.forward(x_rgb);
+        let [x1, x2, x3, x4] = self.backbone.forward(x.clone());
         let x4 = self.squeeze_module.forward(x4);
 
         let features = [x, x1, x2, x3, x4];
@@ -360,7 +321,7 @@ pub struct RefinerConfig {
     /// Intermediate stem channel width.
     #[config(default = 48)]
     inter_channels: usize,
-    /// Stem output channel width passed into the PVTv2 backbone (must be `3`).
+    /// Stem output channel width; the PVTv2 backbone is built with this many input channels.
     #[config(default = 3)]
     out_channels: usize,
     /// PVTv2 variant used as the refinement backbone.
@@ -394,7 +355,9 @@ impl RefinerConfig {
             device,
         );
 
-        let backbone = BackboneType::PvtV2(self.pvt_variant).init(device)?;
+        let backbone = BackboneModel::PvtV2(
+            PvtV2Config::from_variant(self.pvt_variant, self.out_channels).init(device)?,
+        );
         let raw_channels = backbone.output_channels();
         let dec_channels = [
             raw_channels[3],
@@ -403,15 +366,13 @@ impl RefinerConfig {
             raw_channels[0],
         ];
 
-        let squeeze_module = BasicDecBlkConfig::new(
-            squeeze_for_attention(self.config.decoder.dec_att),
-            self.config.interpolation,
-        )
-        .with_in_channels(raw_channels[3])
-        .with_out_channels(raw_channels[3])
-        .with_dec_channels_inter(self.config.decoder.dec_channels_inter)
-        .with_batch_size(self.config.task.batch_size)
-        .init(device)?;
+        let squeeze_module =
+            BasicDecBlkConfig::new(self.config.decoder.dec_att, self.config.interpolation)
+                .with_in_channels(raw_channels[3])
+                .with_out_channels(raw_channels[3])
+                .with_dec_channels_inter(self.config.decoder.dec_channels_inter)
+                .with_batch_size(self.config.task.batch_size)
+                .init(device)?;
 
         let decoder = RefinerDecoderConfig::new(
             self.config.clone(),

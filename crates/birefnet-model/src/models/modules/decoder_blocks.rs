@@ -10,7 +10,7 @@ use burn::{
 
 use super::{ASPP, ASPPConfig, ASPPDeformable, ASPPDeformableConfig};
 use crate::{
-    config::{DecChannelsInter, DecoderAttention, InterpolationStrategy, SqueezeBlock},
+    config::{DecChannelsInter, DecoderAttention, InterpolationStrategy},
     error::ModelError,
 };
 
@@ -65,21 +65,21 @@ enum BasicDecSqueezeBlockModule {
 #[derive(Config, Debug)]
 pub struct BasicDecBlkConfig {
     /// Number of input channels.
-    #[config(default = "64")]
+    #[config(default = 64)]
     in_channels: usize,
     /// Number of output channels.
-    #[config(default = "64")]
+    #[config(default = 64)]
     out_channels: usize,
     /// Fixed intermediate channel width used when `dec_channels_inter` is `Fixed`.
-    #[config(default = "64")]
+    #[config(default = 64)]
     inter_channels: usize,
     /// Intermediate channel sizing strategy.
     #[config(default = "DecChannelsInter::Fixed")]
     dec_channels_inter: DecChannelsInter,
-    /// Attention/squeeze block inside the decoder block.
-    dec_att: SqueezeBlock,
+    /// Attention block applied between the input and output convolutions.
+    dec_att: DecoderAttention,
     /// Batch size controlling conditional `BatchNorm`.
-    #[config(default = "4")]
+    #[config(default = 4)]
     batch_size: usize,
     /// Interpolation strategy passed to nested ASPP branches.
     interpolation: InterpolationStrategy,
@@ -103,21 +103,19 @@ impl BasicDecBlkConfig {
             .init(device);
         let relu_in = Relu::new();
         let dec_att = match self.dec_att {
-            SqueezeBlock::ASPP(_) => Some(BasicDecSqueezeBlockModule::ASPP(
+            DecoderAttention::ASPP => Some(BasicDecSqueezeBlockModule::ASPP(
                 ASPPConfig::new(self.interpolation)
                     .with_in_channels(inter_channels)
                     .with_batch_size(self.batch_size)
                     .init(device)?,
             )),
-            SqueezeBlock::ASPPDeformable(_) | SqueezeBlock::BasicDecBlk(_) => {
-                Some(BasicDecSqueezeBlockModule::ASPPDeformable(
-                    ASPPDeformableConfig::new(self.interpolation)
-                        .with_in_channels(inter_channels)
-                        .with_batch_size(self.batch_size)
-                        .init(device),
-                ))
-            }
-            SqueezeBlock::None | SqueezeBlock::ResBlk(_) => None,
+            DecoderAttention::ASPPDeformable => Some(BasicDecSqueezeBlockModule::ASPPDeformable(
+                ASPPDeformableConfig::new(self.interpolation)
+                    .with_in_channels(inter_channels)
+                    .with_batch_size(self.batch_size)
+                    .init(device),
+            )),
+            DecoderAttention::None => None,
         };
         let conv_out = Conv2dConfig::new([inter_channels, self.out_channels], [3, 3])
             .with_stride([1, 1])
@@ -185,13 +183,13 @@ enum ResBlkSqueezeBlockModule {
 #[derive(Config, Debug)]
 pub struct ResBlkConfig {
     /// Number of input channels.
-    #[config(default = "64")]
+    #[config(default = 64)]
     in_channels: usize,
     /// Number of output channels; defaults to `in_channels`.
     #[config(default = "None")]
     out_channels: Option<usize>,
     /// Fixed intermediate channel width used when `dec_channels_inter` is `Fixed`.
-    #[config(default = "64")]
+    #[config(default = 64)]
     inter_channels: usize,
     /// Attention/squeeze block inside the residual decoder block.
     #[config(default = "DecoderAttention::ASPPDeformable")]
@@ -200,7 +198,7 @@ pub struct ResBlkConfig {
     #[config(default = "DecChannelsInter::Fixed")]
     dec_channels_inter: DecChannelsInter,
     /// Batch size controlling conditional `BatchNorm`.
-    #[config(default = "4")]
+    #[config(default = 4)]
     batch_size: usize,
     /// Interpolation strategy passed to nested ASPP branches.
     interpolation: InterpolationStrategy,

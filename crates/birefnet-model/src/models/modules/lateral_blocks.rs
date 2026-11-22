@@ -1,8 +1,4 @@
 //! Lateral connection blocks used to merge encoder features into the decoder.
-#![expect(
-    clippy::struct_field_names,
-    reason = "Burn Config macro generates shadow builder structs mirroring *_channels fields"
-)]
 
 use burn::{
     nn::{
@@ -16,14 +12,11 @@ use burn::{
 #[derive(Config, Debug)]
 pub struct BasicLatBlkConfig {
     /// Number of input channels.
-    #[config(default = "64")]
+    #[config(default = 64)]
     in_channels: usize,
     /// Number of output channels.
-    #[config(default = "64")]
+    #[config(default = 64)]
     out_channels: usize,
-    /// Unused placeholder maintained for config parity.
-    #[config(default = "64")]
-    inter_channels: usize,
 }
 
 impl BasicLatBlkConfig {

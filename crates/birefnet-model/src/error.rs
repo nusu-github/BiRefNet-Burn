@@ -1,8 +1,10 @@
 //! Canonical error type for [`crate`].
 
-use std::backtrace::Backtrace;
-use std::error::Error;
-use std::fmt;
+use std::{
+    backtrace::{Backtrace, BacktraceStatus},
+    error::Error,
+    fmt,
+};
 
 use birefnet_backbones::BackboneError;
 #[cfg(feature = "train")]
@@ -64,13 +66,9 @@ impl ModelError {
     /// Returns `true` if this error originated from loss computation.
     #[must_use]
     pub fn is_loss(&self) -> bool {
-        #[cfg(feature = "train")]
-        {
-            matches!(self.inner.kind, ErrorKind::Loss(_))
-        }
-        #[cfg(not(feature = "train"))]
-        {
-            false
+        cfg_select! {
+            feature = "train" => matches!(self.inner.kind, ErrorKind::Loss(_)),
+            _ => false,
         }
     }
 
@@ -109,12 +107,16 @@ impl From<LossError> for ModelError {
 impl fmt::Display for ModelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.inner.kind {
-            ErrorKind::Backbone(err) => write!(f, "backbone error: {err}"),
+            ErrorKind::Backbone(_) => f.write_str("backbone construction or forward pass failed"),
             #[cfg(feature = "train")]
-            ErrorKind::Loss(err) => write!(f, "loss error: {err}"),
+            ErrorKind::Loss(_) => f.write_str("loss computation failed"),
             ErrorKind::InvalidConfig { message } => write!(f, "invalid configuration: {message}"),
             ErrorKind::InvalidInput { message } => write!(f, "invalid input: {message}"),
+        }?;
+        if self.inner.backtrace.status() == BacktraceStatus::Captured {
+            write!(f, "\n\nstack backtrace:\n{}", self.inner.backtrace)?;
         }
+        Ok(())
     }
 }
 
