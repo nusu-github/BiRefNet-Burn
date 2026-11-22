@@ -1,7 +1,7 @@
 # birefnet-cli
 
-Command-line program (`birefnet`) for BiRefNet segmentation inference, training, and backend
-inspection.
+Command-line program (`birefnet`) for running BiRefNet inference, training, and backend
+diagnostics on Burn.
 
 ## Features
 
@@ -21,7 +21,7 @@ inspection.
 `fusion` has no effect on `flex`. For an unfused GPU build, use
 `--no-default-features --features wgpu` (plus `hub` if needed).
 
-## Global options
+## Global Options
 
 - `--device <name>`: `default` (Burn's highest-priority compiled backend, or `BURN_DEVICE`),
   `flex`, `cpu`, `wgpu`, `wgpu-cpu`, `vulkan`, `metal`, `cuda[:N]`, `rocm[:N]`. GPU indices are
@@ -35,34 +35,47 @@ inspection.
 # List the registered pretrained presets
 birefnet infer --list-models
 
-# Segment an image or every supported image in a directory; writes `<stem>_mask.png` (RGBA)
+# Segment an image or every supported image in a directory; writes `<stem>_mask.png` (RGBA cutout)
 birefnet infer -i photo.jpg -o results/ -m General
 birefnet infer -i photos/ -o results/ -m General-Lite --no-refine
 
-# Local checkpoint (`.bpk`, `.safetensors`, `.pt`/`.pth`; the format is read from the file header)
+# Local checkpoint (`.bpk`, `.safetensors`, `.pt`/`.pth`; format is detected from the file header)
 birefnet infer -i photo.jpg -o results/ -m artifacts/model.bpk
 birefnet infer -i photo.jpg -o results/ -m weights.safetensors --preset General-HR
 birefnet infer -i photo.jpg -o results/ -m weights.bpk --config my_model_config.json
 ```
 
-The architecture of a local checkpoint comes from, in order: `--config`, a
-`model_config.json` next to the checkpoint (written by `birefnet train`), `--preset`, or the
-`General` layout. `--preset` also selects that preset's inference resolution; otherwise
-1024×1024 is used.
+The architecture of a local checkpoint comes from, in order: `--config`, a `model_config.json`
+next to the checkpoint (written by `birefnet train`), `--preset`, or the `General` layout.
+`--preset` also selects that preset's default inference resolution; otherwise `1024x1024` is used.
 
-In directory mode, images that fail are logged and skipped; the command fails only when every
-image fails.
+In directory mode, images that fail are logged and skipped; the command exits with an error only
+when every image fails.
 
 ## Training
 
 ```bash
+# Flex CPU backend supports Bilinear and Nearest interpolation backward passes
+cargo run --release -p birefnet-cli --features train -- \
+  --device flex train --config train.json --artifact-dir ./artifacts
+
+# CubeCL backends (cpu, wgpu, vulkan, metal, cuda, rocm) require `"interpolation": "Nearest"`
+# in an explicit ModelConfig object (see below and docs/training.md)
 cargo run --release -p birefnet-cli --features train,cuda -- \
-  --device cuda train --config train.json --artifact-dir ./artifacts
+  --device cuda train --config train_nearest.json --artifact-dir ./artifacts
 
 # Resume after epoch 10 from ./artifacts/checkpoint
-cargo run --release -p birefnet-cli --features train,cuda -- \
-  --device cuda train --config train.json --artifact-dir ./artifacts --resume 10
+cargo run --release -p birefnet-cli --features train -- \
+  --device flex train --config train.json --artifact-dir ./artifacts --resume 10
 ```
+
+> **Interpolation constraint on CubeCL backends**: Pretrained preset strings such as `"General"`
+> construct a `ModelConfig` with `"interpolation": "Bilinear"`. Burn's `flex` backend
+> differentiates `Bilinear` and `Nearest`, whereas CubeCL backends (`cpu`, `wgpu`, `vulkan`,
+> `metal`, `cuda`, `rocm`) implement the interpolation backward pass for `Nearest` only. When
+> training on a CubeCL backend, pass a full `ModelConfig` object under `"model"` with
+> `"interpolation": "Nearest"`. See [`docs/training.md`](../../docs/training.md) for a complete
+> example.
 
 The configuration is JSON. Only `model` and `dataset.data_root_dir` are required; unknown keys
 are rejected.
@@ -94,19 +107,19 @@ are rejected.
 }
 ```
 
-| Key | Meaning |
-| --- | --- |
-| `model` | A preset name, or a full `ModelConfig` object (the format of `model_config.json`) |
-| `dataset.data_root_dir` | Directory containing `<task>/<split>/{im,gt}` |
-| `dataset.training_sets` | Training splits, concatenated |
-| `dataset.validation_set` | Validation split; never augmented |
-| `dataset.size` | Training and validation `[width, height]` |
-| `dataset.dynamic_size` | `[[min_w, max_w], [min_h, max_h]]`: a random size per batch, rounded to multiples of 32 |
-| `dataset.background_synthesis` | Replace backgrounds with synthetic colors during training |
-| `optimizer.kind` | `adamw` (decoupled weight decay), `adam`, or `sgd` (L2 weight decay) |
-| `optimizer.lr_decay_epochs` | Epochs after which the learning rate is multiplied by `lr_decay_rate`; negative values count back from the last epoch |
-| `keep_checkpoints` | Number of most recent checkpoints kept for `--resume` |
-| `gradient_checkpointing` | Recompute activations in the backward pass to save memory |
+| Key                            | Meaning                                                                                                   |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| `model`                        | A preset name (uses `Bilinear`), or a full `ModelConfig` object (the format of `model_config.json`)       |
+| `dataset.data_root_dir`        | Directory containing `<task>/<split>/{im,gt}`                                                             |
+| `dataset.training_sets`        | Training splits, concatenated                                                                             |
+| `dataset.validation_set`       | Validation split; never augmented                                                                         |
+| `dataset.size`                 | Training and validation `[width, height]` (note: `[width, height]`, unlike `SegmenterConfig`'s `[H, W]`)  |
+| `dataset.dynamic_size`         | `[[min_w, max_w], [min_h, max_h]]`: a random size per batch, rounded to multiples of 32                   |
+| `dataset.background_synthesis` | Replace backgrounds with synthetic colors during training                                                 |
+| `optimizer.kind`               | `adamw` (decoupled weight decay), `adam`, or `sgd` (L2 weight decay)                                      |
+| `optimizer.lr_decay_epochs`    | Epochs after which the learning rate is multiplied by `lr_decay_rate`; negative values count from the end |
+| `keep_checkpoints`             | Number of most recent checkpoints kept for `--resume`                                                     |
+| `gradient_checkpointing`       | Recompute activations in the backward pass to save memory                                                 |
 
 The artifact directory receives `config.json`, `model_config.json`, checkpoints, metric logs
 (loss, validation MAE, and adaptive F-measure), and the final `model.bpk`, which
