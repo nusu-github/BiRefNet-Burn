@@ -93,6 +93,7 @@ approx = "0.5.1"
 libm = "0.2.16"
 mimalloc = { version = "0.1.52", default-features = false }
 rand = "0.10.4"
+serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
 stacker = "0.1.25"
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std"] }

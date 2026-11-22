@@ -185,6 +185,19 @@ pub const AVAILABLE_DEVICES: &[&str] = &[
 ];
 
 /// Returns `Device::default()`, or an error when no backend is compiled in.
+#[cfg_attr(
+    any(
+        feature = "flex",
+        feature = "cpu",
+        feature = "wgpu",
+        feature = "cuda",
+        feature = "rocm"
+    ),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "builds without a backend return an error"
+    )
+)]
 fn default_device() -> Result<Device, DeviceError> {
     cfg_select! {
         any(
@@ -221,9 +234,9 @@ fn indexed_device(
 /// Maps a device name (for example a CLI `--device` flag) to a Burn [`Device`].
 ///
 /// `default` defers to [`Device::default`], which honors `BURN_DEVICE` and otherwise picks the
-/// first compiled-in backend in Burn's priority order (CUDA, Metal, ROCm, Vulkan, wgpu, CPU,
-/// Flex). GPU indices are given as `cuda:1` or `rocm:1` and are checked against the devices
-/// present.
+/// first compiled-in backend in Burn's priority order (`cuda`, `metal`, `rocm`, `vulkan`,
+/// `wgpu`, `cpu`, `flex`). GPU indices are given as `cuda:1` or `rocm:1` and are checked
+/// against the devices present.
 ///
 /// # Errors
 ///

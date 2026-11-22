@@ -22,7 +22,7 @@ doc = false
 # `--no-default-features --features <backend>` for an unfused comparison build.
 default = ["flex", "hub", "fusion"]
 hub = ["birefnet/hub"]
-train = ["birefnet/train", "burn/train"]
+train = ["birefnet/train", "burn/train", "dep:serde_json"]
 flex = ["birefnet/flex"]
 cpu = ["birefnet/cpu"]
 wgpu = ["birefnet/wgpu"]
@@ -38,6 +38,7 @@ birefnet = { workspace = true, default-features = false, features = ["inference"
 burn = { workspace = true, features = ["extension"] }
 clap = { workspace = true, features = ["derive", "help", "usage", "error-context"] }
 mimalloc.workspace = true
+serde_json = { workspace = true, optional = true }
 stacker.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter", "ansi"] }

@@ -527,6 +527,7 @@ dependencies = [
  "burn",
  "clap",
  "mimalloc",
+ "serde_json",
  "stacker",
  "tracing",
  "tracing-subscriber",

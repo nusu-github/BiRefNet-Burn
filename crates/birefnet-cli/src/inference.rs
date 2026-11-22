@@ -11,7 +11,7 @@ use birefnet::{
     inference::{Segmenter, SegmenterConfig},
     model::{BiRefNet, BiRefNetConfig, ModelConfig},
     util::image::is_supported_image_format,
-    weights::{BiRefNetWeightLoading, ManagedModel, ModelName, model_spec},
+    weights::{BiRefNetWeightLoading, ManagedModel, ModelName, ModelSpec, model_spec},
 };
 use burn::{config::Config, tensor::Device};
 
@@ -69,7 +69,7 @@ fn local_architecture(
             );
             Some(BiRefNetConfig::new(model_config))
         }
-        None => preset.map(|spec| spec.build_config()),
+        None => preset.map(ModelSpec::build_config),
     };
     let name = preset.map_or("custom", |spec| spec.name);
     let input_size = preset.map_or(DEFAULT_INPUT_SIZE, |spec| {
