@@ -95,63 +95,64 @@ impl Dt1d {
     }
 }
 
-/// Per-plane outputs of the Euclidean transform; index planes are filled only when requested.
+/// Per-plane outputs of the Euclidean transform; `nearest` is filled only when requested.
 struct EdtOutput {
     dist: Vec<f32>,
-    rows: Vec<f32>,
-    cols: Vec<f32>,
+    /// Flat `row * width + col` index of the nearest site within its plane.
+    nearest: Vec<usize>,
 }
 
 /// Computes the 2D EDT of one `height x width` plane, appending results to `out`.
 fn edt_plane(
-    plane: &[f32],
+    is_site: impl Fn(usize) -> bool,
     [height, width]: [usize; 2],
     scratch: &mut EdtScratch,
     out: &mut EdtOutput,
 ) {
+    let plane_len = height * width;
     let track_indices = scratch.track_indices;
-    if !plane.iter().any(|&val| val < 0.5) {
+    if !(0..plane_len).any(&is_site) {
         let fallback = usize_to_f32(height + width);
-        out.dist.extend(std::iter::repeat_n(fallback, plane.len()));
+        out.dist.extend(std::iter::repeat_n(fallback, plane_len));
         if track_indices {
-            out.rows.extend(std::iter::repeat_n(0.0, plane.len()));
-            out.cols.extend(std::iter::repeat_n(0.0, plane.len()));
+            out.nearest.extend(std::iter::repeat_n(0, plane_len));
         }
         return;
     }
 
-    // Pass 1: rows.
-    for (row, src) in plane.chunks_exact(width).enumerate() {
-        for (dst, &val) in scratch.line.iter_mut().zip(src) {
-            *dst = if val < 0.5 { 0.0 } else { INF_SQ };
-        }
-        scratch.dt.run(&scratch.line[..width]);
-        let offset = row * width;
-        scratch.row_sq[offset..offset + width].copy_from_slice(&scratch.dt.sq[..width]);
-        if track_indices {
-            scratch.row_arg[offset..offset + width].copy_from_slice(&scratch.dt.arg[..width]);
-        }
-    }
-
-    // Pass 2: columns over the row-wise squared distances.
-    let base = out.dist.len();
-    out.dist.resize(base + plane.len(), 0.0);
-    if track_indices {
-        out.rows.resize(base + plane.len(), 0.0);
-        out.cols.resize(base + plane.len(), 0.0);
-    }
+    // Pass 1 runs down columns and pass 2 along rows; with ties resolved towards the earlier
+    // site this reproduces SciPy's nearest-site choice exactly.
     for col in 0..width {
         for (row, dst) in scratch.line[..height].iter_mut().enumerate() {
-            *dst = scratch.row_sq[row * width + col];
+            *dst = if is_site(row * width + col) {
+                0.0
+            } else {
+                INF_SQ
+            };
         }
         scratch.dt.run(&scratch.line[..height]);
         for row in 0..height {
-            let offset = base + row * width + col;
-            out.dist[offset] = scratch.dt.sq[row].sqrt();
+            scratch.col_sq[row * width + col] = scratch.dt.sq[row];
             if track_indices {
-                let best_row = scratch.dt.arg[row];
-                out.rows[offset] = usize_to_f32(best_row);
-                out.cols[offset] = usize_to_f32(scratch.row_arg[best_row * width + col]);
+                scratch.col_arg[row * width + col] = scratch.dt.arg[row];
+            }
+        }
+    }
+
+    let base = out.dist.len();
+    out.dist.resize(base + plane_len, 0.0);
+    if track_indices {
+        out.nearest.resize(base + plane_len, 0);
+    }
+    for row in 0..height {
+        let offset = row * width;
+        scratch.dt.run(&scratch.col_sq[offset..offset + width]);
+        for col in 0..width {
+            out.dist[base + offset + col] = scratch.dt.sq[col].sqrt();
+            if track_indices {
+                let best_col = scratch.dt.arg[col];
+                out.nearest[base + offset + col] =
+                    scratch.col_arg[offset + best_col] * width + best_col;
             }
         }
     }
@@ -162,19 +163,20 @@ struct EdtScratch {
     track_indices: bool,
     dt: Dt1d,
     line: Vec<f32>,
-    row_sq: Vec<f32>,
-    row_arg: Vec<usize>,
+    /// Column-pass squared distances, row-major.
+    col_sq: Vec<f32>,
+    /// Column-pass nearest-site rows, row-major.
+    col_arg: Vec<usize>,
 }
 
 impl EdtScratch {
     fn new([height, width]: [usize; 2], track_indices: bool) -> Self {
-        let longest = height.max(width);
         Self {
             track_indices,
-            dt: Dt1d::with_capacity(longest),
-            line: vec![0.0; longest],
-            row_sq: vec![0.0; height * width],
-            row_arg: if track_indices {
+            dt: Dt1d::with_capacity(height.max(width)),
+            line: vec![0.0; height],
+            col_sq: vec![0.0; height * width],
+            col_arg: if track_indices {
                 vec![0; height * width]
             } else {
                 Vec::new()
@@ -203,8 +205,7 @@ fn run_edt(binary_image: &Tensor<4>, track_indices: bool) -> Result<EdtOutput, U
     let values = read_planes(binary_image)?;
     let mut out = EdtOutput {
         dist: Vec::with_capacity(values.len()),
-        rows: Vec::with_capacity(if track_indices { values.len() } else { 0 }),
-        cols: Vec::with_capacity(if track_indices { values.len() } else { 0 }),
+        nearest: Vec::with_capacity(if track_indices { values.len() } else { 0 }),
     };
     if height == 0 || width == 0 {
         return Ok(out);
@@ -212,9 +213,48 @@ fn run_edt(binary_image: &Tensor<4>, track_indices: bool) -> Result<EdtOutput, U
 
     let mut scratch = EdtScratch::new([height, width], track_indices);
     for plane in values.chunks_exact(height * width) {
-        edt_plane(plane, [height, width], &mut scratch, &mut out);
+        edt_plane(|i| plane[i] < 0.5, [height, width], &mut scratch, &mut out);
     }
     Ok(out)
+}
+
+/// Exact Euclidean distance transform of one host-side plane.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NearestSites {
+    /// Distance from every pixel to its nearest site, row-major.
+    pub distances: Vec<f32>,
+    /// Flat `row * width + col` index of every pixel's nearest site.
+    pub nearest: Vec<usize>,
+}
+
+/// Computes, on the host, the distance from every pixel to the nearest `true` site and the
+/// site's flat index (SciPy `distance_transform_edt(~is_site, return_indices=True)`).
+///
+/// A plane without any site gets distance `height + width` and index `0` everywhere.
+///
+/// # Panics
+///
+/// Panics if `is_site.len() != height * width`.
+#[must_use]
+pub fn nearest_sites(is_site: &[bool], [height, width]: [usize; 2]) -> NearestSites {
+    assert_eq!(
+        is_site.len(),
+        height * width,
+        "site mask length {} does not match {height}x{width}",
+        is_site.len()
+    );
+    let mut out = EdtOutput {
+        dist: Vec::with_capacity(is_site.len()),
+        nearest: Vec::with_capacity(is_site.len()),
+    };
+    if height > 0 && width > 0 {
+        let mut scratch = EdtScratch::new([height, width], true);
+        edt_plane(|i| is_site[i], [height, width], &mut scratch, &mut out);
+    }
+    NearestSites {
+        distances: out.dist,
+        nearest: out.nearest,
+    }
 }
 
 /// Computes the exact Euclidean distance transform and the coordinates of the nearest site.
@@ -228,13 +268,18 @@ fn run_edt(binary_image: &Tensor<4>, track_indices: bool) -> Result<EdtOutput, U
 pub fn euclidean_distance_transform_with_indices(
     binary_image: &Tensor<4>,
 ) -> Result<(Tensor<4>, (Tensor<4>, Tensor<4>)), UtilError> {
-    let dims = binary_image.dims();
+    let dims @ [.., width] = binary_image.dims();
     let out = run_edt(binary_image, true)?;
+    let (rows, cols) = out
+        .nearest
+        .iter()
+        .map(|&idx| (usize_to_f32(idx / width), usize_to_f32(idx % width)))
+        .unzip();
     Ok((
         upload_like(out.dist, dims, binary_image),
         (
-            upload_like(out.rows, dims, binary_image),
-            upload_like(out.cols, dims, binary_image),
+            upload_like(rows, dims, binary_image),
+            upload_like(cols, dims, binary_image),
         ),
     ))
 }

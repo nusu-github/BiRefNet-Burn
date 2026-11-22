@@ -4,7 +4,7 @@ use approx::assert_abs_diff_eq;
 use birefnet_util::{
     distance::{
         euclidean_distance_transform, euclidean_distance_transform_with_indices,
-        manhattan_distance_transform,
+        manhattan_distance_transform, nearest_sites,
     },
     filters::{custom_filter, gaussian_filter_matlab, gaussian_kernel, matlab_gaussian_2d},
     foreground::{refine_foreground, refine_foreground_batch, refine_foreground_core},
@@ -93,6 +93,19 @@ fn euclidean_transform_matches_brute_force_on_random_masks() {
             assert_abs_diff_eq!(got, expected, epsilon = 1e-4);
         }
     }
+}
+
+#[test]
+fn nearest_site_ties_resolve_like_scipy() {
+    // Pixel (0, 2) is at squared distance 4 from both sites (0, 0) and (2, 2); SciPy's
+    // `distance_transform_edt(..., return_indices=True)` reports (0, 0).
+    let mut sites = vec![false; 9];
+    sites[0] = true;
+    sites[8] = true;
+    let result = nearest_sites(&sites, [3, 3]);
+    assert_eq!(result.nearest[2], 0);
+    assert_abs_diff_eq!(result.distances[2], 2.0);
+    assert_eq!(result.nearest[8], 8);
 }
 
 #[test]
