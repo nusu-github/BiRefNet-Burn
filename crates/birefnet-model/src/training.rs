@@ -1,8 +1,9 @@
 //! Training batch, step output, and Burn `TrainStep` / `InferenceStep` integration.
 
+use birefnet_metric::SegmentationInput;
 use burn::{
     prelude::*,
-    tensor::ExecutionError,
+    tensor::{ExecutionError, activation::sigmoid},
     train::{
         InferenceStep, TrainOutput, TrainStep,
         metric::{Adaptor, ItemLazy, LossInput},
@@ -73,6 +74,13 @@ impl BiRefNetOutput {
 impl Adaptor<LossInput> for BiRefNetOutput {
     fn adapt(&self) -> LossInput {
         LossInput::new(self.loss.clone())
+    }
+}
+
+/// Feeds `birefnet_metric::SegmentationMetric` with foreground probabilities.
+impl Adaptor<SegmentationInput> for BiRefNetOutput {
+    fn adapt(&self) -> SegmentationInput {
+        SegmentationInput::new(sigmoid(self.output.clone()), self.targets.clone())
     }
 }
 

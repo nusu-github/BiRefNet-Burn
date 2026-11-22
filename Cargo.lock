@@ -575,6 +575,7 @@ version = "0.1.0"
 dependencies = [
  "birefnet-backbones",
  "birefnet-loss",
+ "birefnet-metric",
  "burn",
 ]
 

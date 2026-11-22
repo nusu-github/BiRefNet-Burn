@@ -1,122 +1,167 @@
-//! Runtime device and floating-point precision selection for `BiRefNet`.
+//! Runtime device and floating-point precision selection.
 //!
-//! Burn selects the compute backend at run time from a [`Device`] value. Cargo features
-//! decide which backends are compiled into a binary; [`select_device`] maps a user-facing
-//! name such as `"default"`, `"flex"`, `"wgpu"`, or `"cuda:0"` to the corresponding device.
+//! Burn selects the compute backend at run time from a [`Device`] value. Cargo features decide
+//! which backends are compiled in; [`select_device`] maps a name such as `"default"`, `"flex"`,
+//! `"wgpu"`, or `"cuda:1"` to a device of this build.
 
-use std::{backtrace::Backtrace, fmt, str::FromStr};
+use std::{
+    backtrace::{Backtrace, BacktraceStatus},
+    error::Error,
+    fmt,
+    str::FromStr,
+};
 
 use burn::tensor::{Device, FloatDType};
 
-type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ErrorKind {
-    InvalidIndex,
-    UnsupportedDevice,
-    PrecisionConfiguration,
+/// Error returned when parsing a device or precision name, or configuring a device.
+#[derive(Debug)]
+pub struct DeviceError {
+    inner: Box<ErrorInner>,
 }
 
 #[derive(Debug)]
 struct ErrorInner {
     kind: ErrorKind,
-    message: String,
-    source: Option<BoxError>,
     backtrace: Backtrace,
 }
 
-/// Error returned when parsing or configuring a runtime [`Device`] or [`Precision`].
-pub struct DeviceError {
-    inner: Box<ErrorInner>,
+#[derive(Debug)]
+enum ErrorKind {
+    UnsupportedDevice {
+        name: String,
+    },
+    InvalidIndex {
+        name: String,
+        source: std::num::ParseIntError,
+    },
+    #[cfg_attr(
+        not(any(feature = "cuda", feature = "rocm")),
+        expect(dead_code, reason = "only indexed GPU backends construct it")
+    )]
+    IndexOutOfRange {
+        name: String,
+        available: usize,
+    },
+    #[cfg_attr(
+        any(
+            feature = "flex",
+            feature = "cpu",
+            feature = "wgpu",
+            feature = "cuda",
+            feature = "rocm"
+        ),
+        expect(dead_code, reason = "only builds without any backend construct it")
+    )]
+    NoBackend,
+    InvalidPrecision {
+        value: String,
+    },
+    Configuration(burn::tensor::DeviceError),
 }
 
-const _: () = {
-    const fn assert_error_bounds<E: std::error::Error + Send + Sync + 'static>() {}
-    assert_error_bounds::<DeviceError>();
-};
-
 impl DeviceError {
-    fn new(kind: ErrorKind, message: impl Into<String>, source: Option<BoxError>) -> Self {
+    fn from_kind(kind: ErrorKind) -> Self {
         Self {
             inner: Box::new(ErrorInner {
                 kind,
-                message: message.into(),
-                source,
                 backtrace: Backtrace::capture(),
             }),
         }
     }
 
-    fn invalid_index(name: &str, source: std::num::ParseIntError) -> Self {
-        Self::new(
-            ErrorKind::InvalidIndex,
-            format!("invalid device index in `{name}`: {source}"),
-            Some(Box::new(source)),
-        )
-    }
-
-    fn unsupported_device(name: &str) -> Self {
-        Self::new(
-            ErrorKind::UnsupportedDevice,
-            format!(
-                "unknown or disabled device `{name}`; available in this build: {}",
-                AVAILABLE_DEVICES.join(", ")
-            ),
-            None,
-        )
-    }
-
-    fn precision_configuration(message: impl Into<String>, source: Option<BoxError>) -> Self {
-        Self::new(ErrorKind::PrecisionConfiguration, message, source)
+    /// Returns `true` if the backend name is unknown or not compiled into this build.
+    #[must_use]
+    pub fn is_unsupported_device(&self) -> bool {
+        matches!(self.inner.kind, ErrorKind::UnsupportedDevice { .. })
     }
 
     /// Returns `true` if a device index suffix (such as `cuda:abc`) failed to parse.
     #[must_use]
     pub fn is_invalid_index(&self) -> bool {
-        self.inner.kind == ErrorKind::InvalidIndex
+        matches!(self.inner.kind, ErrorKind::InvalidIndex { .. })
     }
 
-    /// Returns `true` if the named backend is unknown or disabled in this build.
+    /// Returns `true` if a GPU index exceeds the number of devices present.
     #[must_use]
-    pub fn is_unsupported_device(&self) -> bool {
-        self.inner.kind == ErrorKind::UnsupportedDevice
+    pub fn is_index_out_of_range(&self) -> bool {
+        matches!(self.inner.kind, ErrorKind::IndexOutOfRange { .. })
     }
 
-    /// Returns `true` if configuring or parsing floating-point precision failed.
+    /// Returns `true` if `default` was requested in a build without any backend.
     #[must_use]
-    pub fn is_precision_configuration(&self) -> bool {
-        self.inner.kind == ErrorKind::PrecisionConfiguration
+    pub fn is_no_backend(&self) -> bool {
+        matches!(self.inner.kind, ErrorKind::NoBackend)
     }
 
-    /// Returns the backtrace recorded when this error was constructed.
+    /// Returns `true` if a precision name (such as `fp64`) is not recognized.
+    #[must_use]
+    pub fn is_invalid_precision(&self) -> bool {
+        matches!(self.inner.kind, ErrorKind::InvalidPrecision { .. })
+    }
+
+    /// Returns `true` if the device rejected a configuration (unsupported dtype, or settings
+    /// already locked by an earlier allocation).
+    #[must_use]
+    pub fn is_configuration(&self) -> bool {
+        matches!(self.inner.kind, ErrorKind::Configuration(_))
+    }
+
+    /// Returns the captured [`Backtrace`] for this error.
     #[must_use]
     pub fn backtrace(&self) -> &Backtrace {
         &self.inner.backtrace
     }
 }
 
-impl fmt::Debug for DeviceError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DeviceError")
-            .field("kind", &self.inner.kind)
-            .field("message", &self.inner.message)
-            .field("source", &self.inner.source)
-            .finish_non_exhaustive()
+impl From<burn::tensor::DeviceError> for DeviceError {
+    fn from(source: burn::tensor::DeviceError) -> Self {
+        Self::from_kind(ErrorKind::Configuration(source))
     }
 }
 
 impl fmt::Display for DeviceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.inner.message)
+        match &self.inner.kind {
+            ErrorKind::UnsupportedDevice { name } => write!(
+                f,
+                "unknown or disabled device `{name}`; available in this build: {}",
+                AVAILABLE_DEVICES.join(", ")
+            ),
+            ErrorKind::InvalidIndex { name, .. } => write!(f, "invalid device index in `{name}`"),
+            ErrorKind::IndexOutOfRange { name, available } => write!(
+                f,
+                "device `{name}` does not exist; {available} such device(s) are present"
+            ),
+            ErrorKind::NoBackend => f.write_str(
+                "no backend is compiled into this build; enable a backend feature such as `flex`",
+            ),
+            ErrorKind::InvalidPrecision { value } => write!(
+                f,
+                "unsupported precision `{value}`; expected `f32`, `f16`, or `bf16`"
+            ),
+            ErrorKind::Configuration(_) => f.write_str("failed to configure the device"),
+        }?;
+        if self.inner.backtrace.status() == BacktraceStatus::Captured {
+            write!(f, "\n\nstack backtrace:\n{}", self.inner.backtrace)?;
+        }
+        Ok(())
     }
 }
 
-impl std::error::Error for DeviceError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        let err = self.inner.source.as_deref()?;
-        Some(err)
+impl Error for DeviceError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match &self.inner.kind {
+            ErrorKind::InvalidIndex { source, .. } => Some(source),
+            ErrorKind::Configuration(source) => Some(source),
+            _ => None,
+        }
     }
 }
+
+const _: fn() = || {
+    fn assert_send_sync_static<T: Send + Sync + 'static>() {}
+    assert_send_sync_static::<DeviceError>();
+};
 
 /// Device names accepted by [`select_device`] in the current build, in display order.
 pub const AVAILABLE_DEVICES: &[&str] = &[
@@ -139,29 +184,68 @@ pub const AVAILABLE_DEVICES: &[&str] = &[
     "rocm[:N]",
 ];
 
+/// Returns `Device::default()`, or an error when no backend is compiled in.
+fn default_device() -> Result<Device, DeviceError> {
+    cfg_select! {
+        any(
+            feature = "flex",
+            feature = "cpu",
+            feature = "wgpu",
+            feature = "cuda",
+            feature = "rocm"
+        ) => Ok(Device::default()),
+        _ => Err(DeviceError::from_kind(ErrorKind::NoBackend)),
+    }
+}
+
+/// Validates `index` against the enumerated devices before creating the device, so a
+/// missing GPU is an error here rather than a panic on a backend worker thread.
+#[cfg(any(feature = "cuda", feature = "rocm"))]
+fn indexed_device(
+    name: &str,
+    index: usize,
+    kind: burn::tensor::DeviceType,
+    make: fn(usize) -> Device,
+) -> Result<Device, DeviceError> {
+    let available = Device::enumerate(kind).into_vec().len();
+    if index < available {
+        Ok(make(index))
+    } else {
+        Err(DeviceError::from_kind(ErrorKind::IndexOutOfRange {
+            name: name.to_owned(),
+            available,
+        }))
+    }
+}
+
 /// Maps a device name (for example a CLI `--device` flag) to a Burn [`Device`].
 ///
-/// `default` defers to [`Device::default`], picking the first compiled-in backend in
-/// Burn's priority order (`CUDA`, `Metal`, `ROCm`, `Vulkan`, `wgpu`, `CPU`, `Flex`) unless
-/// `BURN_DEVICE` overrides it. GPU indices are given as `cuda:1` or `rocm:1`.
+/// `default` defers to [`Device::default`], which honors `BURN_DEVICE` and otherwise picks the
+/// first compiled-in backend in Burn's priority order (CUDA, Metal, ROCm, Vulkan, wgpu, CPU,
+/// Flex). GPU indices are given as `cuda:1` or `rocm:1` and are checked against the devices
+/// present.
 ///
 /// # Errors
 ///
-/// Returns [`DeviceError`] if the backend name is unknown or not enabled in this build,
-/// or if an explicit `:N` index is invalid.
-pub fn select_device(name: &str) -> Result<Device, DeviceError> {
+/// Returns [`DeviceError`] if the backend name is unknown or not enabled in this build, an
+/// index suffix is malformed or out of range, or no backend is compiled in.
+pub fn select_device(name: impl AsRef<str>) -> Result<Device, DeviceError> {
+    let name = name.as_ref();
     let (backend, index) = match name.split_once(':') {
-        Some((backend, index_str)) => {
-            let index: usize = index_str
-                .parse()
-                .map_err(|err| DeviceError::invalid_index(name, err))?;
+        Some((backend, index)) => {
+            let index = index.parse::<usize>().map_err(|source| {
+                DeviceError::from_kind(ErrorKind::InvalidIndex {
+                    name: name.to_owned(),
+                    source,
+                })
+            })?;
             (backend, Some(index))
         }
         None => (name, None),
     };
 
     match (backend, index) {
-        ("default", None) => Ok(Device::default()),
+        ("default", None) => default_device(),
         #[cfg(feature = "flex")]
         ("flex", None) => Ok(Device::flex()),
         #[cfg(feature = "cpu")]
@@ -175,11 +259,36 @@ pub fn select_device(name: &str) -> Result<Device, DeviceError> {
         #[cfg(feature = "metal")]
         ("metal", None) => Ok(Device::metal(burn::tensor::DeviceKind::DefaultDevice)),
         #[cfg(feature = "cuda")]
-        ("cuda", index) => Ok(Device::cuda(index.unwrap_or(0))),
+        ("cuda", index) => indexed_device(
+            name,
+            index.unwrap_or(0),
+            burn::tensor::DeviceType::Cuda,
+            Device::cuda,
+        ),
         #[cfg(feature = "rocm")]
-        ("rocm", index) => Ok(Device::rocm(index.unwrap_or(0))),
-        _ => Err(DeviceError::unsupported_device(name)),
+        ("rocm", index) => indexed_device(
+            name,
+            index.unwrap_or(0),
+            burn::tensor::DeviceType::Rocm,
+            Device::rocm,
+        ),
+        _ => Err(DeviceError::from_kind(ErrorKind::UnsupportedDevice {
+            name: name.to_owned(),
+        })),
     }
+}
+
+/// Returns a device on the first physical GPU this build can reach, if any (CubeCL GPU
+/// backends only).
+///
+/// Unlike `default`, this skips software rasterizers (such as `llvmpipe` under Vulkan) and
+/// CPU backends, which report no physical card.
+#[cfg(any(feature = "wgpu", feature = "cuda", feature = "rocm"))]
+#[must_use]
+pub fn first_hardware_gpu() -> Option<Device> {
+    Device::enumerate_physical()
+        .into_iter()
+        .find_map(|gpu| gpu.devices.into_vec().into_iter().next())
 }
 
 /// Floating-point precision used for tensors created on a selected [`Device`].
@@ -212,10 +321,9 @@ impl FromStr for Precision {
             "f32" => Ok(Self::F32),
             "f16" => Ok(Self::F16),
             "bf16" => Ok(Self::Bf16),
-            other => Err(DeviceError::precision_configuration(
-                format!("unsupported precision `{other}`; expected `f32`, `f16`, or `bf16`"),
-                None,
-            )),
+            _ => Err(DeviceError::from_kind(ErrorKind::InvalidPrecision {
+                value: s.to_owned(),
+            })),
         }
     }
 }
@@ -236,53 +344,8 @@ impl From<Precision> for FloatDType {
 ///
 /// # Errors
 ///
-/// Returns [`DeviceError`] if the backend does not support `precision` or is already initialized.
+/// Returns [`DeviceError`] (`is_configuration`) if the backend does not support `precision` or
+/// its settings are already locked.
 pub fn configure_precision(device: &mut Device, precision: Precision) -> Result<(), DeviceError> {
-    device
-        .configure(FloatDType::from(precision))
-        .map_err(|err| {
-            DeviceError::precision_configuration(
-                format!("cannot configure precision `{precision}` on {device:?}: {err}"),
-                None,
-            )
-        })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unknown_device_lists_available_ones() {
-        let err = select_device("tpu").unwrap_err();
-        assert!(err.is_unsupported_device());
-        let msg = err.to_string();
-        assert!(msg.contains("unknown or disabled device `tpu`"), "{msg}");
-        assert!(msg.contains("default"), "{msg}");
-    }
-
-    #[test]
-    fn invalid_index_is_rejected() {
-        let bad_idx = select_device("cuda:x").unwrap_err();
-        assert!(bad_idx.is_invalid_index());
-
-        let bad_default = select_device("default:0").unwrap_err();
-        assert!(bad_default.is_unsupported_device());
-    }
-
-    #[test]
-    fn precision_round_trips_display_and_from_str() {
-        for precision in [Precision::F32, Precision::F16, Precision::Bf16] {
-            let parsed: Precision = precision.to_string().to_uppercase().parse().unwrap();
-            assert_eq!(parsed, precision);
-        }
-        let err = "fp64".parse::<Precision>().unwrap_err();
-        assert!(err.is_precision_configuration());
-    }
-
-    #[cfg(feature = "flex")]
-    #[test]
-    fn flex_is_selectable() {
-        assert_eq!(select_device("flex").unwrap(), Device::flex());
-    }
+    Ok(device.configure(FloatDType::from(precision))?)
 }

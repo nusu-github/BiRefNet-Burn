@@ -346,7 +346,7 @@ fn discover_pairs(
         tracing::warn!(
             name: "birefnet.train.dataset.discover.unmatched",
             unmatched,
-            file.path = %image_root.display(),
+            path = %image_root.display(),
             "{unmatched} images have no mask with the same file stem and were skipped"
         );
     }
@@ -358,7 +358,7 @@ fn discover_pairs(
     tracing::info!(
         name: "birefnet.train.dataset.discover.done",
         pairs = pairs.len(),
-        file.path = %image_root.display(),
+        path = %image_root.display(),
         "discovered {} image/mask pairs",
         pairs.len()
     );
