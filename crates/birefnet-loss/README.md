@@ -9,7 +9,7 @@ Segmentation losses and the combined multi-scale BiRefNet training objective on 
 | [`SsimLoss`] | probabilities | `(1 - SSIM) / 2` with an 11×11 Gaussian window |
 | [`StructureLoss`] | logits | edge-weighted BCE + edge-weighted IoU |
 | [`ContourLoss`] | probabilities | curve length + region terms |
-| [`MaeLoss`] | probabilities | `|p - y|` |
+| [`MaeLoss`] | probabilities | mean absolute error |
 | [`ThresholdRegularizationLoss`] | probabilities | `2 p (1 - p)` |
 | [`ClassificationLoss`] | class logits | cross-entropy summed over levels |
 

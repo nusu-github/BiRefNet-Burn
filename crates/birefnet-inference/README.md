@@ -20,6 +20,8 @@ use birefnet_model::{
 };
 use burn::prelude::*;
 
+# // Building a model recurses deeply; doctests run on a 1 MiB main thread on Windows.
+# std::thread::Builder::new().stack_size(64 << 20).spawn(|| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 let device = Device::flex();
 // A small randomly initialized model; real use loads pretrained weights (`birefnet-weights`).
 let model = BiRefNetConfig::new(
@@ -39,7 +41,9 @@ let image = Tensor::<4>::full([1, 3, 48, 80], 0.5, &device);
 let output = segmenter.segment_tensor(image)?;
 assert_eq!(output.original_size(), [48, 80]);
 assert_eq!(output.to_mask_image()?.dimensions(), (80, 48));
-# Ok::<(), Box<dyn std::error::Error>>(())
+# Ok(())
+# })?.join().unwrap()?;
+# Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
 ```
 
 ## License

@@ -36,7 +36,7 @@ BiRefNet is an encoder-decoder segmentation architecture with bilateral referenc
 - **Backbone Networks**: `SwinV1` (`Tiny`, `Small`, `Base`, `Large`), `PVTv2` (`B0`, `B1`, `B2`, `B5`), `ResNet` (`18`, `50`), and `VGG` (`16`, `16-BN`).
 - **Pretrained Weight Loading**: 15 registered pretrained Hugging Face presets with optional Hub downloads (`hub` feature), SafeTensors key remapping, PyTorch import, and native Burnpack (`.bpk`) round-tripping.
 - **Inference & Postprocessing**: High-level `Segmenter` pipeline with ImageNet preprocessing, native Burn spatial resizing, sigmoid probability mapping, Gaussian blur, disk morphology (opening/closing), 4-connected small-component filtering, hole filling, and blur-fusion foreground refinement.
-- **Evaluation Suite**: Full implementations of `MAE`, `MSE`, `F-measure` (adaptive + curves), `Weighted F-measure`, `S-measure`, `E-measure` (adaptive + curve), and `BIoU`, plus `MetricsAggregator` and Burn `Metric` adapters.
+- **Evaluation Suite**: `MAE`, `MSE`, `F-measure` (adaptive + curves), `Weighted F-measure`, `S-measure`, `E-measure` (adaptive + curve), and `BIoU`, matching the upstream `evaluation/metrics.py` (py_sod_metrics) to within 1e-9, plus `MetricsAggregator` and a Burn `Metric` adapter for validation.
 - **Training Pipeline**: `BiRefNetDataset` discovery/batching with self-contained image augmentations (flip, crop, rotate, color enhancement, pepper noise, background synthesis, 32-aligned dynamic sizing), combined `BiRefNetLoss`, and `SupervisedTraining` integration in `birefnet-cli`.
 - **Runtime Backend & Precision Selection**: Compile one or more Burn backends (`flex`, `cpu`, `wgpu`, `vulkan`, `metal`, `cuda`, `rocm`) and choose the active `--device` and `--precision` (`f32`, `f16`, `bf16`) at run time.
 
@@ -53,12 +53,12 @@ BiRefNet is an encoder-decoder segmentation architecture with bilateral referenc
 git clone https://github.com/nusu-github/BiRefNet-Burn.git
 cd BiRefNet-Burn
 
-# Default CLI binary (`birefnet` from `crates/birefnet-cli`): Flex CPU + Hugging Face Hub
+# Default CLI binary (`birefnet` from `crates/birefnet-cli`): Flex CPU, Hugging Face Hub, fusion
 cargo build --release -p birefnet-cli
 
-# Enable GPU backends and training support
-cargo build --release -p birefnet-cli --features wgpu,fusion
-cargo build --release -p birefnet-cli --features cuda,fusion,train
+# Add GPU backends and training support (`fusion` is on by default)
+cargo build --release -p birefnet-cli --features wgpu
+cargo build --release -p birefnet-cli --features cuda,train
 
 # Or install the binary locally
 cargo install --path crates/birefnet-cli
@@ -82,19 +82,25 @@ cargo run --release -p birefnet-cli -- infer --list-models
 cargo run --release -p birefnet-cli -- infer --input image.jpg --output results/ --model General --no-refine
 
 # Explicit GPU backend and half precision
-cargo run --release -p birefnet-cli --features wgpu,fusion -- --device wgpu --precision f16 infer --input image.jpg --output results/ --model General
+cargo run --release -p birefnet-cli --features wgpu -- --device wgpu --precision f16 infer --input image.jpg --output results/ --model General
 ```
 
-`--model` also accepts local checkpoints in Burnpack (`.bpk`), SafeTensors (`.safetensors`), or PyTorch (`.pt`/`.pth`) formats.
+`--model` also accepts local checkpoints in Burnpack (`.bpk`), SafeTensors (`.safetensors`), or PyTorch (`.pt`/`.pth`) formats; the format is detected from the file header. Their architecture comes from `--config <model_config.json>`, a `model_config.json` next to the checkpoint, or `--preset <name>`.
 
 ### Training
 
 ```bash
 # Train from a JSON configuration (writes checkpoints & logs to ./artifacts)
-cargo run --release -p birefnet-cli --features train,cuda,fusion -- --device cuda train --config path/to/config.json
+cargo run --release -p birefnet-cli --features train,cuda -- --device cuda train --config path/to/config.json
 
 # Resume after epoch 10 from ./artifacts/checkpoint/
-cargo run --release -p birefnet-cli --features train,cuda,fusion -- --device cuda train --config path/to/config.json --resume 10
+cargo run --release -p birefnet-cli --features train,cuda -- --device cuda train --config path/to/config.json --resume 10
+```
+
+A minimal configuration names a preset architecture and the dataset root; every other key has a default (see [`crates/birefnet-cli`](crates/birefnet-cli/README.md#training) for the full schema):
+
+```json
+{ "model": "General", "dataset": { "data_root_dir": "datasets" } }
 ```
 
 ### Backends
@@ -110,7 +116,7 @@ cargo run --release -p birefnet-cli --features train,cuda,fusion -- --device cud
 | `rocm`   | `rocm`, `rocm:N`   | AMD ROCm backend                                                    |
 
 - `--device default` uses `Device::default()`, selecting the highest-priority compiled backend (or `BURN_DEVICE`).
-- `fusion` is opt-in and enables CubeCL kernel fusion and autotuning.
+- `fusion` (CubeCL kernel fusion and autotuning) is a default CLI feature; build with `--no-default-features --features <backend>` to compare against an unfused backend.
 - `--precision f32|f16|bf16` configures the device float dtype before the first allocation.
 
 ### Backend Information
@@ -123,11 +129,15 @@ cargo run --release -p birefnet-cli --features wgpu -- --device wgpu info
 ### Development Commands
 
 ```bash
+export FEATURES=birefnet/train,birefnet-model/train,birefnet-cli/train,birefnet-util/image-io,birefnet-weights/hub,birefnet-weights/test-util
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --features birefnet/train,birefnet-model/train,birefnet-cli/train,birefnet-util/image-io,birefnet-weights/hub,birefnet-weights/test-util -- -D warnings
-cargo test --workspace --features birefnet/train,birefnet-model/train,birefnet-cli/train,birefnet-util/image-io,birefnet-weights/hub,birefnet-weights/test-util
-cargo doc --workspace --no-deps --features birefnet/train,birefnet-model/train,birefnet-util/image-io,birefnet-weights/hub,birefnet-weights/test-util
+CARGO_BUILD_WARNINGS=deny cargo clippy --workspace --all-targets --features "$FEATURES"
+cargo test --workspace --features "$FEATURES"
+CARGO_BUILD_WARNINGS=deny cargo doc --workspace --no-deps --features "$FEATURES"
+cargo tree -d -p birefnet-cli   # must not list two copies of any burn crate
 ```
+
+The same checks run in CI (`.github/workflows/rust.yml`).
 
 ## Architecture
 
@@ -143,7 +153,7 @@ cargo doc --workspace --no-deps --features birefnet/train,birefnet-model/train,b
 | [`birefnet-model`](crates/birefnet-model)             | `BiRefNet` architecture, decoder, squeeze, ASPP, refinement, and configs   |
 | [`birefnet-backbones`](crates/birefnet-backbones)     | Encoder backbones (`SwinV1`, `PVTv2`, `ResNet`, `VGG`)                     |
 | [`birefnet-weights`](crates/birefnet-weights)         | Model preset catalog, optional Hub fetcher, and Burnpack/SafeTensors/PT IO |
-| [`birefnet-inference`](crates/birefnet-inference)     | High-level `Segmenter`, mask postprocessing, and morphology operations     |
+| [`birefnet-inference`](crates/birefnet-inference)     | High-level `Segmenter` and mask postprocessing                             |
 | [`birefnet-train`](crates/birefnet-train)             | `BiRefNetDataset`, batcher, and self-contained image augmentations         |
 | [`birefnet-loss`](crates/birefnet-loss)               | `BiRefNetLoss`, BCE/IoU/SSIM/Structure/Contour/PatchIoU/MAE/Threshold loss |
 | [`birefnet-metric`](crates/birefnet-metric)           | Segmentation evaluation metrics, Burn `Metric` adapters, and aggregators   |

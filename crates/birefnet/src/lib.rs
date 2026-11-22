@@ -1,9 +1,4 @@
-//! `BiRefNet`: Bilateral Reference Network for dichotomous image segmentation.
-//!
-//! This umbrella crate provides a single entrypoint to the modular `BiRefNet` workspace
-//! crates behind additive Cargo feature flags (`weights`, `hub`, `inference`, `train`).
-//! Backend selection happens at run time via [`device::select_device`], while Cargo features
-//! decide which backends are compiled in.
+#![doc = include_str!("../README.md")]
 
 pub mod device;
 
