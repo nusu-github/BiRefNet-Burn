@@ -11,7 +11,7 @@ use burn::{
     tensor::activation::sigmoid,
 };
 
-use crate::ops::{assert_same_shape, bce_with_logits, reduce_loss, usize_to_i32};
+use crate::ops::{assert_same_shape, bce_with_logits, reduce_loss};
 
 /// Configuration for [`StructureLoss`].
 #[derive(Config, Debug, PartialEq)]
@@ -153,14 +153,12 @@ impl StructureLoss {
         weights: Tensor<4>,
     ) -> Tensor<1> {
         let weighted_bce = bce_with_logits(logits, targets) * weights.clone();
-        let bce_sum = weighted_bce.sum_dim(3).sum_dim(2);
-        let weights_sum = weights.sum_dim(3).sum_dim(2).clamp_min(self.eps);
+        let bce_sum = weighted_bce.sum_dims_squeeze::<2, _>(&[2, 3]);
+        let weights_sum = weights
+            .sum_dims_squeeze::<2, _>(&[2, 3])
+            .clamp_min(self.eps);
 
-        let [batch_size, channels, _, _] = bce_sum.dims();
-        (bce_sum / weights_sum)
-            .reshape([usize_to_i32(batch_size), usize_to_i32(channels)])
-            .mean_dim(1)
-            .squeeze_dim::<1>(1)
+        (bce_sum / weights_sum).mean_dim(1).squeeze_dim::<1>(1)
     }
 
     fn weighted_iou_loss(
@@ -169,21 +167,13 @@ impl StructureLoss {
         targets: Tensor<4>,
         weights: Tensor<4>,
     ) -> Tensor<1> {
-        let inter = (pred.clone() * targets.clone() * weights.clone())
-            .sum_dim(3)
-            .sum_dim(2);
-        let union = ((pred + targets) * weights).sum_dim(3).sum_dim(2);
+        let inter =
+            (pred.clone() * targets.clone() * weights.clone()).sum_dims_squeeze::<2, _>(&[2, 3]);
+        let union = ((pred + targets) * weights).sum_dims_squeeze::<2, _>(&[2, 3]);
 
-        let [batch_size, channels, _, _] = inter.dims();
-        let batch = usize_to_i32(batch_size);
-        let chan = usize_to_i32(channels);
-        let inter_flat = inter.reshape([batch, chan]);
-        let union_flat = union.reshape([batch, chan]);
+        let denom = (union - inter.clone()).add_scalar(self.eps);
+        let iou = inter.add_scalar(self.eps) / denom;
 
-        let denom = (union_flat - inter_flat.clone()).add_scalar(self.eps);
-        let iou = inter_flat.add_scalar(self.eps) / denom;
-        let wiou = iou.ones_like() - iou;
-
-        wiou.mean_dim(1).squeeze_dim::<1>(1)
+        iou.neg().add_scalar(1.0).mean_dim(1).squeeze_dim::<1>(1)
     }
 }

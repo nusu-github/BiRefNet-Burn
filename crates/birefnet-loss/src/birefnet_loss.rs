@@ -1,10 +1,9 @@
 //! Integrated multi-task BiRefNet loss combining pixel and auxiliary classification terms.
 
-use std::collections::HashMap;
-
 use burn::{nn::loss::Reduction, prelude::*};
 
 use crate::{
+    breakdown::{Component, LossBreakdown, read_breakdown},
     classification::{ClassificationLoss, ClassificationLossConfig},
     error::LossError,
     pixel::{LossWeightsConfig, PixLoss, PixLossConfig},
@@ -24,6 +23,7 @@ pub struct BiRefNetLossConfig {
     pub global_scale: f64,
 }
 
+/// Upstream `General` task weights: BCE 30, IoU 0.5, MAE 100, SSIM 10.
 fn default_pixel_weights() -> LossWeightsConfig {
     LossWeightsConfig::new()
         .with_bce(30.0)
@@ -41,37 +41,19 @@ impl BiRefNetLossConfig {
     /// Configuration preset tuned for Dichotomous Image Segmentation (DIS).
     #[must_use]
     pub fn dis_optimized() -> Self {
-        Self::new().with_pixel_weights(
-            LossWeightsConfig::new()
-                .with_bce(30.0)
-                .with_iou(0.5)
-                .with_mae(0.0)
-                .with_ssim(10.0),
-        )
+        Self::new().with_pixel_weights(default_pixel_weights().with_mae(0.0))
     }
 
     /// Configuration preset tuned for general foreground/salient object segmentation.
     #[must_use]
     pub fn general_optimized() -> Self {
-        Self::new().with_pixel_weights(
-            LossWeightsConfig::new()
-                .with_bce(30.0)
-                .with_iou(0.5)
-                .with_mae(100.0)
-                .with_ssim(10.0),
-        )
+        Self::new().with_pixel_weights(default_pixel_weights())
     }
 
     /// Configuration preset tuned for alpha matting with continuous targets.
     #[must_use]
     pub fn matting_optimized() -> Self {
-        Self::new().with_pixel_weights(
-            LossWeightsConfig::new()
-                .with_bce(30.0)
-                .with_iou(0.0)
-                .with_mae(100.0)
-                .with_ssim(10.0),
-        )
+        Self::new().with_pixel_weights(default_pixel_weights().with_iou(0.0))
     }
 
     /// Sets the BCE loss weight.
@@ -109,12 +91,12 @@ impl BiRefNetLossConfig {
         self
     }
 
-    /// Initializes a [`BiRefNetLoss`] module on `device`.
+    /// Initializes a [`BiRefNetLoss`] module.
     #[must_use]
-    pub fn init(&self, device: &Device) -> BiRefNetLoss {
-        let pixel_loss = PixLossConfig::new(self.pixel_weights.clone()).init(device);
-        let classification_loss = (self.classification_weight > 0.0)
-            .then(|| ClassificationLossConfig::new().init(device));
+    pub fn init(&self) -> BiRefNetLoss {
+        let pixel_loss = PixLossConfig::new(self.pixel_weights.clone()).init();
+        let classification_loss =
+            (self.classification_weight > 0.0).then(|| ClassificationLossConfig::new().init());
 
         BiRefNetLoss {
             pixel_loss,
@@ -156,6 +138,9 @@ impl BiRefNetLoss {
 
     /// Computes combined pixel and classification loss without host scalar synchronization.
     ///
+    /// The classification term is added only when this loss has a classification branch and
+    /// both `class_preds` and `class_targets` are provided.
+    ///
     /// # Errors
     ///
     /// Returns [`LossError`] if `scaled_preds` is empty or shapes mismatch `targets`.
@@ -166,62 +151,68 @@ impl BiRefNetLoss {
         class_preds: Option<&[Tensor<2>]>,
         class_targets: Option<&Tensor<1, Int>>,
     ) -> Result<Tensor<1>, LossError> {
-        let mut total_loss = self
+        let pixel = self
             .pixel_loss
             .forward(scaled_preds, targets, self.global_scale)?;
-
-        if let Some(ref cls_loss) = self.classification_loss
-            && let (Some(preds), Some(cls_targets)) = (class_preds, class_targets)
-        {
-            let cls_val = cls_loss
-                .forward(preds, cls_targets, Reduction::Mean)
-                .mul_scalar(self.classification_weight * self.global_scale);
-            total_loss = total_loss + cls_val;
-        }
-
-        Ok(total_loss)
+        Ok(match self.classification_term(class_preds, class_targets) {
+            Some(cls_val) => pixel + cls_val,
+            None => pixel,
+        })
     }
 
-    /// Computes pixel loss and a host dictionary of per-component average scalars.
+    /// Computes pixel loss and reads the per-component [`LossBreakdown`] in one transaction.
     ///
     /// # Errors
     ///
-    /// Returns [`LossError`] if `scaled_preds` is empty or shapes mismatch `targets`.
+    /// Returns [`LossError`] if `scaled_preds` is empty, shapes mismatch `targets`, or the
+    /// component values cannot be read back from the device.
     pub fn forward_detailed(
         &self,
         scaled_preds: &[Tensor<4>],
         targets: &Tensor<4>,
-    ) -> Result<(Tensor<1>, HashMap<String, f64>), LossError> {
+    ) -> Result<(Tensor<1>, LossBreakdown), LossError> {
         self.forward_detailed_with_classification(scaled_preds, targets, None, None)
     }
 
-    /// Computes pixel + classification losses alongside a breakdown dictionary for logging.
+    /// Computes pixel + classification losses alongside a [`LossBreakdown`] for logging.
     ///
     /// # Errors
     ///
-    /// Returns [`LossError`] if `scaled_preds` is empty or shapes mismatch `targets`.
+    /// Returns [`LossError`] if `scaled_preds` is empty, shapes mismatch `targets`, or the
+    /// component values cannot be read back from the device.
     pub fn forward_detailed_with_classification(
         &self,
         scaled_preds: &[Tensor<4>],
         targets: &Tensor<4>,
         class_preds: Option<&[Tensor<2>]>,
         class_targets: Option<&Tensor<1, Int>>,
-    ) -> Result<(Tensor<1>, HashMap<String, f64>), LossError> {
-        let (mut total_loss, mut loss_dict) =
-            self.pixel_loss
-                .forward_detailed(scaled_preds, targets, self.global_scale)?;
+    ) -> Result<(Tensor<1>, LossBreakdown), LossError> {
+        let terms = self
+            .pixel_loss
+            .compute(scaled_preds, targets, self.global_scale, true)?;
+        let mut total_loss = terms.total;
+        let mut components = terms.components;
 
-        if let Some(ref cls_loss) = self.classification_loss
-            && let (Some(preds), Some(cls_targets)) = (class_preds, class_targets)
-        {
-            let cls_val = cls_loss
-                .forward(preds, cls_targets, Reduction::Mean)
-                .mul_scalar(self.classification_weight * self.global_scale);
+        if let Some(cls_val) = self.classification_term(class_preds, class_targets) {
             total_loss = total_loss + cls_val.clone();
-            loss_dict.insert("classification".to_owned(), cls_val.into_scalar::<f64>());
+            components.push((Component::Classification, cls_val));
         }
 
-        loss_dict.insert("total".to_owned(), total_loss.clone().into_scalar::<f64>());
-        Ok((total_loss, loss_dict))
+        let breakdown = read_breakdown(total_loss.clone(), components)?;
+        Ok((total_loss, breakdown))
+    }
+
+    fn classification_term(
+        &self,
+        class_preds: Option<&[Tensor<2>]>,
+        class_targets: Option<&Tensor<1, Int>>,
+    ) -> Option<Tensor<1>> {
+        let cls_loss = self.classification_loss.as_ref()?;
+        let (preds, cls_targets) = (class_preds?, class_targets?);
+        Some(
+            cls_loss
+                .forward(preds, cls_targets, Reduction::Mean)
+                .mul_scalar(self.classification_weight * self.global_scale),
+        )
     }
 }

@@ -1,6 +1,7 @@
-//! Segmentation loss functions and BiRefNet multi-scale training objectives.
+#![doc = include_str!("../README.md")]
 
 mod birefnet_loss;
+mod breakdown;
 mod classification;
 mod contour;
 mod error;
@@ -16,21 +17,23 @@ mod threshold_regularization;
 #[doc(inline)]
 pub use birefnet_loss::{BiRefNetLoss, BiRefNetLossConfig};
 #[doc(inline)]
+pub use breakdown::LossBreakdown;
+#[doc(inline)]
 pub use classification::{ClassificationLoss, ClassificationLossConfig};
 #[doc(inline)]
 pub use contour::{ContourLoss, ContourLossConfig};
 #[doc(inline)]
 pub use error::LossError;
 #[doc(inline)]
-pub use iou::{IoULoss, IoULossConfig};
+pub use iou::{IouLoss, IouLossConfig};
 #[doc(inline)]
 pub use mae::{MaeLoss, MaeLossConfig};
 #[doc(inline)]
-pub use patch_iou::{PatchIoULoss, PatchIoULossConfig};
+pub use patch_iou::{PatchIouLoss, PatchIouLossConfig};
 #[doc(inline)]
 pub use pixel::{LossWeightsConfig, PixLoss, PixLossConfig};
 #[doc(inline)]
-pub use ssim::{SSIMLoss, SSIMLossConfig};
+pub use ssim::{SsimLoss, SsimLossConfig};
 #[doc(inline)]
 pub use structure::{StructureLoss, StructureLossConfig};
 #[doc(inline)]

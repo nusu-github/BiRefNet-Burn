@@ -7,7 +7,7 @@ use burn::{
     tensor::s,
 };
 
-use crate::ops::{assert_same_shape, reduce_loss, usize_to_i32};
+use crate::ops::{assert_same_shape, mean_per_sample, reduce_loss};
 
 /// Configuration for [`ContourLoss`].
 #[derive(Config, Debug, PartialEq)]
@@ -102,7 +102,7 @@ impl ContourLoss {
     pub fn forward_no_reduction(&self, predictions: Tensor<4>, targets: Tensor<4>) -> Tensor<1> {
         assert_same_shape(&predictions, &targets);
 
-        let [batch_size, _, height, width] = predictions.dims();
+        let [_, _, height, width] = predictions.dims();
         assert!(
             height >= 3 && width >= 3,
             "ContourLoss requires input size >= 3x3, got [{height}x{width}]"
@@ -113,25 +113,12 @@ impl ContourLoss {
         let delta_c = predictions.clone().slice(s![.., .., .., 1..])
             - predictions.clone().slice(s![.., .., .., ..-1]);
 
-        let row_grad_sq = delta_r.slice(s![.., .., 1.., ..-2]).powi_scalar(2);
-        let col_grad_sq = delta_c.slice(s![.., .., ..-2, 1..]).powi_scalar(2);
-        let delta_pred = (row_grad_sq + col_grad_sq).abs();
+        let row_grad_sq = delta_r.slice(s![.., .., 1.., ..-2]).square();
+        let col_grad_sq = delta_c.slice(s![.., .., ..-2, 1..]).square();
+        let length = mean_per_sample((row_grad_sq + col_grad_sq).add_scalar(self.eps).sqrt());
 
-        let batch = usize_to_i32(batch_size);
-        let length = (delta_pred + self.eps)
-            .sqrt()
-            .reshape([batch, -1])
-            .mean_dim(1)
-            .squeeze_dim::<1>(1);
-
-        let region_in = (predictions.clone() * (targets.clone() - 1.0).powi_scalar(2))
-            .reshape([batch, -1])
-            .mean_dim(1)
-            .squeeze_dim::<1>(1);
-        let region_out = ((predictions.ones_like() - predictions) * targets.powi_scalar(2))
-            .reshape([batch, -1])
-            .mean_dim(1)
-            .squeeze_dim::<1>(1);
+        let region_in = mean_per_sample(predictions.clone() * (targets.clone() - 1.0).square());
+        let region_out = mean_per_sample(predictions.neg().add_scalar(1.0) * targets.square());
 
         length.mul_scalar(self.weight) + region_in + region_out
     }
