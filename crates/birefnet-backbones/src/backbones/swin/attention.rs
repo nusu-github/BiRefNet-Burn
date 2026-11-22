@@ -118,15 +118,9 @@ impl WindowAttention {
             .forward(x)
             .reshape([batch_windows, seq_len, 3, self.num_heads, head_dim])
             .permute([2, 0, 3, 1, 4]);
-        let query: Tensor<4> = qkv
-            .clone()
-            .slice(s![0..1, .., .., .., ..])
-            .squeeze_dim::<4>(0);
-        let key: Tensor<4> = qkv
-            .clone()
-            .slice(s![1..2, .., .., .., ..])
-            .squeeze_dim::<4>(0);
-        let value: Tensor<4> = qkv.slice(s![2..3, .., .., .., ..]).squeeze_dim::<4>(0);
+        let query = qkv.clone().narrow(0, 0, 1).squeeze_dim::<4>(0);
+        let key = qkv.clone().narrow(0, 1, 1).squeeze_dim::<4>(0);
+        let value = qkv.narrow(0, 2, 1).squeeze_dim::<4>(0);
 
         let scaled_query = query * self.scale;
         let attn = scaled_query.matmul(key.swap_dims(2, 3));

@@ -1,41 +1,71 @@
-//! Tensor, morphological, distance-transform, filtering, and optional image I/O utilities for BiRefNet.
+//! Image and mask utilities for `BiRefNet`: normalization, distance transforms, binary
+//! morphology, Gaussian filtering, foreground color refinement, and optional image codecs.
+//!
+//! # Features
+//!
+//! | Feature | Default | Effect |
+//! | --- | --- | --- |
+//! | `image-io` | no | Enables the `image` module (decoding, encoding, and tensor conversion via the `image` crate) |
+//!
+//! # Modules
+//!
+//! | Module | Contents |
+//! | --- | --- |
+//! | [`normalize`] | `ImageNet` standardization and alpha masking |
+//! | [`distance`] | Exact Euclidean (with optional nearest-site indices) and Manhattan transforms |
+//! | [`morphology`] | [`StructuringElement`](morphology::StructuringElement) plus erosion, dilation, opening, closing, gradient |
+//! | [`filters`] | MATLAB-compatible Gaussian kernels and edge-replicated filtering |
+//! | [`foreground`] | Two-pass blur-fusion foreground color estimation |
+//! | `image` | Image decoding, encoding, and tensor conversion (`image-io` feature) |
+//!
+//! Every function accepts any float dtype and returns results in the input dtype. Without the
+//! `image-io` feature the crate depends only on Burn.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use birefnet_util::{filters::gaussian_filter_matlab, normalize::apply_imagenet_normalization};
+//! use burn::prelude::*;
+//!
+//! let device = Device::flex();
+//! let image = Tensor::<4>::full([1, 3, 16, 16], 0.5, &device);
+//! let normalized = apply_imagenet_normalization(image)?;
+//! let smoothed = gaussian_filter_matlab(normalized, (3, 3), 1.0);
+//! assert_eq!(smoothed.dims(), [1, 3, 16, 16]);
+//! # Ok::<(), birefnet_util::UtilError>(())
+//! ```
+//!
+//! Morphology and distance transforms treat values `>= 0.5` as foreground:
+//!
+//! ```rust
+//! use birefnet_util::{
+//!     distance::euclidean_distance_transform,
+//!     morphology::{StructuringElement, dilation},
+//! };
+//! use burn::prelude::*;
+//!
+//! let device = Device::flex();
+//! let mut dot = [[0.0_f32; 5]; 5];
+//! dot[2][2] = 1.0;
+//! let mask = Tensor::<4>::from_floats([[dot]], &device);
+//!
+//! let cross = dilation(mask.clone(), &StructuringElement::disk(1));
+//! assert_eq!(cross.sum().into_scalar::<f32>(), 5.0);
+//!
+//! // Distance from every pixel to the nearest pixel `< 0.5` (the background here).
+//! let inside = euclidean_distance_transform(&mask)?;
+//! assert_eq!(inside.max().into_scalar::<f32>(), 1.0);
+//! # Ok::<(), birefnet_util::UtilError>(())
+//! ```
 
-mod array_ops;
-mod distance;
+pub mod distance;
 mod error;
-mod filters;
-mod foreground_refiner;
+pub mod filters;
+pub mod foreground;
 #[cfg(feature = "image-io")]
-mod image;
-mod morphology;
-mod normalize;
+pub mod image;
+pub mod morphology;
+pub mod normalize;
 
-#[doc(inline)]
-pub use array_ops::{
-    argwhere, count_nonzero, cumsum_1d, cumsum_2d_axis0, flip_1d, histogram, std_with_ddof,
-};
-#[doc(inline)]
-pub use distance::{
-    bwdist, euclidean_distance_transform, euclidean_distance_transform_simple,
-    manhattan_distance_transform,
-};
 #[doc(inline)]
 pub use error::UtilError;
-#[doc(inline)]
-pub use filters::{custom_filter, gaussian_filter_matlab, gaussian_kernel, matlab_gaussian_2d};
-#[doc(inline)]
-pub use foreground_refiner::{refine_foreground, refine_foreground_batch, refine_foreground_core};
-#[cfg(feature = "image-io")]
-#[doc(inline)]
-pub use image::{
-    common_image_extensions, decode_image_bytes, dynamic_image_to_tensor,
-    dynamic_image_to_tensor_with_imagenet_normalization, from_raw_pixels,
-    from_raw_pixels_with_normalization, is_extension_supported, is_supported_image_format,
-    load_image, load_image_batch, load_image_batch_with_imagenet_normalization,
-    load_image_from_reader, load_image_with_imagenet_normalization, resize_image_file,
-    supported_formats, tensor_to_dynamic_image,
-};
-#[doc(inline)]
-pub use morphology::{StructuringElement, closing, dilation, erosion, gradient, opening};
-#[doc(inline)]
-pub use normalize::{IMAGENET_MEAN, IMAGENET_STD, apply_imagenet_normalization, apply_mask};

@@ -34,6 +34,18 @@ pub enum NormLayerEnum {
     LayerNorm(LayerNorm),
 }
 
+impl NormLayerEnum {
+    /// Applies this layer to an NCHW tensor (`LayerNorm` normalizes over channels).
+    pub fn forward(&self, x: Tensor<4>) -> Tensor<4> {
+        match self {
+            Self::ChannelsFirst(layer) => layer.forward(x),
+            Self::ChannelsLast(layer) => layer.forward(x),
+            Self::BatchNorm2d(layer) => layer.forward(x),
+            Self::LayerNorm(layer) => layer.forward(x.permute([0, 2, 3, 1])).permute([0, 3, 1, 2]),
+        }
+    }
+}
+
 /// Converts NHWC tensors into NCHW layout.
 #[derive(Module, Debug, Default)]
 pub struct ChannelsFirst;

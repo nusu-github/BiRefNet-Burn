@@ -15,11 +15,13 @@ pub trait Fetcher: fmt::Debug + Send + Sync {
     /// Returns [`WeightError`] if downloading or resolving the file fails.
     fn fetch(&self, repo_id: &str, filename: &str) -> Result<PathBuf, WeightError>;
 
-    /// Returns `true` if `filename` from `repo_id` is already available in local cache.
+    /// Returns `true` if `filename` from `repo_id` is already available in the local cache.
     fn is_cached(&self, repo_id: &str, filename: &str) -> bool;
 }
 
-/// Synchronous `HuggingFace` Hub checkpoint fetcher backed by `hf-hub`.
+/// Blocking Hugging Face Hub fetcher backed by `hf-hub` (`hub` feature).
+///
+/// Create one and reuse it: construction sets up the HTTP client and cache.
 #[cfg(feature = "hub")]
 #[derive(Clone)]
 pub struct HfHubFetcher {
@@ -28,6 +30,7 @@ pub struct HfHubFetcher {
 
 #[cfg(feature = "hub")]
 impl fmt::Debug for HfHubFetcher {
+    /// Omits the client, which may hold an access token.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HfHubFetcher").finish_non_exhaustive()
     }
@@ -35,31 +38,35 @@ impl fmt::Debug for HfHubFetcher {
 
 #[cfg(feature = "hub")]
 impl HfHubFetcher {
-    /// Initializes a blocking `HuggingFace` Hub client.
+    /// Initializes a blocking Hugging Face Hub client.
     ///
     /// # Errors
     ///
     /// Returns [`WeightError`] if the underlying Hub client cannot be created.
     pub fn new() -> Result<Self, WeightError> {
-        let client = hf_hub::HFClientSync::new()?;
-        Ok(Self { client })
+        Ok(Self {
+            client: hf_hub::HFClientSync::new()?,
+        })
     }
-}
 
-#[cfg(feature = "hub")]
-impl Fetcher for HfHubFetcher {
-    fn fetch(&self, repo_id: &str, filename: &str) -> Result<PathBuf, WeightError> {
+    /// Downloads (or reuses the cached copy of) `filename` from `repo_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WeightError`] if the request fails.
+    pub fn fetch(&self, repo_id: &str, filename: &str) -> Result<PathBuf, WeightError> {
         let (owner, name) = hf_hub::split_id(repo_id);
-        let path = self
+        Ok(self
             .client
             .model(owner, name)
             .download_file()
             .filename(filename)
-            .send()?;
-        Ok(path)
+            .send()?)
     }
 
-    fn is_cached(&self, repo_id: &str, filename: &str) -> bool {
+    /// Returns `true` if `filename` from `repo_id` is already in the local Hub cache.
+    #[must_use]
+    pub fn is_cached(&self, repo_id: &str, filename: &str) -> bool {
         let (owner, name) = hf_hub::split_id(repo_id);
         self.client
             .model(owner, name)
@@ -71,9 +78,20 @@ impl Fetcher for HfHubFetcher {
     }
 }
 
-/// Offline in-memory lookup table mapping `(repo_id, filename)` pairs to local test files.
+#[cfg(feature = "hub")]
+impl Fetcher for HfHubFetcher {
+    fn fetch(&self, repo_id: &str, filename: &str) -> Result<PathBuf, WeightError> {
+        Self::fetch(self, repo_id, filename)
+    }
+
+    fn is_cached(&self, repo_id: &str, filename: &str) -> bool {
+        Self::is_cached(self, repo_id, filename)
+    }
+}
+
+/// Offline lookup table mapping `(repo_id, filename)` pairs to local files (`test-util`).
 #[cfg(any(test, feature = "test-util"))]
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct MockFetcher {
     files: BTreeMap<(String, String), PathBuf>,
 }
@@ -98,20 +116,35 @@ impl MockFetcher {
             .insert((repo_id.into(), filename.into()), path.into());
         self
     }
-}
 
-#[cfg(any(test, feature = "test-util"))]
-impl Fetcher for MockFetcher {
-    fn fetch(&self, repo_id: &str, filename: &str) -> Result<PathBuf, WeightError> {
+    /// Returns the registered path for `(repo_id, filename)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WeightError`] (`is_not_found`) if nothing is registered for the pair.
+    pub fn fetch(&self, repo_id: &str, filename: &str) -> Result<PathBuf, WeightError> {
         self.files
             .get(&(repo_id.to_owned(), filename.to_owned()))
             .cloned()
             .ok_or_else(|| WeightError::not_found(&PathBuf::from(format!("{repo_id}/{filename}"))))
     }
 
-    fn is_cached(&self, repo_id: &str, filename: &str) -> bool {
+    /// Returns `true` if a path is registered for the pair and exists on disk.
+    #[must_use]
+    pub fn is_cached(&self, repo_id: &str, filename: &str) -> bool {
         self.files
             .get(&(repo_id.to_owned(), filename.to_owned()))
             .is_some_and(|path| path.exists())
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl Fetcher for MockFetcher {
+    fn fetch(&self, repo_id: &str, filename: &str) -> Result<PathBuf, WeightError> {
+        Self::fetch(self, repo_id, filename)
+    }
+
+    fn is_cached(&self, repo_id: &str, filename: &str) -> bool {
+        Self::is_cached(self, repo_id, filename)
     }
 }

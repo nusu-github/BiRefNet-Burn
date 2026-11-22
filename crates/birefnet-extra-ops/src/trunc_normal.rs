@@ -42,7 +42,9 @@ pub fn trunc_normal<const D: usize>(
     let low = 2.0_f64.mul_add(norm_cdf((a - mean) / std), -1.0);
     let high = 2.0_f64.mul_add(norm_cdf((b - mean) / std), -1.0);
     if low >= high {
-        return Tensor::full(shape, a.clamp(a, b), device);
+        // Both bounds sit so far in the same tail that their CDF values collapse in f64; the
+        // admissible point closest to the mean is the limit of the truncated distribution.
+        return Tensor::full(shape, mean.clamp(a, b), device);
     }
 
     let uniform = Tensor::random(shape, Distribution::Uniform(low, high), device);

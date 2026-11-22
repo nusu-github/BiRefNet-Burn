@@ -4,12 +4,12 @@ use burn::prelude::*;
 
 use super::enums::{
     Backbone, DecBlk, DecChannelsInter, DecoderAttention, InterpolationStrategy, LateralBlock,
-    MultiScaleInput, PromptForLocation, Refine, SqueezeBlock, Task,
+    MultiScaleInput, Refine, SqueezeBlock, Task,
 };
 use crate::error::ModelError;
 
 /// Top-level configuration for the `BiRefNet` model.
-#[derive(Config, Debug, PartialEq, Eq)]
+#[derive(Config, Debug, PartialEq, Eq, Hash)]
 pub struct ModelConfig {
     /// Task-related configurations.
     #[config(default = "TaskConfig::new()")]
@@ -28,21 +28,18 @@ pub struct ModelConfig {
 }
 
 /// Task-related configuration.
-#[derive(Config, Debug, PartialEq, Eq)]
+#[derive(Config, Debug, PartialEq, Eq, Hash)]
 pub struct TaskConfig {
     /// The target dataset or task preset (for example `DIS5K` or `COD`).
     #[config(default = "Task::DIS5K")]
     pub task: Task,
-    /// Type of prompt used for localization.
-    #[config(default = "PromptForLocation::Dense")]
-    pub prompt4_loc: PromptForLocation,
     /// Batch size for training/inference; controls `BatchNorm` vs identity normalization.
-    #[config(default = "4")]
+    #[config(default = 4)]
     pub batch_size: usize,
 }
 
 /// Backbone network configuration.
-#[derive(Config, Debug, PartialEq, Eq)]
+#[derive(Config, Debug, PartialEq, Eq, Hash)]
 pub struct BackboneConfig {
     /// Chosen backbone encoder architecture.
     #[config(default = "Backbone::SwinV1L")]
@@ -50,26 +47,26 @@ pub struct BackboneConfig {
 }
 
 /// Decoder module configuration.
-#[derive(Config, Debug, PartialEq, Eq)]
+#[derive(Config, Debug, PartialEq, Eq, Hash)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "mirrors upstream BiRefNet boolean decoder configuration flags"
 )]
 pub struct DecoderConfig {
     /// Enable multi-scale supervision outputs during training.
-    #[config(default = "true")]
+    #[config(default = true)]
     pub ms_supervision: bool,
     /// Enable gradient-guided output refinement; requires `ms_supervision`.
-    #[config(default = "true")]
+    #[config(default = true)]
     pub out_ref: bool,
     /// Enable image-pyramid input branches in the decoder.
-    #[config(default = "true")]
+    #[config(default = true)]
     pub dec_ipt: bool,
     /// Split the decoder image input into spatial patches; requires `dec_ipt`.
-    #[config(default = "true")]
+    #[config(default = true)]
     pub dec_ipt_split: bool,
     /// Number of encoder context features concatenated into the deepest stage (`0..=3`).
-    #[config(default = "3")]
+    #[config(default = 3)]
     pub cxt_num: usize,
     /// Method for handling multi-scale encoder inputs.
     #[config(default = "MultiScaleInput::Cat")]
@@ -92,11 +89,35 @@ pub struct DecoderConfig {
 }
 
 /// Refinement module configuration.
-#[derive(Config, Debug, PartialEq, Eq)]
+#[derive(Config, Debug, PartialEq, Eq, Hash)]
 pub struct RefineConfig {
     /// Refinement strategy appended after the decoder.
     #[config(default = "Refine::None")]
     pub refine: Refine,
+}
+
+impl Default for TaskConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for BackboneConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for DecoderConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for RefineConfig {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ModelConfig {
@@ -106,7 +127,8 @@ impl ModelConfig {
     ///
     /// Returns [`ModelError`] if `cxt_num > 3`, `squeeze_block.count() > 10`,
     /// dependent flags (`out_ref` without `ms_supervision`, `dec_ipt_split` without `dec_ipt`)
-    /// are inconsistent, or `dec_att` mismatches `squeeze_block`.
+    /// are inconsistent, `dec_att` mismatches `squeeze_block`, or `refine` is the
+    /// unimplemented [`Refine::Itself`].
     pub fn validate(&self) -> Result<(), ModelError> {
         // Upstream BiRefNet supports only 0..=3 context stages.
         if self.decoder.cxt_num > 3 {
@@ -133,6 +155,12 @@ impl ModelConfig {
         if self.decoder.dec_ipt_split && !self.decoder.dec_ipt {
             return Err(ModelError::invalid_config(
                 "dec_ipt_split can only be enabled when dec_ipt is true",
+            ));
+        }
+
+        if self.refine.refine == Refine::Itself {
+            return Err(ModelError::invalid_config(
+                "refine = itself is not implemented; use none, RefUNet, Refiner, or RefinerPVTInChannels4",
             ));
         }
 
@@ -199,8 +227,8 @@ impl BackboneConfig {
     #[must_use]
     pub const fn lateral_channels_in_collection(&self) -> [usize; 4] {
         match self.backbone {
-            Backbone::Vgg16 | Backbone::Vgg16bn => [512, 512, 256, 128],
-            Backbone::Resnet50 => [2048, 1024, 512, 256],
+            Backbone::Vgg16 | Backbone::Vgg16Bn => [512, 512, 256, 128],
+            Backbone::ResNet50 => [2048, 1024, 512, 256],
             Backbone::SwinV1T | Backbone::SwinV1S => [768, 384, 192, 96],
             Backbone::SwinV1B => [1024, 512, 256, 128],
             Backbone::SwinV1L => [1536, 768, 384, 192],

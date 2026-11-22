@@ -1,7 +1,48 @@
-//! Unified backbone implementations for `BiRefNet` (`ResNet`, `VGG`, `Swin`, `PVTv2`).
+//! Multi-scale encoder backbones for `BiRefNet` on Burn.
+//!
+//! | Family | Variants | Configuration |
+//! | --- | --- | --- |
+//! | Swin Transformer v1 | [`SwinVariant`]: T, S, B, L | [`SwinTransformerConfig`] |
+//! | Pyramid Vision Transformer v2 | [`PvtV2Variant`]: B0–B5 | [`PvtV2Config`] |
+//! | `ResNet` | [`ResNetVariant`]: 18, 34, 50, 101, 152 | [`ResNetConfig`] |
+//! | VGG | [`VggVariant`]: 16, 16-BN | [`VggConfig`] |
+//!
+//! Every backbone implements [`Backbone`] and returns four feature maps at strides
+//! `4, 8, 16, 32`, shallowest first. [`BackboneType`] selects a preset and builds a
+//! [`BackboneModel`]; configuration or shape issues surface as [`BackboneError`].
+//!
+//! # Examples
+//!
+//! ```rust
+//! use birefnet_backbones::{Backbone, BackboneType, PvtV2Variant};
+//! use burn::prelude::*;
+//!
+//! let device = Device::flex();
+//! let backbone = BackboneType::PvtV2(PvtV2Variant::B0).init(&device)?;
+//! let features = backbone.forward(Tensor::zeros([1, 3, 64, 64], &device));
+//!
+//! assert_eq!(features[0].dims(), [1, 32, 16, 16]);
+//! assert_eq!(features[3].dims()[1], backbone.output_channels()[3]);
+//! # Ok::<(), birefnet_backbones::BackboneError>(())
+//! ```
+//!
+//! `PVTv2` accepts any number of input channels, which the refiner uses for RGB + mask input:
+//!
+//! ```rust
+//! use birefnet_backbones::{PvtV2Config, PvtV2Variant};
+//! use burn::prelude::*;
+//!
+//! let device = Device::flex();
+//! let pvt = PvtV2Config::from_variant(PvtV2Variant::B0, 4).init(&device)?;
+//! let [stride4, ..] = pvt.forward(Tensor::zeros([1, 4, 64, 64], &device));
+//! assert_eq!(stride4.dims(), [1, 32, 16, 16]);
+//! # Ok::<(), birefnet_backbones::BackboneError>(())
+//! ```
 
 mod backbones;
 mod error;
+
+use std::fmt;
 
 use burn::{
     prelude::*,
@@ -97,30 +138,74 @@ impl BackboneType {
                 Ok(BackboneModel::ResNet(model))
             }
             Self::Vgg(variant) => {
-                let model = VggConfig::from_variant(variant).init(device)?;
+                let model = VggConfig::from_variant(variant).init(device);
                 Ok(BackboneModel::Vgg(model))
             }
             Self::SwinTransformer(variant) => {
-                let config = match variant {
-                    SwinVariant::SwinT => SwinTransformerConfig::swin_t(),
-                    SwinVariant::SwinS => SwinTransformerConfig::swin_s(),
-                    SwinVariant::SwinB => SwinTransformerConfig::swin_b(),
-                    SwinVariant::SwinL => SwinTransformerConfig::swin_l(),
-                };
+                let config = SwinTransformerConfig::from_variant(variant);
                 Ok(BackboneModel::SwinTransformer(config.init(device)?))
             }
             Self::PvtV2(variant) => {
-                let config = match variant {
-                    PvtV2Variant::B0 => PvtV2Config::b0(3),
-                    PvtV2Variant::B1 => PvtV2Config::b1(3),
-                    PvtV2Variant::B2 => PvtV2Config::b2(3),
-                    PvtV2Variant::B3 => PvtV2Config::b3(3),
-                    PvtV2Variant::B4 => PvtV2Config::b4(3),
-                    PvtV2Variant::B5 => PvtV2Config::b5(3),
-                };
+                let config = PvtV2Config::from_variant(variant, 3);
                 Ok(BackboneModel::PvtV2(config.init(device)?))
             }
         }
+    }
+}
+
+impl fmt::Display for BackboneType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ResNet(variant) => variant.fmt(f),
+            Self::Vgg(variant) => variant.fmt(f),
+            Self::SwinTransformer(variant) => variant.fmt(f),
+            Self::PvtV2(variant) => variant.fmt(f),
+        }
+    }
+}
+
+impl fmt::Display for ResNetVariant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::ResNet18 => "resnet18",
+            Self::ResNet34 => "resnet34",
+            Self::ResNet50 => "resnet50",
+            Self::ResNet101 => "resnet101",
+            Self::ResNet152 => "resnet152",
+        })
+    }
+}
+
+impl fmt::Display for VggVariant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Vgg16 => "vgg16",
+            Self::Vgg16Bn => "vgg16bn",
+        })
+    }
+}
+
+impl fmt::Display for SwinVariant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::SwinT => "swin_v1_t",
+            Self::SwinS => "swin_v1_s",
+            Self::SwinB => "swin_v1_b",
+            Self::SwinL => "swin_v1_l",
+        })
+    }
+}
+
+impl fmt::Display for PvtV2Variant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::B0 => "pvt_v2_b0",
+            Self::B1 => "pvt_v2_b1",
+            Self::B2 => "pvt_v2_b2",
+            Self::B3 => "pvt_v2_b3",
+            Self::B4 => "pvt_v2_b4",
+            Self::B5 => "pvt_v2_b5",
+        })
     }
 }
 

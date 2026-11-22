@@ -1,22 +1,27 @@
 [package]
 name = "birefnet-metric"
-description = "Evaluation metrics for BiRefNet implemented in Rust using Burn"
+version.workspace = true
+categories.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+keywords.workspace = true
 license.workspace = true
 readme = "README.md"
 repository.workspace = true
-version.workspace = true
-keywords.workspace = true
-categories.workspace = true
+rust-version.workspace = true
+description = "Evaluation metrics for BiRefNet implemented in Rust using Burn"
+
+[features]
+default = []
+# Burn `Metric` adapters (`SegmentationMetric`) for `burn::train` loops.
+train = ["burn/train"]
 
 [dependencies]
 birefnet-util.workspace = true
-burn = { workspace = true, features = ["train"] }
+burn = { workspace = true }
 
 [dev-dependencies]
 approx.workspace = true
-burn = { workspace = true, features = ["flex", "train"] }
+burn = { workspace = true, features = ["flex"] }
 
 [lints]
 workspace = true

@@ -6,5 +6,5 @@ mod enums;
 pub use core::{BackboneConfig, DecoderConfig, ModelConfig, RefineConfig, TaskConfig};
 pub use enums::{
     Backbone, DecBlk, DecChannelsInter, DecoderAttention, InterpolationStrategy, LateralBlock,
-    MultiScaleInput, Optimizer, PromptForLocation, Refine, SqueezeBlock, Task,
+    MultiScaleInput, Refine, SqueezeBlock, Task,
 };

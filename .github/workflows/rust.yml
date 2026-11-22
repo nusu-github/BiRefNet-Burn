@@ -1,0 +1,90 @@
+name: Rust
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # Turns warnings into errors without invalidating the build cache (Cargo 1.97+).
+  CARGO_BUILD_WARNINGS: deny
+  RUST_BACKTRACE: 1
+  FEATURES: birefnet/train,birefnet-model/train,birefnet-cli/train,birefnet-util/image-io,birefnet-weights/hub,birefnet-weights/test-util
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy and docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --features "$FEATURES"
+      - run: cargo doc --workspace --no-deps --features "$FEATURES"
+      - name: No duplicate Burn crates
+        run: |
+          if cargo tree -d -p birefnet-cli --features train -e normal --depth 0 \
+            | grep -E '^burn'; then
+            echo "::error::two versions of a burn crate are linked"
+            exit 1
+          fi
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Tests that download pretrained weights are `#[ignore]`d.
+      - run: cargo test --workspace --features "$FEATURES"
+        shell: bash
+
+  features:
+    name: feature combinations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check -p birefnet --no-default-features
+      - run: cargo check -p birefnet-weights --no-default-features
+      - run: cargo check -p birefnet-util --no-default-features
+      - run: cargo check -p birefnet-metric --no-default-features
+      - run: cargo check -p birefnet-cli --no-default-features --features wgpu
+      - run: cargo check -p birefnet-cli --no-default-features --features flex,train
+
+  msrv:
+    name: MSRV (1.100)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.100
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets --features "$FEATURES"

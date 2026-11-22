@@ -11,7 +11,7 @@ rust-version.workspace = true
 description = "BiRefNet: Bilateral Reference Network for high-resolution dichotomous image segmentation"
 
 [features]
-default = ["inference", "hub", "flex"]
+default = ["inference", "hub"]
 
 # High-level subsystems
 weights = ["dep:birefnet-weights"]
@@ -25,6 +25,7 @@ train = [
     "dep:birefnet-train",
     "dep:birefnet-loss",
     "dep:birefnet-metric",
+    "birefnet-metric/train",
 ]
 
 # Backends. Burn 0.22 selects the backend at run time from a `Device` value; Cargo features

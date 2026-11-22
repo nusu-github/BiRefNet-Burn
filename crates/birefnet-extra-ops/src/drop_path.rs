@@ -1,7 +1,7 @@
 //! Stochastic depth (`DropPath`) regularization module.
 
 use burn::{
-    module::{Flag, Param},
+    module::{Content, DisplaySettings, Flag, ModuleDisplay, Param},
     prelude::*,
     tensor::Distribution,
 };
@@ -40,10 +40,26 @@ impl DropPathConfig {
 /// Like `burn::nn::Dropout`, it is active only when its training flag is enabled
 /// (cleared by [`Module::valid`]) and the input tensor lives on an autodiff device.
 #[derive(Module, Debug)]
+#[module(custom_display)]
 pub struct DropPath {
     drop_prob: f64,
     scale_by_keep: bool,
     training: Param<Flag>,
+}
+
+impl ModuleDisplay for DropPath {
+    fn custom_settings(&self) -> Option<DisplaySettings> {
+        DisplaySettings::new()
+            .with_new_line_after_attribute(false)
+            .optional()
+    }
+
+    fn custom_content(&self, content: Content) -> Option<Content> {
+        content
+            .add("drop_prob", &self.drop_prob)
+            .add("scale_by_keep", &self.scale_by_keep)
+            .optional()
+    }
 }
 
 impl DropPath {
@@ -87,7 +103,12 @@ impl DropPath {
         let mut mask_shape = [1; D];
         mask_shape[0] = x.dims()[0];
 
-        let keep_mask = Tensor::random(mask_shape, Distribution::Bernoulli(keep_prob), &x.device());
+        // Sample the mask in the input dtype so half-precision inputs are not promoted.
+        let keep_mask = Tensor::random(
+            mask_shape,
+            Distribution::Bernoulli(keep_prob),
+            (&x.device(), x.dtype()),
+        );
         if self.scale_by_keep {
             x * keep_mask / keep_prob
         } else {

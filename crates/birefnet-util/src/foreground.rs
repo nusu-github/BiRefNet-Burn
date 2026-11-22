@@ -1,4 +1,5 @@
-//! Multi-pass blur fusion foreground refinement.
+//! Two-pass blur-fusion foreground color estimation (Forte & Pitié, "Approximate Fast
+//! Foreground Colour Estimation", ICIP 2021).
 
 use burn::tensor::{
     Tensor,
@@ -6,8 +7,11 @@ use burn::tensor::{
     ops::{AvgPoolOptions, PadMode},
 };
 
+/// Guards the blurred-alpha divisions against zero.
 const EPSILON: f32 = 1e-5;
+/// Blur radius of the second, detail-restoring pass (reference implementation value).
 const SECOND_PASS_RADIUS: usize = 6;
+/// First-pass blur radius used when the caller passes `None` (reference implementation value).
 const DEFAULT_REFINE_RADIUS: usize = 90;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +62,10 @@ fn pad_replicate(tensor: Tensor<4>, padding: Padding) -> Tensor<4> {
     )
 }
 
+/// Box blur with edge-replicated borders, run as separable `[k, 1]` and `[1, k]` passes.
+///
+/// Explicit padding makes every window full, so the two 1D means equal the 2D mean while
+/// costing `2k` instead of `k²` operations per pixel.
 fn mean_blur(x: Tensor<4>, kernel_size: usize) -> Tensor<4> {
     assert!(kernel_size > 0, "kernel size must be greater than 0");
 
@@ -69,13 +77,16 @@ fn mean_blur(x: Tensor<4>, kernel_size: usize) -> Tensor<4> {
         Padding::uniform(kernel_size / 2)
     };
 
+    let pass = |x: Tensor<4>, kernel: [usize; 2]| {
+        avg_pool2d(
+            x,
+            AvgPoolOptions::new(kernel)
+                .with_stride([1, 1])
+                .with_count_include_pad(false),
+        )
+    };
     let x_padded = pad_replicate(x, padding);
-    avg_pool2d(
-        x_padded,
-        AvgPoolOptions::new([kernel_size, kernel_size])
-            .with_stride([1, 1])
-            .with_count_include_pad(false),
-    )
+    pass(pass(x_padded, [kernel_size, 1]), [1, kernel_size])
 }
 
 fn blur_fusion_estimator(
@@ -91,9 +102,9 @@ fn blur_fusion_estimator(
     let blurred_fga = mean_blur(fg * alpha.clone(), radius);
     let foreground = blurred_fga / (blurred_alpha.clone() + EPSILON);
 
-    let one_minus_alpha = alpha.ones_like() - alpha.clone();
+    let one_minus_alpha = alpha.clone().neg().add_scalar(1.0);
     let blurred_b1a = mean_blur(bg * one_minus_alpha.clone(), radius);
-    let one_minus_blurred_alpha = blurred_alpha.ones_like() - blurred_alpha;
+    let one_minus_blurred_alpha = blurred_alpha.neg().add_scalar(1.0);
     let background = blurred_b1a / (one_minus_blurred_alpha + EPSILON);
 
     let refined_fg = foreground.clone()
@@ -110,7 +121,7 @@ fn blur_fusion_estimator(
 /// # Examples
 ///
 /// ```rust
-/// use birefnet_util::refine_foreground_core;
+/// use birefnet_util::foreground::refine_foreground_core;
 /// use burn::prelude::*;
 ///
 /// let device = Device::flex();
@@ -156,7 +167,7 @@ pub fn refine_foreground_core(image: Tensor<4>, mask: Tensor<4>, radius: usize) 
 /// # Examples
 ///
 /// ```rust
-/// use birefnet_util::refine_foreground;
+/// use birefnet_util::foreground::refine_foreground;
 /// use burn::prelude::*;
 ///
 /// let device = Device::flex();
@@ -191,7 +202,7 @@ pub fn refine_foreground(image: Tensor<3>, mask: Tensor<2>, radius: Option<usize
 /// # Examples
 ///
 /// ```rust
-/// use birefnet_util::refine_foreground_batch;
+/// use birefnet_util::foreground::refine_foreground_batch;
 /// use burn::prelude::*;
 ///
 /// let device = Device::flex();

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use birefnet_model::{
     Backbone, BackboneConfig, BiRefNet, BiRefNetConfig, DecoderConfig, InterpolationStrategy,
-    ModelConfig, Task,
+    ModelConfig, Task, TaskConfig,
 };
 use burn::{
     module::{Module, ModuleMapper, Param},
@@ -12,20 +12,19 @@ use burn::{
         ApplyResult, FloatCastAdapter, ModuleAdapter, ModuleRecord, ModuleSnapshot,
         PyTorchToBurnAdapter, PytorchStore, SafetensorsStore,
     },
-    tensor::{DType, Device, FloatDType, Tensor},
+    tensor::{Bytes, DType, Device, FloatDType, Tensor},
 };
 
-#[cfg(feature = "hub")]
-use crate::fetcher::HfHubFetcher;
 use crate::{
     error::WeightError,
     fetcher::Fetcher,
-    registry::{
-        ModelName, ModelSpec, WeightFormat, WeightSource, get_model_spec, list_available_models,
-    },
+    registry::{ModelName, WeightFormat, WeightSource, model_spec},
 };
 
-/// Resolved model identity, architecture config builder, and weight source.
+/// Checkpoint file name inside every registered Hugging Face repository.
+const HUB_WEIGHTS_FILE: &str = "model.safetensors";
+
+/// Resolved model identity, architecture config, and weight source.
 #[derive(Debug, Clone)]
 pub struct ManagedModel {
     name: ModelName,
@@ -53,31 +52,30 @@ impl ManagedModel {
     /// # Errors
     ///
     /// Returns [`WeightError`] (`is_unknown_model`) if `model_name` is not registered.
-    pub fn from_pretrained(model_name: &str) -> Result<Self, WeightError> {
-        let spec = get_model_spec(model_name)
-            .ok_or_else(|| WeightError::unknown_model(model_name, &list_available_models()))?;
-
-        let weights = WeightSource::Remote {
-            repo_id: spec.repo_id(),
-            filename: String::from("model.safetensors"),
-        };
-        let config = Some(spec.build_config());
-
-        Ok(Self::new(ModelName::new(model_name), config, weights))
+    pub fn from_pretrained(model_name: impl AsRef<str>) -> Result<Self, WeightError> {
+        let model_name = model_name.as_ref();
+        let spec = model_spec(model_name).ok_or_else(|| WeightError::unknown_model(model_name))?;
+        Ok(Self::new(
+            ModelName::new(spec.name)?,
+            Some(spec.build_config()),
+            WeightSource::Remote {
+                repo_id: spec.repo_id(),
+                filename: HUB_WEIGHTS_FILE.to_owned(),
+            },
+        ))
     }
 
-    /// Creates a managed model pointing to a local checkpoint file.
+    /// Creates a managed model for a local checkpoint file.
+    ///
+    /// Without a `config`, [`build_config`](Self::build_config) uses the preset matching `name`
+    /// or the `General` architecture.
     #[must_use]
     pub fn from_local(
-        name: impl Into<ModelName>,
+        name: ModelName,
         path: impl Into<PathBuf>,
         config: Option<BiRefNetConfig>,
     ) -> Self {
-        Self::new(
-            name.into(),
-            config,
-            WeightSource::Local { path: path.into() },
-        )
+        Self::new(name, config, WeightSource::Local { path: path.into() })
     }
 
     /// Returns the model identifier.
@@ -98,108 +96,58 @@ impl ManagedModel {
         &self.weights
     }
 
-    /// Returns the architecture configuration for this model, falling back to `General` defaults.
+    /// Returns the architecture configuration, falling back to the `General` preset layout.
     #[must_use]
     pub fn build_config(&self) -> BiRefNetConfig {
         if let Some(config) = &self.config {
             return config.clone();
         }
-
-        get_model_spec(self.name.as_str()).map_or_else(
+        model_spec(&self.name).map_or_else(
             || {
-                let model_config = ModelConfig::new(InterpolationStrategy::Bilinear)
-                    .with_backbone(BackboneConfig::new().with_backbone(Backbone::SwinV1L))
-                    .with_decoder(DecoderConfig::new())
-                    .with_task(birefnet_model::TaskConfig::new().with_task(Task::General));
-                BiRefNetConfig::new(model_config)
+                BiRefNetConfig::new(
+                    ModelConfig::new(InterpolationStrategy::Bilinear)
+                        .with_backbone(BackboneConfig::new().with_backbone(Backbone::SwinV1L))
+                        .with_decoder(DecoderConfig::new())
+                        .with_task(TaskConfig::new().with_task(Task::General)),
+                )
             },
-            ModelSpec::build_config,
+            crate::registry::ModelSpec::build_config,
         )
     }
 
-    /// Returns the preset `(height, width)` input resolution if `name` is in the registry.
+    /// Returns the preset `[height, width]` inference resolution if `name` is registered.
     #[must_use]
-    pub fn default_resolution(&self) -> Option<(u32, u32)> {
-        get_model_spec(self.name.as_str()).map(|spec| spec.default_resolution)
+    pub fn default_resolution(&self) -> Option<[u32; 2]> {
+        model_spec(&self.name).map(|spec| spec.default_resolution)
     }
 
     /// Returns whether this model supports dynamic input resolutions during inference.
     #[must_use]
     pub fn supports_dynamic_resolution(&self) -> bool {
-        get_model_spec(self.name.as_str()).is_some_and(|spec| spec.supports_dynamic_resolution)
+        model_spec(&self.name).is_some_and(|spec| spec.supports_dynamic_resolution)
     }
 
-    /// Resolves the checkpoint to a local file path using `fetcher` for remote sources.
+    /// Resolves the checkpoint to a local file, using `fetcher` for remote sources.
     ///
     /// # Errors
     ///
-    /// Returns [`WeightError`] (`is_not_found`) if a local path is missing on disk, or any
-    /// fetcher error when resolving a remote artifact.
-    pub fn resolve_path_with(&self, fetcher: &dyn Fetcher) -> Result<PathBuf, WeightError> {
+    /// Returns [`WeightError`] (`is_not_found`) if a local file is missing, or the fetcher's
+    /// error for a remote artifact.
+    pub fn resolve_path(&self, fetcher: &(impl Fetcher + ?Sized)) -> Result<PathBuf, WeightError> {
         match &self.weights {
-            WeightSource::Local { path } => {
-                if path.exists() {
-                    Ok(path.clone())
-                } else {
-                    Err(WeightError::not_found(path))
-                }
-            }
+            WeightSource::Local { path } if path.is_file() => Ok(path.clone()),
+            WeightSource::Local { path } => Err(WeightError::not_found(path)),
             WeightSource::Remote { repo_id, filename } => fetcher.fetch(repo_id, filename),
         }
     }
 
-    /// Returns `true` if the local checkpoint exists on disk or is cached in `fetcher`.
+    /// Returns `true` if the local checkpoint exists or the remote one is cached by `fetcher`.
     #[must_use]
-    pub fn is_available_with(&self, fetcher: &dyn Fetcher) -> bool {
+    pub fn is_available(&self, fetcher: &(impl Fetcher + ?Sized)) -> bool {
         match &self.weights {
-            WeightSource::Local { path } => path.exists(),
+            WeightSource::Local { path } => path.is_file(),
             WeightSource::Remote { repo_id, filename } => fetcher.is_cached(repo_id, filename),
         }
-    }
-
-    /// Resolves the checkpoint to a local file path using `HuggingFace` Hub when remote.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WeightError`] if downloading or resolving the checkpoint fails.
-    #[cfg(feature = "hub")]
-    pub fn resolve_path(&self) -> Result<PathBuf, WeightError> {
-        match &self.weights {
-            WeightSource::Local { .. } => self.resolve_path_with(&NoopFetcher),
-            WeightSource::Remote { .. } => {
-                let fetcher = HfHubFetcher::new()?;
-                self.resolve_path_with(&fetcher)
-            }
-        }
-    }
-
-    /// Returns `true` if the checkpoint exists locally or in the `HuggingFace` Hub cache.
-    #[cfg(feature = "hub")]
-    #[must_use]
-    pub fn is_available(&self) -> bool {
-        match &self.weights {
-            WeightSource::Local { path } => path.exists(),
-            WeightSource::Remote { .. } => {
-                HfHubFetcher::new().is_ok_and(|fetcher| self.is_available_with(&fetcher))
-            }
-        }
-    }
-}
-
-#[cfg(feature = "hub")]
-#[derive(Debug)]
-struct NoopFetcher;
-
-#[cfg(feature = "hub")]
-impl Fetcher for NoopFetcher {
-    fn fetch(&self, _repo_id: &str, _filename: &str) -> Result<PathBuf, WeightError> {
-        Err(WeightError::unsupported_format(
-            "unexpected remote fetch request for local weight source",
-        ))
-    }
-
-    fn is_cached(&self, _repo_id: &str, _filename: &str) -> bool {
-        false
     }
 }
 
@@ -212,27 +160,23 @@ impl ModuleMapper for CastFloatParams {
     }
 }
 
-fn check_apply_result(result: &ApplyResult) -> Result<(), WeightError> {
-    if !result.missing.is_empty() || !result.unused.is_empty() {
+/// Logs keys that differed between checkpoint and model.
+///
+/// The stores validate by default, so apply errors and missing keys already surface as
+/// `Err`; only unused checkpoint keys (such as `num_batches_tracked`) remain.
+fn log_apply_result(result: &ApplyResult) {
+    if !result.unused.is_empty() {
         tracing::debug!(
+            name: "birefnet.weights.load.unused_keys",
             applied = result.applied.len(),
-            missing = result.missing.len(),
             unused = result.unused.len(),
-            "checkpoint parameter keys differed from model structure",
+            "checkpoint had {} keys the model does not use",
+            result.unused.len()
         );
     }
-    if let Some(first_error) = result.errors.first() {
-        return Err(WeightError::load(
-            format!(
-                "failed to apply {} tensor(s) (first: {first_error})",
-                result.errors.len()
-            ),
-            None,
-        ));
-    }
-    Ok(())
 }
 
+/// Upstream PyTorch state-dict keys that differ from the Burn module tree.
 const BIREFNET_KEY_REMAPPINGS: &[(&str, &str)] = &[
     (r"decoder\.conv_out1\.0\.(.+)", "decoder.conv_out1.$1"),
     (
@@ -262,97 +206,108 @@ const BIREFNET_KEY_REMAPPINGS: &[(&str, &str)] = &[
     ),
 ];
 
-fn build_pytorch_store(weights_path: &Path) -> PytorchStore {
-    BIREFNET_KEY_REMAPPINGS.iter().fold(
-        PytorchStore::from_file(weights_path).map_indices_contiguous(false),
-        |store, &(from_pattern, to_pattern)| store.with_key_remapping(from_pattern, to_pattern),
-    )
+/// Where checkpoint bytes are read from.
+enum Source<'a> {
+    File(&'a Path),
+    Memory(Vec<u8>),
 }
 
-fn load_pytorch_model<M: Module>(
-    mut model: M,
-    weights_path: &Path,
-    device: &Device,
-) -> Result<M, WeightError> {
-    let mut store = build_pytorch_store(weights_path);
-    let result = model.load_from(&mut store)?;
-    check_apply_result(&result)?;
-    Ok(model.map(&mut CastFloatParams(device.settings().float_dtype)))
-}
-
-fn build_safetensors_store(weights_path: &Path, device: &Device) -> SafetensorsStore {
-    let cast_adapter = FloatCastAdapter::to(DType::from(device.settings().float_dtype));
+fn configure_safetensors(store: SafetensorsStore, device: &Device) -> SafetensorsStore {
+    let cast = FloatCastAdapter::to(DType::from(device.settings().float_dtype));
     BIREFNET_KEY_REMAPPINGS.iter().fold(
-        SafetensorsStore::from_file(weights_path)
+        store
             .skip_enum_variants(true)
-            .with_from_adapter(PyTorchToBurnAdapter.chain(cast_adapter)),
-        |store, &(from_pattern, to_pattern)| store.with_key_remapping(from_pattern, to_pattern),
+            .with_from_adapter(PyTorchToBurnAdapter.chain(cast)),
+        |store, &(from, to)| store.with_key_remapping(from, to),
     )
 }
 
-fn load_safetensors_model<M: Module>(
+fn load_checkpoint<M: Module>(
     mut model: M,
-    weights_path: &Path,
+    source: Source<'_>,
+    format: WeightFormat,
     device: &Device,
 ) -> Result<M, WeightError> {
-    let mut store = build_safetensors_store(weights_path, device);
-    let result = model.load_from(&mut store)?;
-    check_apply_result(&result)?;
-    Ok(model)
+    match format {
+        WeightFormat::PyTorch => {
+            let Source::File(path) = source else {
+                return Err(WeightError::unsupported_format(
+                    "PyTorch checkpoints can only be loaded from files",
+                    None,
+                ));
+            };
+            let mut store = BIREFNET_KEY_REMAPPINGS.iter().fold(
+                PytorchStore::from_file(path).map_indices_contiguous(false),
+                |store, &(from, to)| store.with_key_remapping(from, to),
+            );
+            log_apply_result(&model.load_from(&mut store)?);
+            Ok(model.map(&mut CastFloatParams(device.settings().float_dtype)))
+        }
+        WeightFormat::SafeTensors => {
+            let store = match source {
+                Source::File(path) => SafetensorsStore::from_file(path),
+                Source::Memory(bytes) => SafetensorsStore::from_bytes(Some(bytes)),
+            };
+            let mut store = configure_safetensors(store, device);
+            log_apply_result(&model.load_from(&mut store)?);
+            Ok(model)
+        }
+        WeightFormat::Burnpack => {
+            let record = match source {
+                Source::File(path) => ModuleRecord::load(path)?,
+                Source::Memory(bytes) => ModuleRecord::from_bytes(Bytes::from_bytes_vec(bytes))?,
+            };
+            Ok(model.try_load_record(record.cast_to_module_dtype())?)
+        }
+    }
 }
 
-fn load_burnpack_model<M: Module>(model: M, weights_path: &Path) -> Result<M, WeightError> {
-    let record = ModuleRecord::load(weights_path)?.cast_to_module_dtype();
-    Ok(model.try_load_record(record)?)
-}
-
-/// Loads checkpoint weights from a local path into any Burn [`Module`], inferring format.
+/// Loads a checkpoint file into any Burn [`Module`], detecting its format from the file header.
+///
+/// Parameters are allocated in the device's persistent memory pool and cast to the device's
+/// default float dtype. Upstream PyTorch / SafeTensors key names are remapped to Burn's.
 ///
 /// # Errors
 ///
-/// Returns [`WeightError`] (`is_not_found`) if `weights_path` does not exist, or `is_load`
-/// if deserialization fails or tensor shapes mismatch.
+/// Returns [`WeightError`] (`is_not_found`) if `path` is not a file, `is_unsupported_format`
+/// if the header is not recognized, or `is_load` if decoding or applying the weights fails.
 pub fn load_weights_from_path<M: Module>(
     model: M,
-    weights_path: &Path,
+    path: impl AsRef<Path>,
     device: &Device,
 ) -> Result<M, WeightError> {
-    if !weights_path.exists() {
-        return Err(WeightError::not_found(weights_path));
+    let path = path.as_ref();
+    if !path.is_file() {
+        return Err(WeightError::not_found(path));
     }
-    if !weights_path.is_file() {
-        return Err(WeightError::unsupported_format(format!(
-            "expected a checkpoint file path, got directory or special file: `{}`",
-            weights_path.display()
-        )));
-    }
-
-    match WeightFormat::from_path(weights_path) {
-        WeightFormat::PyTorch => load_pytorch_model(model, weights_path, device),
-        WeightFormat::SafeTensors => load_safetensors_model(model, weights_path, device),
-        WeightFormat::Burnpack => load_burnpack_model(model, weights_path),
-        WeightFormat::Auto => match load_burnpack_model(model.clone(), weights_path) {
-            Ok(loaded) => Ok(loaded),
-            Err(burnpack_err) => match load_safetensors_model(model.clone(), weights_path, device)
-            {
-                Ok(loaded) => Ok(loaded),
-                Err(safetensors_err) => load_pytorch_model(model, weights_path, device).map_err(
-                    |pytorch_err| {
-                        WeightError::load(
-                            format!(
-                                "failed to load `{}` as Burnpack ({burnpack_err}), SafeTensors ({safetensors_err}), or PyTorch ({pytorch_err})",
-                                weights_path.display()
-                            ),
-                            None,
-                        )
-                    },
-                ),
-            },
-        },
-    }
+    let format = WeightFormat::from_path(path)?;
+    device
+        .memory_persistent_allocations(model, |model| {
+            load_checkpoint(model, Source::File(path), format, device)
+        })
+        .map_err(|err| err.at(path))
 }
 
-/// Extension trait adding checkpoint loading convenience methods onto [`BiRefNet`].
+/// Loads an in-memory Burnpack or SafeTensors checkpoint into any Burn [`Module`].
+///
+/// # Errors
+///
+/// Returns [`WeightError`] (`is_unsupported_format`) if the bytes are not a Burnpack or
+/// SafeTensors checkpoint, or `is_load` if decoding or applying the weights fails.
+pub fn load_weights_from_bytes<M: Module>(
+    model: M,
+    bytes: Vec<u8>,
+    device: &Device,
+) -> Result<M, WeightError> {
+    let format = WeightFormat::detect(&bytes).ok_or_else(|| {
+        WeightError::unsupported_format("expected a Burnpack or SafeTensors checkpoint", None)
+    })?;
+    device.memory_persistent_allocations((model, bytes), |(model, bytes)| {
+        load_checkpoint(model, Source::Memory(bytes), format, device)
+    })
+}
+
+/// Checkpoint loading for [`BiRefNet`].
 pub trait BiRefNetWeightLoading: Sized {
     /// Loads weights from a local checkpoint file on `device`.
     ///
@@ -361,142 +316,79 @@ pub trait BiRefNetWeightLoading: Sized {
     /// Returns [`WeightError`] if the file is missing or cannot be loaded into `self`.
     fn load_weights(self, path: impl AsRef<Path>, device: &Device) -> Result<Self, WeightError>;
 
-    /// Loads weights described by `managed` using `fetcher` for remote sources.
+    /// Loads the weights described by `managed`, using `fetcher` for remote sources.
     ///
     /// # Errors
     ///
     /// Returns [`WeightError`] if resolution or checkpoint loading fails.
-    fn load_weights_from_managed_with(
+    fn load_managed_weights(
         self,
         managed: &ManagedModel,
-        fetcher: &dyn Fetcher,
+        fetcher: &(impl Fetcher + ?Sized),
         device: &Device,
     ) -> Result<Self, WeightError>;
 
-    /// Initializes the architecture configured by `managed` on `device` and loads its weights.
+    /// Builds the architecture configured by `managed` on `device` and loads its weights.
     ///
     /// # Errors
     ///
     /// Returns [`WeightError`] if model construction, fetching, or weight loading fails.
-    fn from_managed_model_with(
+    fn from_managed(
         managed: &ManagedModel,
-        fetcher: &dyn Fetcher,
+        fetcher: &(impl Fetcher + ?Sized),
         device: &Device,
     ) -> Result<Self, WeightError>;
-
-    /// Loads weights described by `managed` using `HuggingFace` Hub for remote sources.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WeightError`] if fetching or checkpoint loading fails.
-    #[cfg(feature = "hub")]
-    fn load_weights_from_managed(
-        self,
-        managed: &ManagedModel,
-        device: &Device,
-    ) -> Result<Self, WeightError>;
-
-    /// Initializes the architecture configured by `managed` on `device` and fetches weights
-    /// from `HuggingFace` Hub when remote.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WeightError`] if initialization, hub download, or weight loading fails.
-    #[cfg(feature = "hub")]
-    fn from_managed_model(managed: &ManagedModel, device: &Device) -> Result<Self, WeightError>;
 }
 
 impl BiRefNetWeightLoading for BiRefNet {
     fn load_weights(self, path: impl AsRef<Path>, device: &Device) -> Result<Self, WeightError> {
-        load_weights_from_path(self, path.as_ref(), device)
+        load_weights_from_path(self, path, device)
     }
 
-    fn load_weights_from_managed_with(
+    fn load_managed_weights(
         self,
         managed: &ManagedModel,
-        fetcher: &dyn Fetcher,
+        fetcher: &(impl Fetcher + ?Sized),
         device: &Device,
     ) -> Result<Self, WeightError> {
-        let weights_path = managed.resolve_path_with(fetcher)?;
-        load_weights_from_path(self, &weights_path, device)
+        load_weights_from_path(self, managed.resolve_path(fetcher)?, device)
     }
 
-    fn from_managed_model_with(
+    fn from_managed(
         managed: &ManagedModel,
-        fetcher: &dyn Fetcher,
+        fetcher: &(impl Fetcher + ?Sized),
         device: &Device,
     ) -> Result<Self, WeightError> {
-        let model = managed.build_config().init(device)?;
-        model.load_weights_from_managed_with(managed, fetcher, device)
-    }
-
-    #[cfg(feature = "hub")]
-    fn load_weights_from_managed(
-        self,
-        managed: &ManagedModel,
-        device: &Device,
-    ) -> Result<Self, WeightError> {
-        let weights_path = managed.resolve_path()?;
-        load_weights_from_path(self, &weights_path, device)
-    }
-
-    #[cfg(feature = "hub")]
-    fn from_managed_model(managed: &ManagedModel, device: &Device) -> Result<Self, WeightError> {
-        let model = managed.build_config().init(device)?;
-        model.load_weights_from_managed(managed, device)
+        managed
+            .build_config()
+            .init(device)?
+            .load_managed_weights(managed, fetcher, device)
     }
 }
 
 #[cfg(all(test, feature = "hub"))]
 mod tests {
     use super::*;
+    use crate::fetcher::HfHubFetcher;
 
-    fn inspect_preset_checkpoint(preset_name: &str) {
+    fn inspect_preset_checkpoint(fetcher: &HfHubFetcher, preset_name: &str) {
         let device = Device::flex();
         let managed = ManagedModel::from_pretrained(preset_name).expect("preset must resolve");
         let path = managed
-            .resolve_path()
+            .resolve_path(fetcher)
             .expect("pretrained weights must download from Hugging Face Hub");
         let mut model = managed
             .build_config()
             .init(&device)
             .expect("model config must initialize");
-        let mut store = build_safetensors_store(&path, &device);
+        let mut store = configure_safetensors(SafetensorsStore::from_file(&path), &device);
         let result = model
             .load_from(&mut store)
             .expect("safetensors store must apply");
 
-        println!("=== Preset: {preset_name} ({}) ===", path.display());
-        println!(
-            "applied: {}, missing: {}, unused: {}, errors: {}",
-            result.applied.len(),
-            result.missing.len(),
-            result.unused.len(),
-            result.errors.len()
-        );
-        for (missing_path, stack) in &result.missing {
-            println!("  MISSING: {missing_path} [{stack}]");
-        }
-        for unused_path in &result.unused {
-            println!("  UNUSED: {unused_path}");
-        }
-        for err in &result.errors {
-            println!("  ERROR: {err}");
-        }
-
         assert!(
             !result.applied.is_empty(),
             "preset {preset_name} applied zero parameters"
-        );
-        assert!(
-            result.errors.is_empty(),
-            "preset {preset_name} had apply errors: {:?}",
-            result.errors
-        );
-        assert!(
-            result.missing.is_empty(),
-            "preset {preset_name} had missing parameters: {:?}",
-            result.missing
         );
         assert!(
             result
@@ -510,13 +402,14 @@ mod tests {
 
     #[test]
     #[ignore = "downloads pretrained weights from Hugging Face Hub"]
-    fn hub_safetensors_apply_result_diagnostics() {
+    fn hub_safetensors_presets_apply_cleanly() {
         std::thread::Builder::new()
             .name(String::from("hf-weights-check"))
             .stack_size(8 * 1024 * 1024)
             .spawn(|| {
-                inspect_preset_checkpoint("General-Lite");
-                inspect_preset_checkpoint("General");
+                let fetcher = HfHubFetcher::new().expect("hub client");
+                inspect_preset_checkpoint(&fetcher, "General-Lite");
+                inspect_preset_checkpoint(&fetcher, "General");
             })
             .expect("spawn diagnostic thread")
             .join()

@@ -1,18 +1,23 @@
 //! Enumeration types for `BiRefNet` configuration.
+//!
+//! `Display` renders the option strings used by the upstream PyTorch `config.py`.
+
+use std::fmt;
 
 use burn::serde::{Deserialize, Serialize};
 
 /// Interpolation strategy for tensor resizing operations.
 ///
-/// Burn's autodiff backward pass supports only `Nearest` interpolation, whereas
-/// inference can use `Bilinear` for smoother masks.
+/// The Flex backend differentiates `Nearest`, `Bilinear`, and `Bicubic` interpolation, but
+/// CubeCL backends (`cpu`, `wgpu`, `cuda`, ...) implement the backward pass for `Nearest` only.
+/// Use `Nearest` for training on those backends and `Bilinear` for smoother inference masks.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(crate = "burn::serde")]
 pub enum InterpolationStrategy {
-    /// Bilinear interpolation (inference only).
+    /// Bilinear interpolation (default; differentiable on Flex only).
     #[default]
     Bilinear,
-    /// Nearest-neighbor interpolation (works for both training and inference).
+    /// Nearest-neighbor interpolation (differentiable on every backend).
     Nearest,
 }
 
@@ -32,16 +37,6 @@ pub enum Task {
     General2k,
     /// Image matting task.
     Matting,
-}
-
-/// Prompt type used for localization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(crate = "burn::serde")]
-pub enum PromptForLocation {
-    /// Dense prompt.
-    Dense,
-    /// Sparse prompt.
-    Sparse,
 }
 
 /// Method for combining multi-scale inputs in the encoder.
@@ -115,9 +110,11 @@ pub enum Backbone {
     /// VGG-16 without batch normalization.
     Vgg16,
     /// VGG-16 with batch normalization.
-    Vgg16bn,
+    #[serde(alias = "Vgg16bn")]
+    Vgg16Bn,
     /// `ResNet-50`.
-    Resnet50,
+    #[serde(alias = "Resnet50")]
+    ResNet50,
     /// Swin Transformer Tiny.
     SwinV1T,
     /// Swin Transformer Small.
@@ -160,7 +157,7 @@ pub enum DecChannelsInter {
 pub enum Refine {
     /// No refinement stage.
     None,
-    /// Self-refinement (reserved).
+    /// Upstream "refine with itself" mode; not implemented and rejected by validation.
     Itself,
     /// U-Net refinement module (`RefUNet`).
     RefUNet,
@@ -170,12 +167,89 @@ pub enum Refine {
     RefinerPVTInChannels4,
 }
 
-/// Optimizer selection for model training configurations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(crate = "burn::serde")]
-pub enum Optimizer {
-    /// Adam optimizer.
-    Adam,
-    /// `AdamW` decoupled weight-decay optimizer.
-    AdamW,
+macro_rules! display_as {
+    ($ty:ty { $($variant:pat => $name:expr),+ $(,)? }) => {
+        impl fmt::Display for $ty {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                match self {
+                    $($variant => f.write_str($name)),+
+                }
+            }
+        }
+    };
 }
+
+display_as!(InterpolationStrategy {
+    Self::Bilinear => "bilinear",
+    Self::Nearest => "nearest",
+});
+
+display_as!(Task {
+    Self::DIS5K => "DIS5K",
+    Self::COD => "COD",
+    Self::HRSOD => "HRSOD",
+    Self::General => "General",
+    Self::General2k => "General-2K",
+    Self::Matting => "Matting",
+});
+
+display_as!(MultiScaleInput {
+    Self::None => "none",
+    Self::Add => "add",
+    Self::Cat => "cat",
+});
+
+display_as!(DecoderAttention {
+    Self::None => "none",
+    Self::ASPP => "ASPP",
+    Self::ASPPDeformable => "ASPPDeformable",
+});
+
+impl fmt::Display for SqueezeBlock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::None => return f.write_str("none"),
+            Self::BasicDecBlk(_) => "BasicDecBlk",
+            Self::ResBlk(_) => "ResBlk",
+            Self::ASPP(_) => "ASPP",
+            Self::ASPPDeformable(_) => "ASPPDeformable",
+        };
+        write!(f, "{name}_x{}", self.count())
+    }
+}
+
+display_as!(DecBlk {
+    Self::BasicDecBlk => "BasicDecBlk",
+    Self::ResBlk => "ResBlk",
+});
+
+display_as!(Backbone {
+    Self::Vgg16 => "vgg16",
+    Self::Vgg16Bn => "vgg16bn",
+    Self::ResNet50 => "resnet50",
+    Self::SwinV1T => "swin_v1_t",
+    Self::SwinV1S => "swin_v1_s",
+    Self::SwinV1B => "swin_v1_b",
+    Self::SwinV1L => "swin_v1_l",
+    Self::PvtV2B0 => "pvt_v2_b0",
+    Self::PvtV2B1 => "pvt_v2_b1",
+    Self::PvtV2B2 => "pvt_v2_b2",
+    Self::PvtV2B5 => "pvt_v2_b5",
+});
+
+display_as!(LateralBlock {
+    Self::BasicLatBlk => "BasicLatBlk",
+});
+
+display_as!(DecChannelsInter {
+    Self::Fixed => "fixed",
+    Self::Adap => "adap",
+});
+
+display_as!(Refine {
+    Self::None => "none",
+    Self::Itself => "itself",
+    Self::RefUNet => "RefUNet",
+    Self::Refiner => "Refiner",
+    Self::RefinerPVTInChannels4 => "RefinerPVTInChannels4",
+});

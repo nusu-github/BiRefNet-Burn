@@ -1,6 +1,6 @@
 //! Offline integration tests for model registry, fetchers, and checkpoint loading.
 
-use std::path::{Path, PathBuf};
+use std::{assert_matches, path::PathBuf};
 
 use birefnet_model::{
     Backbone, BackboneConfig, BiRefNet, BiRefNetConfig, DecoderAttention, DecoderConfig,
@@ -9,7 +9,8 @@ use birefnet_model::{
 };
 use birefnet_weights::{
     BiRefNetWeightLoading, Fetcher, MODEL_SPECS, ManagedModel, ModelName, WeightError,
-    WeightFormat, WeightSource, get_model_spec, list_available_models, load_weights_from_path,
+    WeightFormat, WeightSource, list_available_models, load_weights_from_bytes,
+    load_weights_from_path, model_spec,
 };
 use burn::{
     module::{Module, Param, ParamId},
@@ -63,7 +64,7 @@ fn catalog_contains_all_15_valid_presets() {
     assert_eq!(MODEL_SPECS.len(), 15);
 
     for name in names {
-        let spec = get_model_spec(name).expect("listed model must resolve");
+        let spec = model_spec(name).expect("listed model must resolve");
         assert_eq!(spec.name, name);
         assert!(spec.repo_id().starts_with("ZhengPeng7/"));
 
@@ -74,23 +75,20 @@ fn catalog_contains_all_15_valid_presets() {
             managed.supports_dynamic_resolution(),
             spec.supports_dynamic_resolution
         );
-        assert!(matches!(
+        assert_matches!(
             managed.weight_source(),
             WeightSource::Remote { repo_id, filename }
                 if repo_id == &spec.repo_id() && filename == "model.safetensors"
-        ));
+        );
+        assert!(spec.to_string().starts_with(name));
     }
 
     assert!(
-        get_model_spec("General-dynamic")
+        model_spec("General-dynamic")
             .unwrap()
             .supports_dynamic_resolution
     );
-    assert!(
-        !get_model_spec("General")
-            .unwrap()
-            .supports_dynamic_resolution
-    );
+    assert!(!model_spec("General").unwrap().supports_dynamic_resolution);
 }
 
 #[test]
@@ -100,47 +98,59 @@ fn unknown_model_and_missing_local_file_report_expected_kinds() {
 
     let dir = TempDir::new().unwrap();
     let missing_path = dir.path().join("does_not_exist.bpk");
-    let local = ManagedModel::from_local("custom", &missing_path, Some(tiny_birefnet_config()));
-    let fetcher = StubFetcher { resolved: None };
-    assert!(!local.is_available_with(&fetcher));
-    assert!(
-        local
-            .resolve_path_with(&fetcher)
-            .unwrap_err()
-            .is_not_found()
+    let local = ManagedModel::from_local(
+        ModelName::new("custom").unwrap(),
+        &missing_path,
+        Some(tiny_birefnet_config()),
     );
+    let fetcher = StubFetcher { resolved: None };
+    assert!(!local.is_available(&fetcher));
+    assert!(local.resolve_path(&fetcher).unwrap_err().is_not_found());
 
     let device = Device::flex();
-    let load_err = BiRefNet::from_managed_model_with(&local, &fetcher, &device).unwrap_err();
+    let load_err = BiRefNet::from_managed(&local, &fetcher, &device).unwrap_err();
     assert!(load_err.is_not_found());
+
+    assert!(ModelName::new("  ").unwrap_err().is_invalid_name());
+    assert!("".parse::<ModelName>().unwrap_err().is_invalid_name());
 }
 
 #[test]
-fn weight_format_detects_extensions_case_insensitively() {
+fn weight_format_is_detected_from_file_headers() {
+    let mut safetensors_header = 2_u64.to_le_bytes().to_vec();
+    safetensors_header.extend_from_slice(b"{}");
     assert_eq!(
-        WeightFormat::from_path(Path::new("weights.safetensors")),
+        WeightFormat::detect(&safetensors_header),
+        Some(WeightFormat::SafeTensors)
+    );
+    assert_eq!(
+        WeightFormat::detect(b"NRUB\x01\x00rest"),
+        Some(WeightFormat::Burnpack)
+    );
+    assert_eq!(
+        WeightFormat::detect(b"PK\x03\x04archive"),
+        Some(WeightFormat::PyTorch)
+    );
+    assert_eq!(
+        WeightFormat::detect(&[0x80, 0x02, b'c']),
+        Some(WeightFormat::PyTorch)
+    );
+    assert_eq!(WeightFormat::detect(b"GIF89a..."), None);
+
+    // The extension is irrelevant: a misnamed file is still detected by content.
+    let dir = TempDir::new().unwrap();
+    let misnamed = dir.path().join("weights.pth");
+    std::fs::write(&misnamed, &safetensors_header).unwrap();
+    assert_eq!(
+        WeightFormat::from_path(&misnamed).unwrap(),
         WeightFormat::SafeTensors
     );
-    assert_eq!(
-        WeightFormat::from_path(Path::new("weights.SAFETENSORS")),
-        WeightFormat::SafeTensors
-    );
-    assert_eq!(
-        WeightFormat::from_path(Path::new("weights.pth")),
-        WeightFormat::PyTorch
-    );
-    assert_eq!(
-        WeightFormat::from_path(Path::new("weights.PT")),
-        WeightFormat::PyTorch
-    );
-    assert_eq!(
-        WeightFormat::from_path(Path::new("weights.bpk")),
-        WeightFormat::Burnpack
-    );
-    assert_eq!(
-        WeightFormat::from_path(Path::new("weights.bin")),
-        WeightFormat::Auto
-    );
+    let garbage = dir.path().join("weights.bin");
+    std::fs::write(&garbage, b"not a checkpoint").unwrap();
+    let err = WeightFormat::from_path(&garbage).unwrap_err();
+    assert!(err.is_unsupported_format());
+    assert_eq!(err.path(), Some(garbage.as_path()));
+    assert_eq!(WeightFormat::SafeTensors.to_string(), "SafeTensors");
 }
 
 #[test]
@@ -165,15 +175,18 @@ fn burnpack_round_trip_preserves_model_outputs() {
                 Tensor::<4>::random([1, 3, 32, 32], Distribution::Uniform(0.0, 1.0), &device);
             let expected_out = original.forward(input.clone()).unwrap();
 
-            // Load via explicit local ManagedModel with Auto format (no extension -> exercises fallback).
+            // A file without extension is detected from its header.
             let no_ext_path = dir.path().join("tiny_model_no_ext");
             std::fs::copy(&bpk_path, &no_ext_path).unwrap();
-            let local =
-                ManagedModel::from_local(ModelName::from("tiny"), &no_ext_path, Some(cfg.clone()));
+            let local = ManagedModel::from_local(
+                ModelName::new("tiny").unwrap(),
+                &no_ext_path,
+                Some(cfg.clone()),
+            );
             let fetcher = StubFetcher { resolved: None };
-            assert!(local.is_available_with(&fetcher));
+            assert!(local.is_available(&fetcher));
 
-            let reloaded = BiRefNet::from_managed_model_with(&local, &fetcher, &device).unwrap();
+            let reloaded = BiRefNet::from_managed(&local, &fetcher, &device).unwrap();
             let reloaded_out = reloaded.forward(input.clone()).unwrap();
             let max_diff = (expected_out.clone() - reloaded_out)
                 .abs()
@@ -181,9 +194,27 @@ fn burnpack_round_trip_preserves_model_outputs() {
                 .into_scalar::<f64>();
             assert!(max_diff < 1e-6, "max_diff={max_diff}");
 
+            // In-memory loading matches file loading.
+            let from_bytes = load_weights_from_bytes(
+                cfg.init(&device).unwrap(),
+                std::fs::read(&bpk_path).unwrap(),
+                &device,
+            )
+            .unwrap();
+            let bytes_diff = (expected_out.clone() - from_bytes.forward(input.clone()).unwrap())
+                .abs()
+                .max()
+                .into_scalar::<f64>();
+            assert!(bytes_diff < 1e-6, "bytes_diff={bytes_diff}");
+            assert!(
+                load_weights_from_bytes(cfg.init(&device).unwrap(), b"junk".to_vec(), &device)
+                    .unwrap_err()
+                    .is_unsupported_format()
+            );
+
             // Also load via remote source resolved through StubFetcher to exact `.bpk` file.
             let remote = ManagedModel::new(
-                ModelName::from("tiny-remote"),
+                ModelName::new("tiny-remote").unwrap(),
                 Some(cfg),
                 WeightSource::Remote {
                     repo_id: String::from("ZhengPeng7/BiRefNet"),
@@ -193,9 +224,8 @@ fn burnpack_round_trip_preserves_model_outputs() {
             let remote_fetcher = StubFetcher {
                 resolved: Some(bpk_path),
             };
-            assert!(remote.is_available_with(&remote_fetcher));
-            let from_remote =
-                BiRefNet::from_managed_model_with(&remote, &remote_fetcher, &device).unwrap();
+            assert!(remote.is_available(&remote_fetcher));
+            let from_remote = BiRefNet::from_managed(&remote, &remote_fetcher, &device).unwrap();
             let remote_diff = (expected_out - from_remote.forward(input).unwrap())
                 .abs()
                 .max()
@@ -230,17 +260,32 @@ fn mock_fetcher_resolves_registered_artifacts() {
         managed.weight_source().clone(),
     );
 
-    assert!(managed.is_available_with(&fetcher));
-    assert_eq!(managed.resolve_path_with(&fetcher).unwrap(), bpk_file);
+    assert!(managed.is_available(&fetcher));
+    assert_eq!(managed.resolve_path(&fetcher).unwrap(), bpk_file);
+    // The inherent methods and the trait agree.
+    let as_dyn: &dyn Fetcher = &fetcher;
+    assert_eq!(
+        as_dyn
+            .fetch("ZhengPeng7/BiRefNet", "model.safetensors")
+            .unwrap(),
+        bpk_file
+    );
 
     let missing_managed = ManagedModel::from_pretrained("DIS").unwrap();
-    assert!(!missing_managed.is_available_with(&fetcher));
+    assert!(!missing_managed.is_available(as_dyn));
     assert!(
         missing_managed
-            .resolve_path_with(&fetcher)
+            .resolve_path(as_dyn)
             .unwrap_err()
             .is_not_found()
     );
+}
+
+#[cfg(feature = "hub")]
+#[test]
+fn hub_fetcher_debug_output_hides_client_state() {
+    let fetcher = birefnet_weights::HfHubFetcher::new().unwrap();
+    assert_eq!(format!("{fetcher:?}"), "HfHubFetcher { .. }");
 }
 
 #[derive(Module, Debug)]

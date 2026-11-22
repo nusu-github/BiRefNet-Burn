@@ -70,6 +70,20 @@ fn trunc_normal_handles_degenerate_bounds() {
 }
 
 #[test]
+fn trunc_normal_far_tail_falls_back_to_nearest_bound() {
+    let device = Device::flex();
+    // Both bounds lie >= 40 standard deviations below the mean, so their CDF values coincide;
+    // the upper bound is the admissible point closest to the mean.
+    let vals = trunc_normal::<1>([4], 0.0, 0.1, -5.0, -4.0, &device)
+        .into_data()
+        .try_to_vec::<f32>()
+        .unwrap();
+    for v in vals {
+        assert_abs_diff_eq!(v, -4.0, epsilon = 1e-6);
+    }
+}
+
+#[test]
 #[should_panic(expected = "std must be finite and positive")]
 fn trunc_normal_rejects_non_positive_std() {
     let device = Device::flex();
@@ -118,7 +132,6 @@ fn droppath_full_drop_zeros_on_autodiff_and_is_identity_on_valid_or_plain_device
     let ad_device = Device::flex().autodiff();
     let plain_device = Device::flex();
     let layer = DropPathConfig::new().with_drop_prob(1.0).init();
-    assert_eq!(DropPathConfig::default(), DropPathConfig::new());
 
     let x_ad = Tensor::<2>::ones([4, 3], &ad_device);
     let dropped = layer

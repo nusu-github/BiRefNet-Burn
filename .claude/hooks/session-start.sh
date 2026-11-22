@@ -9,8 +9,8 @@ fi
 
 cd "${CLAUDE_PROJECT_DIR:-$(pwd)}"
 
-# Burn 0.22 requires Rust >= 1.95 (edition 2024, resolver 3).
-MIN_RUST="1.95.0"
+# The workspace MSRV is Rust 1.100 (edition 2024, resolver 3).
+MIN_RUST="1.100.0"
 current="$(rustc --version | awk '{print $2}')"
 if [ "$(printf '%s\n%s\n' "$MIN_RUST" "$current" | sort -V | head -n1)" != "$MIN_RUST" ]; then
   echo "rustc $current < $MIN_RUST; updating stable toolchain" >&2

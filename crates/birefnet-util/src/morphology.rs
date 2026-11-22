@@ -1,203 +1,213 @@
-//! Morphological image operations (`erosion`, `dilation`, `opening`, `closing`, `gradient`).
+//! Binary morphology (`erosion`, `dilation`, `opening`, `closing`, `gradient`) on the device.
+//!
+//! Inputs are binarized at `0.5`, borders are edge-replicated, and outputs are `{0, 1}` maps in
+//! the input float dtype. Rectangular elements run as min/max pooling; other shapes count hits
+//! with a depth-wise convolution.
 
-use burn::tensor::{Device, Shape, Tensor, TensorData};
+use burn::tensor::{
+    DType, Shape, Tensor, TensorData,
+    module::{conv2d, max_pool2d},
+    ops::{ConvOptions, MaxPoolOptions, PadMode},
+};
 
-/// Binary structuring element kernel paired with its anchor offset.
-#[derive(Debug, Clone)]
+use crate::error::UtilError;
+
+/// Binary structuring element: an `[height, width]` mask and its `(row, col)` anchor.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StructuringElement {
-    kernel: Tensor<2>,
+    mask: Vec<bool>,
+    dims: [usize; 2],
     anchor: (usize, usize),
 }
 
 impl StructuringElement {
-    /// Creates a structuring element from a binary 2D kernel and `(anchor_y, anchor_x)`.
-    #[must_use]
-    pub const fn new(kernel: Tensor<2>, anchor: (usize, usize)) -> Self {
-        Self { kernel, anchor }
+    /// Creates a structuring element from a row-major `[height, width]` mask.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UtilError`] if `mask.len() != height * width`, a dimension is zero, or the
+    /// anchor lies outside the mask.
+    pub fn new(
+        mask: Vec<bool>,
+        dims: [usize; 2],
+        anchor: (usize, usize),
+    ) -> Result<Self, UtilError> {
+        let [height, width] = dims;
+        if height == 0 || width == 0 || mask.len() != height * width {
+            return Err(UtilError::invalid_dimensions(format!(
+                "structuring element mask of length {} does not match positive dims {dims:?}",
+                mask.len()
+            )));
+        }
+        if anchor.0 >= height || anchor.1 >= width {
+            return Err(UtilError::invalid_input(format!(
+                "anchor {anchor:?} lies outside a {height}x{width} structuring element"
+            )));
+        }
+        Ok(Self { mask, dims, anchor })
     }
 
-    /// Creates an all-ones rectangular structuring element of shape `[height, width]`.
+    /// Creates an all-ones `[height, width]` rectangle anchored at its center.
     ///
     /// # Panics
     ///
     /// Panics if `height == 0` or `width == 0`.
     #[must_use]
-    pub fn rectangle(height: usize, width: usize, device: &Device) -> Self {
+    pub fn rectangle(height: usize, width: usize) -> Self {
         assert!(
             height > 0 && width > 0,
             "StructuringElement::rectangle dimensions must be positive, got {height}x{width}"
         );
-        let kernel = Tensor::<2>::ones([height, width], device);
-        Self::new(kernel, (height / 2, width / 2))
-    }
-
-    /// Creates a discrete circular (disk) structuring element of radius `radius`.
-    #[must_use]
-    pub fn disk(radius: usize, device: &Device) -> Self {
-        let size = 2 * radius + 1;
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "structuring element radii are small kernel dimensions"
-        )]
-        let center = radius as f32;
-        let mut kernel_data = Vec::with_capacity(size * size);
-
-        for row in 0..size {
-            for col in 0..size {
-                #[expect(
-                    clippy::cast_precision_loss,
-                    reason = "kernel coordinates fit within exact float precision"
-                )]
-                let dy = row as f32 - center;
-                #[expect(
-                    clippy::cast_precision_loss,
-                    reason = "kernel coordinates fit within exact float precision"
-                )]
-                let dx = col as f32 - center;
-                kernel_data.push(if dy.hypot(dx) <= center { 1.0_f32 } else { 0.0 });
-            }
+        Self {
+            mask: vec![true; height * width],
+            dims: [height, width],
+            anchor: (height / 2, width / 2),
         }
-
-        let kernel = Tensor::<2>::from_data(
-            TensorData::new(kernel_data, Shape::new([size, size])),
-            device,
-        );
-        Self::new(kernel, (radius, radius))
     }
 
-    /// Returns a reference to the underlying binary structuring kernel `[kH, kW]`.
+    /// Creates a `(2 * radius + 1)`-wide disk containing every offset with `dy² + dx² <= radius²`.
     #[must_use]
-    pub const fn kernel(&self) -> &Tensor<2> {
-        &self.kernel
+    pub fn disk(radius: usize) -> Self {
+        let size = 2 * radius + 1;
+        let r_sq = radius * radius;
+        let mask = (0..size * size)
+            .map(|idx| {
+                let dy = (idx / size).abs_diff(radius);
+                let dx = (idx % size).abs_diff(radius);
+                dy * dy + dx * dx <= r_sq
+            })
+            .collect();
+        Self {
+            mask,
+            dims: [size, size],
+            anchor: (radius, radius),
+        }
     }
 
-    /// Returns the `(anchor_y, anchor_x)` coordinate within the structuring kernel.
+    /// Returns the row-major binary mask.
+    #[must_use]
+    pub fn mask(&self) -> &[bool] {
+        &self.mask
+    }
+
+    /// Returns the `(anchor_y, anchor_x)` coordinate within the mask.
     #[must_use]
     pub const fn anchor(&self) -> (usize, usize) {
         self.anchor
     }
 
-    /// Returns the `[height, width]` dimensions of the structuring kernel.
+    /// Returns the `[height, width]` dimensions of the mask.
     #[must_use]
-    pub fn dims(&self) -> [usize; 2] {
-        self.kernel.dims()
+    pub const fn dims(&self) -> [usize; 2] {
+        self.dims
+    }
+
+    fn active_count(&self) -> usize {
+        self.mask.iter().filter(|&&on| on).count()
+    }
+
+    fn is_full(&self) -> bool {
+        self.mask.iter().all(|&on| on)
+    }
+
+    /// `(top, bottom, left, right)` edge padding that centres windows on the anchor.
+    const fn padding(&self) -> [(usize, usize); 2] {
+        let [height, width] = self.dims;
+        let (ay, ax) = self.anchor;
+        [(ay, height - 1 - ay), (ax, width - 1 - ax)]
     }
 }
 
-fn active_kernel_offsets(se: &StructuringElement) -> Vec<(isize, isize)> {
-    let [kernel_h, kernel_w] = se.dims();
-    let (anchor_y, anchor_x) = se.anchor;
-    let kernel_vals = se
-        .kernel
-        .clone()
-        .into_data()
-        .try_to_vec::<f32>()
-        .expect("structuring element kernel must convert to f32");
-
-    let ay = isize::try_from(anchor_y).expect("anchor_y exceeds isize::MAX");
-    let ax = isize::try_from(anchor_x).expect("anchor_x exceeds isize::MAX");
-    let mut offsets = Vec::new();
-    for ky in 0..kernel_h {
-        let dy = isize::try_from(ky).expect("ky exceeds isize::MAX") - ay;
-        for kx in 0..kernel_w {
-            if kernel_vals[ky * kernel_w + kx] > 0.5 {
-                let dx = isize::try_from(kx).expect("kx exceeds isize::MAX") - ax;
-                offsets.push((dy, dx));
-            }
-        }
-    }
-    offsets
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Op {
+    Erode,
+    Dilate,
 }
 
-fn morph_op(image: Tensor<4>, se: &StructuringElement, is_dilation: bool) -> Tensor<4> {
-    let [batch_size, channels, height, width] = image.dims();
-    let device = image.device();
+fn morph_op(image: Tensor<4>, se: &StructuringElement, op: Op) -> Tensor<4> {
+    let [batch, channels, height, width] = image.dims();
+    let dtype = image.dtype();
     if height == 0 || width == 0 {
         return image;
     }
-
-    let offsets = active_kernel_offsets(se);
-    if offsets.is_empty() {
-        return if is_dilation {
-            Tensor::zeros([batch_size, channels, height, width], &device)
-        } else {
-            Tensor::ones([batch_size, channels, height, width], &device)
+    let active = se.active_count();
+    if active == 0 {
+        // Empty element: no neighbor can be set (dilation) and every "all" test is vacuous.
+        return match op {
+            Op::Dilate => image.zeros_like(),
+            Op::Erode => image.ones_like(),
         };
     }
 
-    let values = image
-        .into_data()
-        .try_to_vec::<f32>()
-        .expect("morphological input image must convert to f32");
+    // Counts are small integers; f32 represents them exactly even for half-precision inputs.
+    let binary = image.greater_equal_elem(0.5).float().cast(DType::F32);
+    let [pad_y, pad_x] = se.padding();
+    let padded = binary.pad([(0, 0), (0, 0), pad_y, pad_x], PadMode::Edge);
 
-    let plane_len = height * width;
-    let max_y = isize::try_from(height - 1).expect("height exceeds isize::MAX");
-    let max_x = isize::try_from(width - 1).expect("width exceeds isize::MAX");
-    let mut output = Vec::with_capacity(values.len());
-
-    for plane in values.chunks_exact(plane_len) {
-        for y in 0..height {
-            let iy = isize::try_from(y).expect("y exceeds isize::MAX");
-            for x in 0..width {
-                let ix = isize::try_from(x).expect("x exceeds isize::MAX");
-                let hit = if is_dilation {
-                    offsets.iter().any(|&(dy, dx)| {
-                        #[expect(clippy::cast_sign_loss, reason = "clamped to non-negative bounds")]
-                        let sy = (iy + dy).clamp(0, max_y) as usize;
-                        #[expect(clippy::cast_sign_loss, reason = "clamped to non-negative bounds")]
-                        let sx = (ix + dx).clamp(0, max_x) as usize;
-                        plane[sy * width + sx] >= 0.5
-                    })
-                } else {
-                    offsets.iter().all(|&(dy, dx)| {
-                        #[expect(clippy::cast_sign_loss, reason = "clamped to non-negative bounds")]
-                        let sy = (iy + dy).clamp(0, max_y) as usize;
-                        #[expect(clippy::cast_sign_loss, reason = "clamped to non-negative bounds")]
-                        let sx = (ix + dx).clamp(0, max_x) as usize;
-                        plane[sy * width + sx] >= 0.5
-                    })
-                };
-                output.push(if hit { 1.0_f32 } else { 0.0 });
+    let result = if se.is_full() {
+        let pool = |x: Tensor<4>| max_pool2d(x, MaxPoolOptions::new(se.dims).with_stride([1, 1]));
+        match op {
+            Op::Dilate => pool(padded),
+            Op::Erode => pool(padded.neg()).neg(),
+        }
+    } else {
+        let [kh, kw] = se.dims;
+        let weights: Vec<f32> = se.mask.iter().map(|&on| f32::from(u8::from(on))).collect();
+        let kernel = Tensor::<4>::from_data(
+            TensorData::new(weights, Shape::new([1, 1, kh, kw])),
+            (&padded.device(), DType::F32),
+        )
+        .repeat_dim(0, channels);
+        let hits = conv2d(
+            padded,
+            kernel,
+            None,
+            ConvOptions::new([1, 1], [0, 0], [1, 1], channels),
+        );
+        match op {
+            Op::Dilate => hits.greater_elem(0.5).float(),
+            Op::Erode => {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "structuring elements have far fewer than 2^24 active cells"
+                )]
+                let needed = active as f32 - 0.5;
+                hits.greater_equal_elem(needed).float()
             }
         }
-    }
+    };
 
-    Tensor::<4>::from_data(
-        TensorData::new(output, Shape::new([batch_size, channels, height, width])),
-        &device,
-    )
+    debug_assert_eq!(result.dims(), [batch, channels, height, width]);
+    result.cast(dtype)
 }
 
-/// Applies binary morphological erosion to a `[B, C, H, W]` tensor using edge-replicated borders.
+/// Binary erosion: a pixel stays set only if every active neighbor is `>= 0.5`.
 #[must_use]
 pub fn erosion(image: Tensor<4>, structuring_element: &StructuringElement) -> Tensor<4> {
-    morph_op(image, structuring_element, false)
+    morph_op(image, structuring_element, Op::Erode)
 }
 
-/// Applies binary morphological dilation to a `[B, C, H, W]` tensor using edge-replicated borders.
+/// Binary dilation: a pixel is set if any active neighbor is `>= 0.5`.
 #[must_use]
 pub fn dilation(image: Tensor<4>, structuring_element: &StructuringElement) -> Tensor<4> {
-    morph_op(image, structuring_element, true)
+    morph_op(image, structuring_element, Op::Dilate)
 }
 
-/// Applies morphological opening (`dilation(erosion(image))`) to remove small bright artifacts.
+/// Morphological opening (`dilation(erosion(image))`), removing small foreground specks.
 #[must_use]
 pub fn opening(image: Tensor<4>, structuring_element: &StructuringElement) -> Tensor<4> {
-    let eroded = erosion(image, structuring_element);
-    dilation(eroded, structuring_element)
+    dilation(erosion(image, structuring_element), structuring_element)
 }
 
-/// Applies morphological closing (`erosion(dilation(image))`) to fill small dark holes.
+/// Morphological closing (`erosion(dilation(image))`), filling small background holes.
 #[must_use]
 pub fn closing(image: Tensor<4>, structuring_element: &StructuringElement) -> Tensor<4> {
-    let dilated = dilation(image, structuring_element);
-    erosion(dilated, structuring_element)
+    erosion(dilation(image, structuring_element), structuring_element)
 }
 
-/// Computes the morphological gradient (`dilation - erosion`) highlighting object boundaries.
+/// Morphological gradient (`dilation - erosion`), marking object boundaries.
 #[must_use]
 pub fn gradient(image: Tensor<4>, structuring_element: &StructuringElement) -> Tensor<4> {
     let dilated = dilation(image.clone(), structuring_element);
-    let eroded = erosion(image, structuring_element);
-    dilated - eroded
+    dilated - erosion(image, structuring_element)
 }

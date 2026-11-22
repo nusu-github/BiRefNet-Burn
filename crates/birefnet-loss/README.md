@@ -1,36 +1,46 @@
 # birefnet-loss
 
-[![Crates.io](https://img.shields.io/crates/v/birefnet-loss.svg)](https://crates.io/crates/birefnet-loss)
-[![Documentation](https://docs.rs/birefnet-loss/badge.svg)](https://docs.rs/birefnet-loss)
+Segmentation losses and the combined multi-scale BiRefNet training objective on Burn.
 
-**Segmentation loss functions and combined `BiRefNetLoss` on Burn**
+| Loss                          | Input         | Per-sample value                               |
+| ----------------------------- | ------------- | ---------------------------------------------- |
+| `IouLoss`                     | probabilities | `1 - (inter + eps) / (union + eps)`            |
+| `PatchIouLoss`                | probabilities | sum of `IouLoss` over a grid of patches        |
+| `SsimLoss`                    | probabilities | `(1 - SSIM) / 2` with an 11x11 Gaussian window |
+| `StructureLoss`               | logits        | edge-weighted BCE + edge-weighted IoU          |
+| `ContourLoss`                 | probabilities | curve length + region terms                    |
+| `MaeLoss`                     | probabilities | mean absolute error                            |
+| `ThresholdRegularizationLoss` | probabilities | `2 p (1 - p)`                                  |
+| `ClassificationLoss`          | class logits  | cross-entropy summed over levels               |
 
-## Core Components
+`PixLoss` sums the enabled components (configured via `LossWeightsConfig`) across every
+prediction scale, and `BiRefNetLoss` adds the optional auxiliary classification term. Every
+component loss accepts `burn::nn::loss::Reduction` and exposes `forward_no_reduction` returning
+one value per sample.
 
-- **Primary Losses**: `PixelLoss`, `IoULoss`, `SSIMLoss`, `StructureLoss`
-- **Auxiliary & Regularization Losses**: `ContourLoss`, `ClassificationLoss`, `ThresholdRegularizationLoss`, `PatchIoULoss`, `MAELoss`
-- **Shared Operations**: Numerically stable `ops::bce_with_logits`
-- **Combined Objective**: `BiRefNetLoss` & `BiRefNetLossConfig` returning typed `LossError` values
-
-## Usage
+## Example
 
 ```rust
-use birefnet_loss::BiRefNetLossConfig;
-use burn::tensor::{Device, Tensor};
+use birefnet_loss::{BiRefNetLossConfig, LossError};
+use burn::prelude::*;
 
-let device = Device::flex();
-let loss_fn = BiRefNetLossConfig::new()
-    .with_iou_weight(1.0)
-    .with_ssim_weight(1.0)
-    .init(&device);
+fn main() -> Result<(), LossError> {
+    let device = Device::flex();
+    let loss_fn = BiRefNetLossConfig::general_optimized().init();
 
-let predictions = vec![Tensor::<4>::zeros([1, 1, 64, 64], &device)];
-let targets = Tensor::<4>::ones([1, 1, 64, 64], &device);
+    // One prediction scale of raw logits and a binary target mask.
+    let predictions = [Tensor::<4>::zeros([1, 1, 64, 64], &device)];
+    let targets = Tensor::<4>::ones([1, 1, 64, 64], &device);
 
-let total = loss_fn.forward(predictions.clone(), targets.clone())?;
-let (_, components) = loss_fn.forward_detailed(predictions, targets)?;
-# let _ = (total, components);
-# Ok::<(), birefnet_loss::LossError>(())
+    let total = loss_fn.forward(&predictions, &targets)?;
+    assert!(total.into_scalar::<f32>() > 0.0);
+
+    // The per-component breakdown is read back from the device in a single transaction.
+    let (_, breakdown) = loss_fn.forward_detailed(&predictions, &targets)?;
+    let sum: f64 = breakdown.components().iter().map(|(_, value)| value).sum();
+    assert!((sum - breakdown.total).abs() < 1e-3);
+    Ok(())
+}
 ```
 
 ## License

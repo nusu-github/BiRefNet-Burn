@@ -1,23 +1,28 @@
 # BiRefNet-Burn
 
-Rust workspace (`crates/*`, 11 crates, `resolver = "3"`, `edition = "2024"`, Rust >= 1.95) implementing BiRefNet on the [Burn](https://burn.dev) deep learning framework (`burn = "=0.22.1"`).
+Rust workspace (`crates/*`, 11 crates, `resolver = "3"`, `edition = "2024"`, Rust >= 1.100) implementing BiRefNet on the [Burn](https://burn.dev) deep learning framework (`burn = "=0.22.1"`).
 
 ## Commands
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --features birefnet/train,birefnet-model/train,birefnet-cli/train,birefnet-util/image-io,birefnet-weights/hub,birefnet-weights/test-util -- -D warnings
+CARGO_BUILD_WARNINGS=deny cargo clippy --workspace --all-targets --features birefnet/train,birefnet-model/train,birefnet-cli/train,birefnet-util/image-io,birefnet-weights/hub,birefnet-weights/test-util
 cargo test -p <crate>                          # library tests run on Burn's `flex` (pure-Rust CPU) backend
 cargo test -p birefnet-model --features train  # TrainStep/InferenceStep tests
+cargo test -p birefnet-metric --features train # Burn `Metric` adapter tests
 cargo test --workspace --features birefnet/train,birefnet-model/train,birefnet-cli/train,birefnet-util/image-io,birefnet-weights/hub,birefnet-weights/test-util
+CARGO_BUILD_WARNINGS=deny cargo doc --workspace --no-deps --features birefnet/train,birefnet-model/train,birefnet-cli/train,birefnet-util/image-io,birefnet-weights/hub,birefnet-weights/test-util
+cargo tree -d -p birefnet-cli                  # no duplicate burn crates
 cargo build --release -p birefnet-cli --features wgpu
 cargo run --release -p birefnet-cli -- info
 ```
 
-- Burn 0.22 picks the backend at run time from a `Device` value. `birefnet` is a pure library umbrella crate without CLI dependencies; `crates/birefnet-cli` owns the `birefnet` binary and exposes runtime backend features (`flex` default, `cpu`, `wgpu`, `vulkan`, `metal`, `cuda`, `rocm`, plus opt-in `fusion` = fusion + autotune for CubeCL backends). `--device` and `--precision` configure the runtime device (`crates/birefnet/src/device.rs`).
+- Burn 0.22 picks the backend at run time from a `Device` value. `birefnet` is a pure library umbrella crate without CLI dependencies; `crates/birefnet-cli` owns the `birefnet` binary and exposes runtime backend features (`cpu`, `wgpu`, `vulkan`, `metal`, `cuda`, `rocm`, `flex`; defaults are `flex`, `hub`, and `fusion` = fusion + autotune for CubeCL backends). The `birefnet` library enables no backend by default. `--device` and `--precision` configure the runtime device (`crates/birefnet/src/device.rs`).
 - Library crates depend on `burn` with `default-features = false, features = ["std"]` (workspace dependency) plus only the API features they need (`train`, `pytorch`, `safetensors`). They never enable a backend; their tests get `flex` (+ `autodiff` where required) from `[dev-dependencies]`.
-- Heavy optional subsystems stay behind additive features: `birefnet-util` gates `image` decoding/encoding behind `image-io`; `birefnet-weights` gates Hugging Face Hub downloads behind `hub` (and `MockFetcher` behind `test-util`); `birefnet-model` and `birefnet` gate training support behind `train`.
+- Heavy optional subsystems stay behind additive features: `birefnet-util` gates `image` decoding/encoding behind `image-io`; `birefnet-weights` gates Hugging Face Hub downloads behind `hub` (and `MockFetcher` behind `test-util`); `birefnet-model`, `birefnet-metric` (Burn `Metric` adapter), and `birefnet` gate training support behind `train`.
 - Prefer `-p <crate>` in cloud sessions: GPU features (`cuda`, `rocm`, `metal`) need vendor toolchains that are not available there, and `cpu`/`cuda` download an LLVM bundle at build time.
+- CI (`.github/workflows/rust.yml`) runs fmt, clippy, tests, docs, the `--no-default-features` builds, and `cargo tree -d` with `CARGO_BUILD_WARNINGS=deny`.
+- Metric results must match upstream `evaluation/metrics.py`; `crates/birefnet-metric/scripts/gen_upstream_reference.py` regenerates `tests/support/upstream_reference.rs`.
 - Dependencies build at `opt-level = 2` (`image` at `opt-level = 3`, build-overrides at `opt-level = 1`) in the dev profile so tests run real kernels on Flex while keeping incremental rebuilds fast.
 
 ## Burn 0.22 conventions
@@ -32,6 +37,6 @@ cargo run --release -p birefnet-cli -- info
 
 ## Cloud environment
 
-- `.claude/hooks/session-start.sh` (SessionStart, remote only) checks `rustc >= 1.95` (required by Burn 0.22), installs `rustfmt`/`clippy`, and runs `cargo fetch`.
+- `.claude/hooks/session-start.sh` (SessionStart, remote only) checks `rustc >= 1.100` (the workspace MSRV), installs `rustfmt`/`clippy`, and runs `cargo fetch`.
 - Network access: the default "Trusted" level covers `crates.io` and `github.com` (needed for Burn's LLVM bundle download). Pretrained-weight downloads via `hf-hub` need `huggingface.co` added under Allowed domains in the environment settings; offline tests use `MockFetcher`.
 - No GPU in cloud sessions: validate with `flex`/`cpu`/`wgpu` (software Vulkan) only.

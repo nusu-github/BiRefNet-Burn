@@ -17,7 +17,7 @@ use burn::{
 pub struct SimpleConvsConfig {
     in_channels: usize,
     out_channels: usize,
-    #[config(default = "64")]
+    #[config(default = 64)]
     inter_channels: usize,
 }
 

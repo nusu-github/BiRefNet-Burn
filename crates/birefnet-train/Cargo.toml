@@ -13,14 +13,14 @@ description = "Training data pipeline and augmentations for BiRefNet models"
 [dependencies]
 birefnet-model = { workspace = true, features = ["train"] }
 birefnet-util.workspace = true
-burn = { workspace = true, features = ["train"] }
+burn = { workspace = true, features = ["dataset"] }
 
 image = { workspace = true, features = ["png", "jpeg", "bmp", "tiff", "webp", "gif"] }
 rand.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-burn = { workspace = true, features = ["flex", "train"] }
+burn = { workspace = true, features = ["flex"] }
 tempfile.workspace = true
 
 [lints]

@@ -4,7 +4,7 @@ use birefnet_backbones::{
     Backbone, BackboneType, PvtV2Config, PvtV2Variant, ResNetConfig, ResNetVariant,
     SwinTransformerConfig, SwinVariant, VggVariant,
 };
-use burn::prelude::*;
+use burn::{prelude::*, tensor::Distribution};
 
 #[test]
 fn tiny_swin_forward_handles_even_and_odd_patch_merging_dimensions() {
@@ -140,8 +140,130 @@ fn invalid_configs_return_typed_errors() {
         .unwrap_err();
     assert!(bad_resnet.is_invalid_config());
 
-    let bad_pvt = PvtV2Config::b0(0).init(&device).unwrap_err();
+    let bad_pvt = PvtV2Config::from_variant(PvtV2Variant::B0, 0)
+        .init(&device)
+        .unwrap_err();
     assert!(bad_pvt.is_invalid_config());
+
+    let duplicate_outputs = SwinTransformerConfig::new()
+        .with_out_indices([0, 1, 1, 3])
+        .init(&device)
+        .unwrap_err();
+    assert!(duplicate_outputs.is_invalid_config());
+    assert!(duplicate_outputs.to_string().contains("distinct"));
+
+    let bad_ratio = SwinTransformerConfig::new()
+        .with_mlp_ratio(0.0)
+        .init(&device)
+        .unwrap_err();
+    assert!(bad_ratio.is_invalid_config());
+
+    let bad_drop = SwinTransformerConfig::new()
+        .with_drop_path_rate(1.0)
+        .init(&device)
+        .unwrap_err();
+    assert!(bad_drop.is_invalid_config());
+}
+
+fn tiny_swin(depths: [usize; 4]) -> SwinTransformerConfig {
+    SwinTransformerConfig::new()
+        .with_pretrain_img_size(32)
+        .with_embed_dim(8)
+        .with_depths(depths)
+        .with_num_heads([1, 2, 4, 8])
+        .with_window_size(4)
+}
+
+#[test]
+fn shifted_window_stages_mix_information_across_window_borders() {
+    let device = Device::flex();
+    device.seed(3);
+    // Depth 2 adds a shifted block to every stage; 64x64 -> 16x16 tokens -> 4x4 windows.
+    let swin = tiny_swin([2, 2, 2, 2]).init(&device).unwrap();
+
+    let base = Tensor::<4>::random([1, 3, 64, 64], Distribution::Uniform(0.0, 1.0), &device);
+    // Perturb a single pixel in the top-left 4x4 window of the stage-1 token grid.
+    let perturbed = base.clone().slice_fill(s![.., .., 0..4, 0..4], 5.0);
+
+    let [a, ..] = swin.forward(base).unwrap();
+    let [b, ..] = swin.forward(perturbed).unwrap();
+    assert_eq!(a.dims(), [1, 8, 16, 16]);
+
+    // Token (5, 5) lies outside the perturbed regular window (rows/cols 0..4) but inside the
+    // shifted window that straddles it, so it only changes if shifted attention ran.
+    let diff = (a - b)
+        .slice(s![.., .., 4..8, 4..8])
+        .abs()
+        .max()
+        .into_scalar::<f32>();
+    assert!(
+        diff > 1e-6,
+        "shifted windows did not propagate the change: {diff}"
+    );
+}
+
+#[test]
+fn absolute_position_embedding_is_interpolated_to_the_input_grid() {
+    let device = Device::flex();
+    let swin = tiny_swin([1, 1, 1, 1])
+        .with_ape(true)
+        .init(&device)
+        .unwrap();
+    // Pretrain grid is 8x8; a 48x48 input yields a 12x12 grid, exercising interpolation.
+    let [s1, _, _, s4] = swin
+        .forward(Tensor::zeros([1, 3, 48, 48], &device))
+        .unwrap();
+    assert_eq!(s1.dims(), [1, 8, 12, 12]);
+    assert_eq!(s4.dims(), [1, 64, 2, 2]);
+}
+
+#[test]
+fn pvt_v2_with_four_input_channels_uses_the_fourth_channel() {
+    let device = Device::flex();
+    device.seed(11);
+    let pvt = PvtV2Config::new(
+        4,
+        [8, 16, 32, 64],
+        [1, 2, 4, 8],
+        [2.0; 4],
+        true,
+        [1, 1, 1, 1],
+        [4, 2, 1, 1],
+        0.0,
+        0.0,
+    )
+    .init(&device)
+    .unwrap();
+
+    let rgb = Tensor::<4>::random([1, 3, 32, 32], Distribution::Uniform(0.0, 1.0), &device);
+    let with_mask = |value: f32| {
+        let mask = Tensor::<4>::full([1, 1, 32, 32], value, &device);
+        Tensor::cat(vec![rgb.clone(), mask], 1)
+    };
+    let [a, ..] = pvt.forward(with_mask(0.0));
+    let [b, ..] = pvt.forward(with_mask(1.0));
+    let diff = (a - b).abs().max().into_scalar::<f32>();
+    assert!(diff > 1e-4, "fourth channel had no effect: {diff}");
+}
+
+#[test]
+fn backbone_types_display_upstream_names() {
+    assert_eq!(
+        BackboneType::SwinTransformer(SwinVariant::SwinL).to_string(),
+        "swin_v1_l"
+    );
+    assert_eq!(
+        BackboneType::PvtV2(PvtV2Variant::B2).to_string(),
+        "pvt_v2_b2"
+    );
+    assert_eq!(
+        BackboneType::ResNet(ResNetVariant::ResNet50).to_string(),
+        "resnet50"
+    );
+    assert_eq!(
+        BackboneType::Vgg(VggVariant::Vgg16Bn).to_string(),
+        "vgg16bn"
+    );
 }
 
 #[test]

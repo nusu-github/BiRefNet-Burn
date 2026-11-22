@@ -18,7 +18,7 @@ burn.workspace = true
 image = { workspace = true, features = ["png", "jpeg", "bmp", "tiff", "webp", "gif"] }
 
 [dev-dependencies]
-burn = { workspace = true, features = ["flex"] }
+burn = { workspace = true, features = ["autodiff", "flex"] }
 tempfile.workspace = true
 
 [lints]

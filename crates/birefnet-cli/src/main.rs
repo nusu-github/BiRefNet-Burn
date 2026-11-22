@@ -1,4 +1,4 @@
-//! Command-line entrypoint for `BiRefNet` inference, training, and backend diagnostics.
+//! Command-line entrypoint for BiRefNet inference, training, and backend diagnostics.
 
 mod inference;
 #[cfg(feature = "train")]
@@ -6,14 +6,26 @@ mod training;
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use birefnet::{
     device::{AVAILABLE_DEVICES, Precision, configure_precision, select_device},
     weights::list_available_models,
 };
+use burn::{
+    backend::{Backend, Dispatch},
+    tensor::{Device, FloatDType},
+};
 use clap::{Parser, Subcommand};
+use mimalloc::MiMalloc;
 
-const WORKER_STACK_BYTES: usize = 4 * 1024 * 1024;
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
+/// Stack size for the inference / training worker.
+///
+/// Building, loading, and running deep Burn module trees recurses far beyond the 1 MiB
+/// default main-thread stack on Windows; 64 MiB leaves ample headroom for Swin-L.
+const WORKER_STACK_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(name = "birefnet")]
@@ -45,20 +57,29 @@ enum Commands {
         #[arg(short, long, required_unless_present = "list_models")]
         output: Option<PathBuf>,
 
-        /// Pretrained model preset name (e.g. `"General"`) or local checkpoint path.
+        /// Pretrained model preset name (e.g. `General`) or local checkpoint path.
         #[arg(short, long, required_unless_present = "list_models")]
         model: Option<String>,
+
+        /// Architecture JSON (`ModelConfig`) for a local checkpoint; defaults to a
+        /// `model_config.json` next to the checkpoint.
+        #[arg(long)]
+        config: Option<PathBuf>,
+
+        /// Preset whose architecture and resolution a local checkpoint uses.
+        #[arg(long, conflicts_with = "config")]
+        preset: Option<String>,
 
         /// Print all registered pretrained model presets and exit.
         #[arg(long)]
         list_models: bool,
 
-        /// Skip multi-pass blur-fusion foreground refinement.
+        /// Skip blur-fusion foreground refinement.
         #[arg(long)]
         no_refine: bool,
     },
 
-    /// Train a `BiRefNet` model from a JSON training configuration.
+    /// Train a BiRefNet model from a JSON training configuration.
     #[cfg(feature = "train")]
     Train {
         /// Path to the JSON training configuration file.
@@ -69,18 +90,34 @@ enum Commands {
         #[arg(long, default_value = "./artifacts")]
         artifact_dir: PathBuf,
 
-        /// Resume after this epoch from `<artifact_dir>/checkpoint/*-<epoch>.bpk`.
+        /// Resume after this epoch from `<artifact_dir>/checkpoint`.
         #[arg(short, long)]
         resume: Option<usize>,
     },
 
-    /// Show available backends and the active device configuration.
+    /// Show compiled backends and the selected device.
     Info,
+}
+
+fn print_info(device: &Device) {
+    println!("Available devices: {}", AVAILABLE_DEVICES.join(", "));
+    println!("Selected device:   {device:?}");
+    println!(
+        "Backend:           {}",
+        <Dispatch as Backend>::name(device.as_dispatch())
+    );
+    let settings = device.settings();
+    println!("Default float:     {:?}", settings.float_dtype);
+    let supported: Vec<_> = [FloatDType::F32, FloatDType::F16, FloatDType::BF16]
+        .into_iter()
+        .filter(|&dtype| device.supports_dtype(dtype))
+        .map(|dtype| format!("{dtype:?}"))
+        .collect();
+    println!("Supported floats:  {}", supported.join(", "));
 }
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
-
     let cli = Cli::parse();
 
     if let Commands::Infer {
@@ -94,26 +131,33 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut device = select_device(&cli.device)?;
+    let mut device = select_device(&cli.device)
+        .with_context(|| format!("cannot use device `{}`", cli.device))?;
     if let Some(precision) = cli.precision {
         configure_precision(&mut device, precision)?;
     }
-    tracing::info!(?device, "device selected");
+    tracing::info!(name: "birefnet.cli.device", "using device {device:?}");
 
     match cli.command {
         Commands::Infer {
             input,
             output,
             model,
+            config,
+            preset,
             no_refine,
             ..
         } => {
-            let args = inference::InferenceCliArgs::new(
-                input.ok_or_else(|| anyhow::anyhow!("missing `--input` argument"))?,
-                output.ok_or_else(|| anyhow::anyhow!("missing `--output` argument"))?,
-                model.ok_or_else(|| anyhow::anyhow!("missing `--model` argument"))?,
-                !no_refine,
-            );
+            let args = inference::InferenceCliArgs {
+                input_path: input.context("missing `--input`")?,
+                output_path: output.context("missing `--output`")?,
+                source: inference::ModelSource {
+                    model: model.context("missing `--model`")?,
+                    config,
+                    preset,
+                },
+                refine_foreground: !no_refine,
+            };
             stacker::grow(WORKER_STACK_BYTES, || {
                 inference::run_inference(&args, &device)
             })
@@ -125,17 +169,18 @@ fn main() -> Result<()> {
             artifact_dir,
             resume,
         } => {
-            let args = training::TrainingCliArgs::new(config, artifact_dir, resume);
+            let args = training::TrainingCliArgs {
+                config_path: config,
+                artifact_dir,
+                resume_epoch: resume,
+            };
             stacker::grow(WORKER_STACK_BYTES, || {
                 training::run_training(&args, &device)
             })
         }
 
         Commands::Info => {
-            println!("BiRefNet Information:");
-            println!("  Available devices: {}", AVAILABLE_DEVICES.join(", "));
-            println!("  Selected device: {device:?}");
-            println!("  Float dtype: {:?}", device.settings().float_dtype);
+            print_info(&device);
             Ok(())
         }
     }
@@ -143,12 +188,14 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
+
     use super::*;
 
     #[test]
     fn cli_allows_list_models_without_io_flags() {
         let cli = Cli::try_parse_from(["birefnet", "infer", "--list-models"]).unwrap();
-        assert!(matches!(
+        assert_matches!(
             cli.command,
             Commands::Infer {
                 input: None,
@@ -156,13 +203,19 @@ mod tests {
                 model: None,
                 list_models: true,
                 no_refine: false,
+                ..
             }
-        ));
+        );
     }
 
     #[test]
-    fn cli_rejects_infer_without_required_flags() {
-        let _ = Cli::try_parse_from(["birefnet", "infer"]).unwrap_err();
+    fn cli_rejects_infer_without_required_flags_or_with_conflicts() {
+        Cli::try_parse_from(["birefnet", "infer"]).unwrap_err();
+        Cli::try_parse_from([
+            "birefnet", "infer", "-i", "a", "-o", "b", "-m", "c", "--config", "x.json", "--preset",
+            "General",
+        ])
+        .unwrap_err();
     }
 
     #[test]
@@ -179,24 +232,29 @@ mod tests {
             "-o",
             "out_dir",
             "-m",
-            "General",
+            "weights.bpk",
+            "--preset",
+            "General-Lite",
             "--no-refine",
         ])
         .unwrap();
         assert_eq!(cli.device, "flex");
         assert_eq!(cli.precision, Some(Precision::Bf16));
-        assert!(matches!(
+        assert_matches!(
             cli.command,
             Commands::Infer {
                 input: Some(_),
                 output: Some(_),
                 model: Some(_),
+                preset: Some(_),
+                config: None,
                 list_models: false,
                 no_refine: true,
             }
-        ));
-
-        let info_cli = Cli::try_parse_from(["birefnet", "info"]).unwrap();
-        assert!(matches!(info_cli.command, Commands::Info));
+        );
+        assert_matches!(
+            Cli::try_parse_from(["birefnet", "info"]).unwrap().command,
+            Commands::Info
+        );
     }
 }

@@ -11,12 +11,13 @@ rust-version.workspace = true
 description = "Rust implementation of BiRefNet for high-resolution dichotomous image segmentation using Burn"
 
 [features]
-# Training integration (`TrainStep`/`InferenceStep`, loss metric adaptor).
-train = ["burn/train", "dep:birefnet-loss"]
+# Training integration (`TrainStep`/`InferenceStep`, loss and segmentation metric adaptors).
+train = ["burn/train", "dep:birefnet-loss", "dep:birefnet-metric", "birefnet-metric/train"]
 
 [dependencies]
 birefnet-backbones.workspace = true
 birefnet-loss = { workspace = true, optional = true }
+birefnet-metric = { workspace = true, optional = true }
 burn.workspace = true
 
 [dev-dependencies]

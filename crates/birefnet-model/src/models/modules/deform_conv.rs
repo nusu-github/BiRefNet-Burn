@@ -18,24 +18,22 @@ pub struct DeformableConv2dConfig {
     /// Number of output channels.
     out_channels: usize,
     /// Size of the convolutional kernel.
-    #[config(default = "3")]
+    #[config(default = 3)]
     kernel_size: usize,
     /// Stride of the convolution.
-    #[config(default = "1")]
+    #[config(default = 1)]
     stride: usize,
     /// Padding added to all four sides of the input.
-    #[config(default = "1")]
+    #[config(default = 1)]
     padding: usize,
     /// Whether to include a bias term on the main convolution.
-    #[config(default = "false")]
+    #[config(default = false)]
     bias: bool,
 }
 
-fn zero_conv_bias(conv: &mut Conv2d) {
-    if let Some(bias) = conv.bias.take() {
-        conv.bias = Some(Param::from_tensor(bias.val().zeros_like()));
-    }
-}
+/// `DCNv2` modulation range: `2 * sigmoid(.)` maps zero-initialized logits to `1.0` and lets
+/// each sampling location be scaled into `(0, 2)`.
+const MODULATOR_SCALE: f64 = 2.0;
 
 impl DeformableConv2dConfig {
     /// Initializes a [`DeformableConv2d`] module with zero-initialized offsets and modulators.
@@ -44,7 +42,9 @@ impl DeformableConv2dConfig {
         let padding =
             PaddingConfig2d::Explicit(self.padding, self.padding, self.padding, self.padding);
 
-        let mut offset_conv = Conv2dConfig::new(
+        // `Initializer::Zeros` also zero-initializes the bias, so offsets start at 0 and
+        // modulators at `MODULATOR_SCALE * sigmoid(0) = 1`, i.e. a regular convolution.
+        let offset_conv = Conv2dConfig::new(
             [self.in_channels, 2 * self.kernel_size * self.kernel_size],
             [self.kernel_size, self.kernel_size],
         )
@@ -52,9 +52,8 @@ impl DeformableConv2dConfig {
         .with_padding(padding.clone())
         .with_initializer(Initializer::Zeros)
         .init(device);
-        zero_conv_bias(&mut offset_conv);
 
-        let mut modulator_conv = Conv2dConfig::new(
+        let modulator_conv = Conv2dConfig::new(
             [self.in_channels, self.kernel_size * self.kernel_size],
             [self.kernel_size, self.kernel_size],
         )
@@ -62,7 +61,6 @@ impl DeformableConv2dConfig {
         .with_padding(padding.clone())
         .with_initializer(Initializer::Zeros)
         .init(device);
-        zero_conv_bias(&mut modulator_conv);
 
         let regular_conv = Conv2dConfig::new(
             [self.in_channels, self.out_channels],
@@ -106,7 +104,7 @@ impl DeformableConv2d {
     #[must_use]
     pub fn forward(&self, x: Tensor<4>) -> Tensor<4> {
         let offset = self.offset_conv.forward(x.clone());
-        let modulator = sigmoid(self.modulator_conv.forward(x.clone())).mul_scalar(2.0);
+        let modulator = sigmoid(self.modulator_conv.forward(x.clone())).mul_scalar(MODULATOR_SCALE);
 
         let [_, _, weights_h, weights_w] = self.regular_conv.weight.dims();
         let [_, n_in_channels, _, _] = x.dims();

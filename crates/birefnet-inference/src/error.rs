@@ -1,155 +1,159 @@
-//! Error types for `BiRefNet` inference and mask postprocessing.
+//! Canonical error type for [`crate`].
 
-use std::backtrace::Backtrace;
-use std::fmt;
+use std::{
+    backtrace::{Backtrace, BacktraceStatus},
+    error::Error,
+    fmt,
+};
 
 use birefnet_model::ModelError;
 use birefnet_util::UtilError;
 use burn::tensor::TensorReadError;
 
-type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ErrorKind {
-    Model,
-    Util,
-    Image,
-    Io,
-    InvalidInput,
-    TensorRead,
+/// Error returned by inference and mask postprocessing operations.
+#[derive(Debug)]
+pub struct InferenceError {
+    inner: Box<ErrorInner>,
 }
 
 #[derive(Debug)]
 struct ErrorInner {
     kind: ErrorKind,
-    message: String,
-    source: Option<BoxError>,
     backtrace: Backtrace,
 }
 
-/// Error returned by inference and mask postprocessing operations.
-pub struct InferenceError {
-    inner: Box<ErrorInner>,
+#[derive(Debug)]
+enum ErrorKind {
+    Model(ModelError),
+    Util(UtilError),
+    Image(image::ImageError),
+    Io(std::io::Error),
+    TensorRead(TensorReadError),
+    InvalidInput { message: String },
+    InvalidConfig { message: String },
 }
 
-const _: () = {
-    const fn assert_error_bounds<E: std::error::Error + Send + Sync + 'static>() {}
-    assert_error_bounds::<InferenceError>();
-};
-
 impl InferenceError {
-    fn new(kind: ErrorKind, message: impl Into<String>, source: Option<BoxError>) -> Self {
+    fn from_kind(kind: ErrorKind) -> Self {
         Self {
             inner: Box::new(ErrorInner {
                 kind,
-                message: message.into(),
-                source,
                 backtrace: Backtrace::capture(),
             }),
         }
     }
 
     pub(crate) fn invalid_input(message: impl Into<String>) -> Self {
-        Self::new(ErrorKind::InvalidInput, message, None)
+        Self::from_kind(ErrorKind::InvalidInput {
+            message: message.into(),
+        })
     }
 
-    /// Returns `true` if the underlying `BiRefNet` model forward pass failed.
+    pub(crate) fn invalid_config(message: impl Into<String>) -> Self {
+        Self::from_kind(ErrorKind::InvalidConfig {
+            message: message.into(),
+        })
+    }
+
+    /// Returns `true` if the `BiRefNet` forward pass failed.
     #[must_use]
     pub fn is_model(&self) -> bool {
-        self.inner.kind == ErrorKind::Model
+        matches!(self.inner.kind, ErrorKind::Model(_))
     }
 
-    /// Returns `true` if image tensor conversion or normalization failed.
+    /// Returns `true` if an image utility (decoding, normalization, masking) failed.
     #[must_use]
     pub fn is_util(&self) -> bool {
-        self.inner.kind == ErrorKind::Util
+        matches!(self.inner.kind, ErrorKind::Util(_))
     }
 
-    /// Returns `true` if image decoding or encoding failed.
+    /// Returns `true` if encoding or decoding an image failed.
     #[must_use]
     pub fn is_image(&self) -> bool {
-        self.inner.kind == ErrorKind::Image
+        matches!(self.inner.kind, ErrorKind::Image(_))
     }
 
-    /// Returns `true` if filesystem I/O failed.
+    /// Returns `true` if a filesystem or reader operation failed.
     #[must_use]
     pub fn is_io(&self) -> bool {
-        self.inner.kind == ErrorKind::Io
+        matches!(self.inner.kind, ErrorKind::Io(_))
     }
 
-    /// Returns `true` if input dimensions or mask shapes were invalid.
-    #[must_use]
-    pub fn is_invalid_input(&self) -> bool {
-        self.inner.kind == ErrorKind::InvalidInput
-    }
-
-    /// Returns `true` if copying tensor data from the backend device failed.
+    /// Returns `true` if reading a tensor back from the device failed.
     #[must_use]
     pub fn is_tensor_read(&self) -> bool {
-        self.inner.kind == ErrorKind::TensorRead
+        matches!(self.inner.kind, ErrorKind::TensorRead(_))
     }
 
-    /// Returns the backtrace recorded when this error was constructed.
+    /// Returns `true` if the input tensor or image had an unsupported shape.
+    #[must_use]
+    pub fn is_invalid_input(&self) -> bool {
+        matches!(self.inner.kind, ErrorKind::InvalidInput { .. })
+    }
+
+    /// Returns `true` if a segmenter or postprocessing parameter was out of range.
+    #[must_use]
+    pub fn is_invalid_config(&self) -> bool {
+        matches!(self.inner.kind, ErrorKind::InvalidConfig { .. })
+    }
+
+    /// Returns the captured [`Backtrace`] for this error.
     #[must_use]
     pub fn backtrace(&self) -> &Backtrace {
         &self.inner.backtrace
     }
 }
 
-impl fmt::Debug for InferenceError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("InferenceError")
-            .field("kind", &self.inner.kind)
-            .field("message", &self.inner.message)
-            .field("source", &self.inner.source)
-            .finish_non_exhaustive()
-    }
-}
-
 impl fmt::Display for InferenceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.inner.message)
+        match &self.inner.kind {
+            ErrorKind::Model(_) => f.write_str("model forward pass failed"),
+            ErrorKind::Util(_) => f.write_str("image utility failed"),
+            ErrorKind::Image(_) => f.write_str("image codec failed"),
+            ErrorKind::Io(_) => f.write_str("inference I/O failed"),
+            ErrorKind::TensorRead(_) => f.write_str("failed to read tensor data from the device"),
+            ErrorKind::InvalidInput { message } => write!(f, "invalid input: {message}"),
+            ErrorKind::InvalidConfig { message } => write!(f, "invalid configuration: {message}"),
+        }?;
+        if self.inner.backtrace.status() == BacktraceStatus::Captured {
+            write!(f, "\n\nstack backtrace:\n{}", self.inner.backtrace)?;
+        }
+        Ok(())
     }
 }
 
-impl std::error::Error for InferenceError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        let err = self.inner.source.as_deref()?;
-        Some(err)
+impl Error for InferenceError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match &self.inner.kind {
+            ErrorKind::Model(source) => Some(source),
+            ErrorKind::Util(source) => Some(source),
+            ErrorKind::Image(source) => Some(source),
+            ErrorKind::Io(source) => Some(source),
+            ErrorKind::TensorRead(source) => Some(source),
+            ErrorKind::InvalidInput { .. } | ErrorKind::InvalidConfig { .. } => None,
+        }
     }
 }
 
-impl From<ModelError> for InferenceError {
-    fn from(source: ModelError) -> Self {
-        let message = format!("model forward error: {source}");
-        Self::new(ErrorKind::Model, message, Some(Box::new(source)))
-    }
+macro_rules! from_source {
+    ($($source:ty => $kind:ident),+ $(,)?) => {
+        $(impl From<$source> for InferenceError {
+            fn from(source: $source) -> Self {
+                Self::from_kind(ErrorKind::$kind(source))
+            }
+        })+
+    };
 }
 
-impl From<UtilError> for InferenceError {
-    fn from(source: UtilError) -> Self {
-        let message = format!("image utility error: {source}");
-        Self::new(ErrorKind::Util, message, Some(Box::new(source)))
-    }
+from_source! {
+    ModelError => Model,
+    UtilError => Util,
+    image::ImageError => Image,
+    std::io::Error => Io,
+    TensorReadError => TensorRead,
 }
 
-impl From<image::ImageError> for InferenceError {
-    fn from(source: image::ImageError) -> Self {
-        let message = format!("image codec error: {source}");
-        Self::new(ErrorKind::Image, message, Some(Box::new(source)))
-    }
-}
-
-impl From<std::io::Error> for InferenceError {
-    fn from(source: std::io::Error) -> Self {
-        let message = format!("inference I/O error: {source}");
-        Self::new(ErrorKind::Io, message, Some(Box::new(source)))
-    }
-}
-
-impl From<TensorReadError> for InferenceError {
-    fn from(source: TensorReadError) -> Self {
-        let message = format!("tensor readback error: {source}");
-        Self::new(ErrorKind::TensorRead, message, Some(Box::new(source)))
-    }
-}
+const _: fn() = || {
+    fn assert_send_sync_static<T: Send + Sync + 'static>() {}
+    assert_send_sync_static::<InferenceError>();
+};

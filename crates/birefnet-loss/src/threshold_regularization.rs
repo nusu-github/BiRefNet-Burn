@@ -83,9 +83,7 @@ impl ThresholdRegularizationLoss {
     /// Computes element-wise `1 - (p^2 + (p - 1)^2)`.
     #[must_use]
     pub fn forward_no_reduction<const D: usize>(&self, predictions: Tensor<D>) -> Tensor<D> {
-        let pred_sq = predictions.clone().powi_scalar(2);
-        let pred_minus_one_sq = (predictions - 1.0).powi_scalar(2);
-        let sum_sq = pred_sq + pred_minus_one_sq;
-        sum_sq.ones_like() - sum_sq
+        // 1 - (p^2 + (p - 1)^2) simplifies to 2 * p * (1 - p).
+        predictions.clone().neg().add_scalar(1.0) * predictions.mul_scalar(2.0)
     }
 }
