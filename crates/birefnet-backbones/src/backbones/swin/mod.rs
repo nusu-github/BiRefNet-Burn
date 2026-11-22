@@ -20,8 +20,11 @@ use self::{
     layer::{BasicLayer, BasicLayerConfig},
     patch::{PatchEmbed, PatchEmbedConfig},
 };
-use crate::backbones::usize_to_f64;
-use crate::error::BackboneError;
+use crate::{
+    SwinVariant,
+    backbones::{linspace, validate_mlp_ratio, validate_rate},
+    error::BackboneError,
+};
 
 /// Configuration for [`SwinTransformer`].
 #[derive(Config, Debug, PartialEq)]
@@ -60,7 +63,24 @@ pub struct SwinTransformerConfig {
     out_indices: [usize; 4],
 }
 
+impl Default for SwinTransformerConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SwinTransformerConfig {
+    /// Returns the preset configuration for `variant`.
+    #[must_use]
+    pub fn from_variant(variant: SwinVariant) -> Self {
+        match variant {
+            SwinVariant::SwinT => Self::swin_t(),
+            SwinVariant::SwinS => Self::swin_s(),
+            SwinVariant::SwinB => Self::swin_b(),
+            SwinVariant::SwinL => Self::swin_l(),
+        }
+    }
+
     /// Swin-T configuration (`embed_dim = 96`, `depths = [2, 2, 6, 2]`, `window_size = 7`).
     #[must_use]
     pub fn swin_t() -> Self {
@@ -129,6 +149,18 @@ impl SwinTransformerConfig {
                 "out_indices element {bad_idx} is out of bounds for {num_layers} stages"
             )));
         }
+        let mut sorted_indices = self.out_indices;
+        sorted_indices.sort_unstable();
+        if sorted_indices.array_windows::<2>().any(|[a, b]| a == b) {
+            return Err(BackboneError::invalid_config(format!(
+                "out_indices must be distinct, got {:?}",
+                self.out_indices
+            )));
+        }
+        validate_mlp_ratio(self.mlp_ratio)?;
+        validate_rate("drop_rate", self.drop_rate)?;
+        validate_rate("attn_drop_rate", self.attn_drop_rate)?;
+        validate_rate("drop_path_rate", self.drop_path_rate)?;
 
         let patch_embed = PatchEmbedConfig::new()
             .with_patch_size(self.patch_size)
@@ -262,18 +294,5 @@ impl SwinTransformer {
     #[must_use]
     pub const fn output_channels(&self) -> [usize; 4] {
         self.num_features
-    }
-}
-
-fn linspace(start: f64, end: f64, steps: usize) -> Vec<f64> {
-    match steps {
-        0 => Vec::new(),
-        1 => vec![start],
-        _ => {
-            let step_size = (end - start) / usize_to_f64(steps - 1);
-            (0..steps)
-                .map(|i| usize_to_f64(i).mul_add(step_size, start))
-                .collect()
-        }
     }
 }

@@ -86,12 +86,21 @@ impl BasicLayer {
         h: usize,
         w: usize,
     ) -> (Tensor<3>, usize, usize, Tensor<3>, usize, usize) {
-        let device = x.device();
-        let attn_mask = self.compute_attn_mask(h, w, &device);
+        // Only shifted blocks need the mask; single-block stages never shift.
+        let attn_mask = self
+            .blocks
+            .iter()
+            .any(SwinTransformerBlock::is_shifted)
+            .then(|| self.compute_attn_mask(h, w, &x.device()));
 
         let mut x = x;
         for blk in &self.blocks {
-            x = blk.forward(x, h, w, attn_mask.clone());
+            let mask = if blk.is_shifted() {
+                attn_mask.clone()
+            } else {
+                None
+            };
+            x = blk.forward(x, h, w, mask);
         }
 
         match &self.downsample {
@@ -108,16 +117,11 @@ impl BasicLayer {
         let wp = w.div_ceil(self.window_size) * self.window_size;
         let mut img_mask: Tensor<4> = Tensor::zeros([1, hp, wp, 1], device);
 
-        let h_ranges = mask_ranges(hp, self.window_size, self.shift_size);
-        let w_ranges = mask_ranges(wp, self.window_size, self.shift_size);
-
         let mut cnt = 0_usize;
-        for h_range in &h_ranges {
-            for w_range in &w_ranges {
-                img_mask = img_mask.slice_fill(
-                    s![.., h_range.clone(), w_range.clone(), ..],
-                    usize_to_f64(cnt),
-                );
+        for h_range in mask_ranges(hp, self.window_size, self.shift_size) {
+            for w_range in mask_ranges(wp, self.window_size, self.shift_size) {
+                img_mask =
+                    img_mask.slice_fill(s![.., h_range.clone(), w_range, ..], usize_to_f64(cnt));
                 cnt += 1;
             }
         }
@@ -130,15 +134,26 @@ impl BasicLayer {
         let attn_mask: Tensor<3> =
             mask_windows.clone().unsqueeze_dim(1) - mask_windows.unsqueeze_dim(2);
         let non_zero = attn_mask.not_equal_elem(0.0);
-        non_zero.zeros_like().float().mask_fill(non_zero, -100.0)
+        non_zero
+            .zeros_like()
+            .float()
+            .mask_fill(non_zero, CROSS_REGION_MASK)
     }
 }
 
-fn mask_ranges(size: usize, window_size: usize, shift_size: usize) -> Vec<Range<usize>> {
+/// Additive attention bias between tokens from different shifted regions. Upstream Swin uses
+/// `-100`, which drives the post-softmax weight to ~`e^-100` without risking `-inf - -inf = NaN`.
+const CROSS_REGION_MASK: f64 = -100.0;
+
+/// The (up to three) regions a shifted window grid splits an axis of length `size` into.
+fn mask_ranges(
+    size: usize,
+    window_size: usize,
+    shift_size: usize,
+) -> impl Iterator<Item = Range<usize>> {
     let split1 = size.saturating_sub(window_size);
     let split2 = size.saturating_sub(shift_size);
     [(0, split1), (split1, split2), (split2, size)]
         .into_iter()
         .filter_map(|(start, end)| (start < end).then_some(start..end))
-        .collect()
 }

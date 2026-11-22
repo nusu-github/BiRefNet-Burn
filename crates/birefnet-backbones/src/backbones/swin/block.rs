@@ -7,8 +7,9 @@ use burn::{
 };
 
 use crate::backbones::{
+    scaled_hidden_dim,
     swin::attention::{WindowAttention, WindowAttentionConfig},
-    usize_to_f64, usize_to_i64,
+    usize_to_i64,
 };
 
 /// Configuration for the two-layer MLP in a Swin Transformer block.
@@ -137,12 +138,7 @@ impl SwinTransformerBlockConfig {
 
         let drop_path = DropPathConfig::new().with_drop_prob(self.drop_path).init();
         let norm2 = LayerNormConfig::new(self.dim).init(device);
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "MLP expansion ratio is a small non-negative scalar"
-        )]
-        let mlp_hidden_dim = (usize_to_f64(self.dim) * self.mlp_ratio) as usize;
+        let mlp_hidden_dim = scaled_hidden_dim(self.dim, self.mlp_ratio);
         let mlp = MlpConfig::new(self.dim)
             .with_hidden_features(Some(mlp_hidden_dim))
             .with_drop(self.drop)
@@ -173,14 +169,24 @@ pub struct SwinTransformerBlock {
 }
 
 impl SwinTransformerBlock {
+    /// Returns `true` if this block uses shifted windows (and therefore an attention mask).
+    #[must_use]
+    pub const fn is_shifted(&self) -> bool {
+        self.shift_size > 0
+    }
+
     /// Applies attention and MLP residual branches to `[B, H * W, C]`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this block uses shifted windows and `mask_matrix` is `None`.
     #[must_use]
     pub fn forward(
         &self,
         x: Tensor<3>,
         height: usize,
         width: usize,
-        mask_matrix: Tensor<3>,
+        mask_matrix: Option<Tensor<3>>,
     ) -> Tensor<3> {
         let [batch, _tokens, channels] = x.dims();
 
@@ -200,7 +206,13 @@ impl SwinTransformerBlock {
 
         let shift = usize_to_i64(self.shift_size);
         let (shifted_x, attn_mask) = if self.shift_size > 0 {
-            (padded.roll(&[-shift, -shift], &[1, 2]), Some(mask_matrix))
+            let mask = mask_matrix.unwrap_or_else(|| {
+                panic!(
+                    "shifted Swin block (shift_size = {}) requires an attention mask",
+                    self.shift_size
+                )
+            });
+            (padded.roll(&[-shift, -shift], &[1, 2]), Some(mask))
         } else {
             (padded, None)
         };

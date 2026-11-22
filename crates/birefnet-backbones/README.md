@@ -1,29 +1,43 @@
 # birefnet-backbones
 
-[![Crates.io](https://img.shields.io/crates/v/birefnet-backbones.svg)](https://crates.io/crates/birefnet-backbones)
-[![Documentation](https://docs.rs/birefnet-backbones/badge.svg)](https://docs.rs/birefnet-backbones)
+Multi-scale encoder backbones for BiRefNet on Burn.
 
-**Encoder backbone networks (`SwinV1`, `PVTv2`, `ResNet`, `VGG`) for `BiRefNet` on Burn**
+| Family | Variants | Configuration |
+| --- | --- | --- |
+| Swin Transformer v1 | [`SwinVariant`]: T, S, B, L | [`SwinTransformerConfig`] |
+| Pyramid Vision Transformer v2 | [`PvtV2Variant`]: B0–B5 | [`PvtV2Config`] |
+| ResNet | [`ResNetVariant`]: 18, 34, 50, 101, 152 | [`ResNetConfig`] |
+| VGG | [`VggVariant`]: 16, 16-BN | [`VggConfig`] |
 
-## Implemented Backbones
+Every backbone implements [`Backbone`] and returns four feature maps at strides
+`4, 8, 16, 32`, shallowest first. [`BackboneType`] selects a preset and builds a
+[`BackboneModel`]; configuration problems surface as [`BackboneError`].
 
-- **Swin Transformer v1 (`SwinVariant`)**: `Tiny`, `Small`, `Base`, `Large` (`WindowSize12` defaults in BiRefNet)
-- **PVT v2 (`PvtV2Variant`)**: `B0`, `B1`, `B2`, `B5` Pyramid Vision Transformers
-- **ResNet (`ResNetVariant`)**: `ResNet18`, `ResNet50`
-- **VGG (`VggVariant`)**: `Vgg16`, `Vgg16Bn`
-
-All backbones implement the `Backbone` trait, producing 4 hierarchical feature maps `[1/4, 1/8, 1/16, 1/32]` together with typed configuration errors via `BackboneError`.
-
-## Usage
+## Examples
 
 ```rust
 use birefnet_backbones::{Backbone, BackboneType, PvtV2Variant};
-use burn::tensor::{Device, Tensor};
+use burn::prelude::*;
 
 let device = Device::flex();
 let backbone = BackboneType::PvtV2(PvtV2Variant::B0).init(&device)?;
 let features = backbone.forward(Tensor::zeros([1, 3, 64, 64], &device));
-assert_eq!(features[0].dims()[1], backbone.output_channels()[0]);
+
+assert_eq!(features[0].dims(), [1, 32, 16, 16]);
+assert_eq!(features[3].dims()[1], backbone.output_channels()[3]);
+# Ok::<(), birefnet_backbones::BackboneError>(())
+```
+
+PVTv2 accepts any number of input channels, which the refiner uses for RGB + mask input:
+
+```rust
+use birefnet_backbones::{PvtV2Config, PvtV2Variant};
+use burn::prelude::*;
+
+let device = Device::flex();
+let pvt = PvtV2Config::from_variant(PvtV2Variant::B0, 4).init(&device)?;
+let [stride4, ..] = pvt.forward(Tensor::zeros([1, 4, 64, 64], &device));
+assert_eq!(stride4.dims(), [1, 32, 16, 16]);
 # Ok::<(), birefnet_backbones::BackboneError>(())
 ```
 

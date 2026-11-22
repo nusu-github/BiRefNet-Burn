@@ -1,5 +1,7 @@
 //! `ResNet` backbone implementations for `BiRefNet`.
 
+use std::debug_assert_matches;
+
 use core::f64::consts::SQRT_2;
 
 use burn::{
@@ -80,7 +82,7 @@ impl ResNetBackbone {
     }
 
     fn new(blocks: [usize; 4], expansion: usize, device: &Device) -> Self {
-        debug_assert!(expansion == 1 || expansion == 4);
+        debug_assert_matches!(expansion, 1 | 4);
         let bottleneck = expansion > 1;
         let out_channels = [
             64 * expansion,

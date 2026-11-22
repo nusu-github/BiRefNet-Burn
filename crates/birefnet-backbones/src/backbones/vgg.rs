@@ -11,7 +11,7 @@ use burn::{
     prelude::*,
 };
 
-use crate::{VggVariant, error::BackboneError};
+use crate::VggVariant;
 
 #[derive(Clone, Copy, Debug)]
 enum VggLayerSpec {
@@ -200,6 +200,12 @@ pub struct VggConfig {
     pub batch_norm: bool,
 }
 
+impl Default for VggConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VggConfig {
     /// Returns the configuration matching a [`VggVariant`].
     #[must_use]
@@ -223,11 +229,8 @@ impl VggConfig {
     }
 
     /// Initializes a [`VggBackbone`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackboneError`] only if configuration validation is added in future revisions.
-    pub fn init(&self, device: &Device) -> Result<VggBackbone, BackboneError> {
-        Ok(VggBackbone::new(self.batch_norm, device))
+    #[must_use]
+    pub fn init(&self, device: &Device) -> VggBackbone {
+        VggBackbone::new(self.batch_norm, device)
     }
 }
