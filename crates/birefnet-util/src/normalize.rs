@@ -1,4 +1,4 @@
-//! Pure-tensor ImageNet normalization and foreground alpha masking helpers.
+//! ImageNet normalization and foreground alpha masking.
 
 use burn::tensor::{Shape, Tensor, TensorData};
 
@@ -12,6 +12,8 @@ pub const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 
 /// Applies ImageNet channel-wise standardization `(x - mean) / std` to a `[B, 3, H, W]` tensor.
 ///
+/// The statistics are created in the input's float dtype.
+///
 /// # Errors
 ///
 /// Returns [`UtilError`] if `tensor` does not have 3 channels (`dims[1] != 3`).
@@ -24,28 +26,29 @@ pub fn apply_imagenet_normalization(tensor: Tensor<4>) -> Result<Tensor<4>, Util
         )));
     }
 
-    let device = tensor.device();
-    let mean = Tensor::<4>::from_data(
-        TensorData::new(IMAGENET_MEAN.to_vec(), Shape::new([1, 3, 1, 1])),
-        &device,
-    );
-    let std = Tensor::<4>::from_data(
-        TensorData::new(IMAGENET_STD.to_vec(), Shape::new([1, 3, 1, 1])),
-        &device,
-    );
-    Ok((tensor - mean) / std)
+    let options = (&tensor.device(), tensor.dtype());
+    let channel_stats = |values: [f32; 3]| {
+        Tensor::<4>::from_data(
+            TensorData::new(values.to_vec(), Shape::new([1, 3, 1, 1])),
+            options,
+        )
+    };
+    Ok((tensor - channel_stats(IMAGENET_MEAN)) / channel_stats(IMAGENET_STD))
 }
 
-/// Applies an alpha mask `[B, 1, H, W]` to an RGB/multi-channel image `[B, C, H, W]`, producing RGBA `[B, 4, H, W]`
-/// for 3-channel inputs or multiplying directly when channel counts match.
+/// Applies an alpha mask `[B, 1, H, W]` to an image `[B, C, H, W]`.
+///
+/// RGB images (`C = 3`) gain the mask as a fourth (alpha) channel; other images are multiplied
+/// by the mask, broadcasting a single-channel mask across all channels.
 ///
 /// # Errors
 ///
-/// Returns [`UtilError`] if batch or spatial dimensions differ, or if `mask` channels cannot broadcast to `image`.
+/// Returns [`UtilError`] if batch or spatial dimensions differ, or if `mask` channels cannot
+/// broadcast to `image`.
 pub fn apply_mask(image: Tensor<4>, mask: Tensor<4>) -> Result<Tensor<4>, UtilError> {
     let img_dims = image.dims();
     let mask_dims = mask.dims();
-    if img_dims[0] != mask_dims[0] || img_dims[2] != mask_dims[2] || img_dims[3] != mask_dims[3] {
+    if img_dims[0] != mask_dims[0] || img_dims[2..] != mask_dims[2..] {
         return Err(UtilError::invalid_dimensions(format!(
             "image shape {img_dims:?} does not match mask shape {mask_dims:?}"
         )));
@@ -54,10 +57,7 @@ pub fn apply_mask(image: Tensor<4>, mask: Tensor<4>) -> Result<Tensor<4>, UtilEr
     match (img_dims[1], mask_dims[1]) {
         (3, 1) => Ok(Tensor::cat(vec![image, mask], 1)),
         (ic, mc) if ic == mc => Ok(image * mask),
-        (ic, 1) => {
-            let expanded = mask.repeat(&[1, ic, 1, 1]);
-            Ok(image * expanded)
-        }
+        (_, 1) => Ok(image * mask),
         (ic, mc) => Err(UtilError::invalid_dimensions(format!(
             "incompatible channel counts: image has {ic}, mask has {mc}"
         ))),
