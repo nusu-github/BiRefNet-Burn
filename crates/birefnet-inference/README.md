@@ -1,59 +1,46 @@
 # birefnet-inference
 
-[![Crates.io](https://img.shields.io/crates/v/birefnet-inference.svg)](https://crates.io/crates/birefnet-inference)
-[![Documentation](https://docs.rs/birefnet-inference/badge.svg)](https://docs.rs/birefnet-inference)
+End-to-end BiRefNet inference: ImageNet normalization, resizing, the forward pass, mask
+postprocessing, and blur-fusion foreground refinement.
 
-**High-level inference pipeline and mask postprocessing for `BiRefNet` on Burn**
+- [`Segmenter`] runs a [`BiRefNet`](birefnet_model::BiRefNet) on tensors, decoded images,
+  encoded bytes, readers, or files and returns a [`SegmentationOutput`] at the source
+  resolution (mask, optional refined foreground, RGBA / grayscale export).
+- [`SegmenterConfig`] and [`postprocess::PostprocessConfig`] are validated, `Copy`
+  builders.
+- [`postprocess`] exposes the individual mask operations (threshold, Gaussian blur, disk
+  opening / closing, small-component removal, hole filling).
 
-## Core Components
+## Examples
 
-- **`Segmenter` & `SegmenterConfig`**: End-to-end segmentation runner supporting tensor (`[1, 3, H, W]`), `DynamicImage`, and image file inputs (`segment_tensor`, `segment_image`, `segment_file`), with ImageNet normalization, bicubic resizing via native Burn interpolation, sigmoid activation, optional mask postprocessing, and optional multi-pass blur-fusion foreground refinement.
-- **`SegmentationOutput`**: Holds predicted mask `[1, 1, H, W]`, optional refined foreground `[1, 3, H, W]`, original `(height, width)`, and export helpers (`to_rgba_image`, `to_mask_image`).
-- **`InferenceError`**: Typed error with `is_model`, `is_util`, `is_image`, `is_io`, `is_invalid_input`, and `is_tensor_read` predicates.
-
-## Postprocessing Functions
-
-- **`apply_threshold`**: Binary mask thresholding (`mask > threshold`).
-- **`gaussian_blur`**: 2D Gaussian smoothing via `birefnet_util::gaussian_filter_matlab`.
-- **`morphological_opening` / `morphological_closing`**: Disk structuring element morphology via `birefnet-util`.
-- **`remove_small_components`**: 4-connected foreground component area filtering (`< min_size`).
-- **`fill_holes`**: Border-seeded flood fill for enclosed background holes.
-- **`postprocess_mask`**: Sequential pipeline driven by `PostprocessConfig`.
-- **`resize_tensor` / `mask_to_u8`**: Native Burn `interpolate` resizing and 8-bit grayscale export.
-
-## Usage
-
-```rust,no_run
-use birefnet_inference::{PostprocessConfig, Segmenter, SegmenterConfig};
-use birefnet_model::BiRefNet;
-use birefnet_weights::{BiRefNetWeightLoading, ManagedModel};
-use burn::tensor::Device;
+```rust
+use birefnet_inference::{Segmenter, SegmenterConfig, postprocess::PostprocessConfig};
+use birefnet_model::{
+    Backbone, BackboneConfig, BiRefNetConfig, DecoderConfig, InterpolationStrategy, ModelConfig,
+};
+use burn::prelude::*;
 
 let device = Device::flex();
-let managed = ManagedModel::from_local("custom", "model.bpk", None);
-let model = managed.build_config().init(&device)?.load_weights("model.bpk", &device)?;
+// A small randomly initialized model; real use loads pretrained weights (`birefnet-weights`).
+let model = BiRefNetConfig::new(
+    ModelConfig::new(InterpolationStrategy::Bilinear)
+        .with_backbone(BackboneConfig::new().with_backbone(Backbone::PvtV2B0))
+        .with_decoder(DecoderConfig::new().with_dec_ipt_split(false)),
+)
+.init(&device)?;
 
-let segmenter = Segmenter::new(
-    model,
-    SegmenterConfig {
-        postprocess: PostprocessConfig {
-            threshold: Some(0.5),
-            fill_holes: true,
-            ..PostprocessConfig::default()
-        },
-        ..SegmenterConfig::default()
-    },
-);
+let config = SegmenterConfig::new()
+    .with_input_size([64, 64])?
+    .with_foreground_refinement(None)
+    .with_postprocess(PostprocessConfig::new().with_threshold(0.5)?.with_fill_holes(true));
+let segmenter = Segmenter::new(&model, config);
 
-let output = segmenter.segment_file("input.png", &device)?;
-output.to_rgba_image()?.save("output_mask.png")?;
+let image = Tensor::<4>::full([1, 3, 48, 80], 0.5, &device);
+let output = segmenter.segment_tensor(image)?;
+assert_eq!(output.original_size(), [48, 80]);
+assert_eq!(output.to_mask_image()?.dimensions(), (80, 48));
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
-
-## Integration
-
-- [`birefnet-model`](../birefnet-model): `BiRefNet` model forward pass
-- [`birefnet-util`](../birefnet-util): Image normalization, codec I/O (`image-io`), morphology, filters, and foreground refinement
 
 ## License
 
